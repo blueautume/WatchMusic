@@ -4,6 +4,8 @@ import argparse
 import hashlib
 import hmac
 import json
+import os
+import signal
 import shutil
 import subprocess
 import threading
@@ -35,6 +37,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
         body, behavior = route
+        if behavior == "redirect":
+            self.send_response(302)
+            self.send_header("Location", self.path + "/redirected")
+            self.send_header("Content-Length", "0")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            return
         if behavior == "http_error":
             self.send_error(503)
             return
@@ -59,7 +68,7 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
 
-def run_case(device, documents, title, specifications, expected_kind, capture=None, cancel=False):
+def run_case(device, documents, title, specifications, expected_kind, capture=None, cancel=False, background=False, restart=False):
     folder = "LANProbe-" + str(uuid.uuid4())
     manifest = []
     routes = {}
@@ -70,6 +79,8 @@ def run_case(device, documents, title, specifications, expected_kind, capture=No
         manifest.append({"id": identifier, "folder": folder, "fileName": f"probe-{index}.{fixture.suffix[1:]}",
                          "byteCount": len(body), "sha256": hashlib.sha256(body).hexdigest()})
         routes["/v1/files/" + identifier] = (body, behavior)
+        if behavior == "redirect":
+            routes["/v1/files/" + identifier + "/redirected"] = (body, "normal")
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     server.daemon_threads = True
     server.routes, server.token = routes, token
@@ -82,6 +93,7 @@ def run_case(device, documents, title, specifications, expected_kind, capture=No
     try:
         subprocess.run(["xcrun", "simctl", "terminate", device, BUNDLE], capture_output=True, check=False, timeout=15)
         log_path.unlink(missing_ok=True)
+        (documents / "lan-test-background.json").unlink(missing_ok=True)
         offer = {"protocolVersion": 1, "sessionID": str(uuid.uuid4()), "token": token,
                  "baseURLs": [f"http://127.0.0.1:{server.server_port}"],
                  "expiresAt": time.time() - 978_307_200 + 120, "files": manifest}
@@ -89,14 +101,26 @@ def run_case(device, documents, title, specifications, expected_kind, capture=No
         args = ["launch", device, BUNDLE, "-lan-offer-file", offer_path.name]
         if cancel:
             args += ["-lan-cancel-after", "0.3"]
-        simctl(*args)
+        if background:
+            args += ["-lan-background-after", "0.3"]
+        launch_output = simctl(*args)
+        if restart:
+            assert server.request_started.wait(timeout=20), "download did not start before process restart"
+            pid = int(launch_output.rsplit(":", 1)[1].strip())
+            command = subprocess.check_output(["ps", "-p", str(pid), "-o", "command="], text=True)
+            assert "OfflineWatchPlayerLabWatch" in command, "unexpected simulator process"
+            # A crash-style kill tests system-owned tasks, unlike an explicit
+            # user force-quit, which tells the OS to cancel background transfers.
+            os.kill(pid, signal.SIGKILL)
+            time.sleep(0.15)
+            simctl("launch", device, BUNDLE, "-lan-restore-events")
         if capture:
             assert server.request_started.wait(timeout=15), "download did not reach the HTTP server"
             # Capture the active reception card, after launch-screen dismissal.
             time.sleep(0.8)
             capture.parent.mkdir(parents=True, exist_ok=True)
             simctl("io", device, "screenshot", str(capture))
-        deadline = time.monotonic() + 40
+        deadline = time.monotonic() + 90
         terminal = {}
         while time.monotonic() < deadline:
             if log_path.exists():
@@ -119,6 +143,8 @@ def run_case(device, documents, title, specifications, expected_kind, capture=No
                 assert hashlib.sha256(target.read_bytes()).hexdigest() == file["sha256"], f"{title}: wrong saved content"
             else:
                 assert not target.exists(), f"{title}: rejected/cancelled data must not enter the library"
+        if background:
+            assert (documents / "lan-test-background.json").exists(), "background transition hook did not run"
         print(f"PASS: {title} ({len(manifest)} file(s))", flush=True)
     finally:
         server.shutdown()
@@ -134,6 +160,7 @@ def main():
     parser.add_argument("--app", type=Path, help="Install this Debug Watch .app before running")
     parser.add_argument("--capture", type=Path, help="Save a screenshot during the first download")
     parser.add_argument("--success-only", action="store_true", help="Run only the successful-download scenario")
+    parser.add_argument("--background-only", action="store_true", help="Run background and process-recovery scenarios only")
     args = parser.parse_args()
     if args.app:
         simctl("install", args.device, str(args.app.resolve()))
@@ -142,12 +169,19 @@ def main():
     documents.mkdir(exist_ok=True)
     mp3, flac = (ROOT / "Tests/Fixtures" / name for name in ["EmbeddedResources.mp3", "EmbeddedResources.flac"])
     try:
+        if args.background_only:
+            run_case(args.device, documents, "background transition does not cancel batch",
+                     [(mp3, "slow"), (flac, "slow")], "stored", background=True)
+            run_case(args.device, documents, "system download survives receiver process restart",
+                     [(mp3, "slow"), (flac, "slow")], "stored", restart=True)
+            return
         run_case(args.device, documents, "MP3 and FLAC download, integrity and save receipts",
                  [(mp3, "slow"), (flac, "normal")], "stored", args.capture)
         if args.success_only:
             return
         run_case(args.device, documents, "same-size corrupt content rejected", [(flac, "corrupt")], "failed")
         run_case(args.device, documents, "HTTP failure rejected", [(mp3, "http_error")], "failed")
+        run_case(args.device, documents, "redirected final URL rejected even for matching bytes", [(mp3, "redirect")], "failed")
         run_case(args.device, documents, "oversized response rejected", [(mp3, "oversize")], "failed")
         run_case(args.device, documents, "cancel prevents later save", [(flac, "slow")], "cancelled", cancel=True)
         print("PASS: real watch URLSession LAN transfer probe", flush=True)

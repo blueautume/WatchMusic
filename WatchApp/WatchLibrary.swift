@@ -36,6 +36,7 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
     private var session: WCSession?
     private var activationFinished = false
     private var pendingTasks: [WKWatchConnectivityRefreshBackgroundTask] = []
+    private var pendingURLSessionTasks: [ObjectIdentifier: WKURLSessionRefreshBackgroundTask] = [:]
     private var pendingObservation: NSKeyValueObservation?
     private var lanReceiver: LANDownloadReceiver!
     private var lanFiles: [String: LANTransferFile] = [:]
@@ -44,12 +45,30 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
     #if DEBUG
     private var debugLANEvents: [LANTransferEvent] = []
     private var debugLANEventLog: URL?
+    private var debugLANSessionID: String?
+    private var debugLANLifecycleLog: URL?
+    private var debugLANLifecycleEvents: [[String: Any]] = []
     private var didStartLANPreview = false
     #endif
 
     override init() {
         rootURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("Music", isDirectory: true)
         super.init()
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-lan-record-lifecycle") {
+            configureLANEventLog(reset: false)
+            let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            let lifecycleLog = documents.appendingPathComponent("lan-lifecycle-events.json")
+            debugLANLifecycleLog = lifecycleLog
+            if let data = try? Data(contentsOf: lifecycleLog), data.count <= 4_194_304,
+               let items = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                debugLANLifecycleEvents = items
+            }
+            appendLANLifecycleEvent("processStarted")
+        } else if ProcessInfo.processInfo.arguments.contains("-lan-restore-events") {
+            configureLANEventLog(reset: false)
+        }
+        #endif
         lanReceiver = LANDownloadReceiver { [weak self] temporary, file, permission in
             guard let self else { throw CancellationError() }
             try self.ioQueue.sync {
@@ -61,6 +80,9 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
             guard let self else { return }
             self.lanReception = status
             if status == nil {
+                #if DEBUG
+                self.appendLANLifecycleEvent("sessionFinished")
+                #endif
                 self.lanSessionID = nil
                 self.lanFiles = [:]
                 self.receiveLock.lock(); self.lanReservedPaths.removeAll(); self.receiveLock.unlock()
@@ -68,6 +90,21 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
             self.updateReceivingState()
         }
         lanReceiver.onEvent = { [weak self] event in self?.reportLANEvent(event) }
+        if let restored = lanReceiver.restore() {
+            lanSessionID = restored.sessionID
+            lanFiles = Dictionary(uniqueKeysWithValues: restored.files.map { ($0.id, $0) })
+            #if DEBUG
+            if debugLANEventLog != nil { debugLANSessionID = restored.sessionID }
+            appendLANLifecycleEvent("sessionRestored")
+            #endif
+            let pendingIDs = lanReceiver.pendingFileIDs
+            receiveLock.lock()
+            lanReservedPaths = Set(restored.files.filter { pendingIDs.contains($0.id) }.map {
+                ($0.folder + "/" + $0.fileName).precomposedStringWithCanonicalMapping.lowercased()
+            })
+            receiveLock.unlock()
+            updateReceivingState()
+        }
         refresh()
         if WCSession.isSupported() {
             let session = WCSession.default
@@ -178,6 +215,40 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
     func addBackgroundTask(_ task: WKWatchConnectivityRefreshBackgroundTask) {
         DispatchQueue.main.async { self.pendingTasks.append(task); self.completeBackgroundTasksIfPossible() }
     }
+
+    /// The system-owned download continues after this wake cycle ends. Only
+    /// this delivery batch and any completed-file validation must be drained.
+    func addURLSessionBackgroundTask(_ task: WKURLSessionRefreshBackgroundTask) {
+        DispatchQueue.main.async { [self, task] in
+            guard task.sessionIdentifier == LANDownloadReceiver.backgroundSessionIdentifier else {
+                task.setTaskCompletedWithSnapshot(false)
+                return
+            }
+            let id = ObjectIdentifier(task)
+            guard self.pendingURLSessionTasks[id] == nil else { return }
+            self.pendingURLSessionTasks[id] = task
+            #if DEBUG
+            self.appendLANLifecycleEvent("backgroundEventsReceived")
+            #endif
+            task.expirationHandler = { [weak self, weak task] in
+                guard let task else { return }
+                DispatchQueue.main.async { self?.completeURLSessionBackgroundTask(task, expired: true) }
+            }
+            self.lanReceiver.handleBackgroundEvents(identifier: task.sessionIdentifier) { [weak self, weak task] in
+                guard let task else { return }
+                DispatchQueue.main.async { self?.completeURLSessionBackgroundTask(task) }
+            }
+        }
+    }
+
+    private func completeURLSessionBackgroundTask(_ task: WKURLSessionRefreshBackgroundTask, expired: Bool = false) {
+        guard let pending = pendingURLSessionTasks.removeValue(forKey: ObjectIdentifier(task)) else { return }
+        #if DEBUG
+        appendLANLifecycleEvent(expired ? "backgroundEventsExpired" : "backgroundEventsCompleted")
+        #endif
+        pending.expirationHandler = nil
+        pending.setTaskCompletedWithSnapshot(false)
+    }
     private func completeBackgroundTasksIfPossible() {
         guard activationFinished else { return }
         receiveLock.lock(); let hasReceives = receivingCount > 0; receiveLock.unlock()
@@ -203,10 +274,16 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
         DispatchQueue.main.async {
             self.activationFinished = true; self.updateConnectionStatus()
             if let error { self.lastTransferMessage = "手机连接暂不可用：\(error.localizedDescription)" }
+            if activationState == .activated { self.lanReceiver.replayTerminalEvents() }
             self.completeBackgroundTasksIfPossible()
         }
     }
-    func sessionReachabilityDidChange(_ session: WCSession) { DispatchQueue.main.async { self.updateConnectionStatus() } }
+    func sessionReachabilityDidChange(_ session: WCSession) {
+        DispatchQueue.main.async {
+            self.updateConnectionStatus()
+            if session.activationState == .activated { self.lanReceiver.replayTerminalEvents() }
+        }
+    }
 
     func session(_ session: WCSession, didReceive file: WCSessionFile) {
         let metadata = file.metadata ?? [:]
@@ -246,14 +323,18 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
 
     func updateLANForeground(_ foreground: Bool) {
         lanAppForeground = foreground
-        if !foreground { lanReceiver.stop(message: "手表应用已进入后台，请保持两端 App 打开后重试。") }
+        lanReceiver.setForeground(foreground)
+        // Screen sleep/backgrounding must not cancel the system's downloads.
     }
 
     func cancelLANTransfer() { lanReceiver.stop() }
 
     private func updateReceivingState() {
-        receiveLock.lock(); let nativeReceiving = receivingCount > 0; receiveLock.unlock()
-        isReceiving = nativeReceiving || lanReception != nil
+        receiveLock.lock()
+        let nativeReceiving = receivingCount > 0
+        let lanReceiving = !lanReservedPaths.isEmpty
+        receiveLock.unlock()
+        isReceiving = nativeReceiving || lanReceiving || lanReception != nil
     }
 
     private func receiveLANOffer(_ offer: LANTransferOffer, allowLoopbackForTesting: Bool = false) throws {
@@ -268,6 +349,13 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
         guard !conflicts else { throw libraryError("同名歌曲正在保存，请稍后重试。") }
         lanSessionID = offer.sessionID
         lanFiles = Dictionary(uniqueKeysWithValues: offer.files.map { ($0.id, $0) })
+        #if DEBUG
+        if debugLANLifecycleLog != nil {
+            configureLANEventLog(reset: true)
+            debugLANSessionID = offer.sessionID
+        }
+        appendLANLifecycleEvent("offerAccepted")
+        #endif
         do { try lanReceiver.accept(offer, allowLoopbackForTesting: allowLoopbackForTesting) }
         catch {
             lanSessionID = nil; lanFiles = [:]
@@ -298,24 +386,39 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
     }
 
     private func reportLANEvent(_ event: LANTransferEvent) {
-        guard event.sessionID == lanSessionID else { return }
-        if event.kind != .progress, let file = lanFiles[event.fileID] {
+        let belongsToCurrentSession = event.sessionID == lanSessionID
+        guard event.kind != .progress || belongsToCurrentSession else { return }
+        if event.kind != .progress, belongsToCurrentSession, let file = lanFiles[event.fileID] {
             receiveLock.lock(); lanReservedPaths.remove((file.folder + "/" + file.fileName).precomposedStringWithCanonicalMapping.lowercased()); receiveLock.unlock()
             if event.kind == .stored {
                 lastTransferMessage = "已收到：\((file.fileName as NSString).deletingPathExtension)"
                 lastReceivedAt = Date()
                 refresh()
             } else { lastTransferMessage = event.message ?? "局域网传输已停止" }
+        } else if event.kind == .stored {
+            // A durable save result may be replayed after the session UI was
+            // cleared, or after the process was relaunched by the system.
+            lastReceivedAt = Date()
+            if lanSessionID == nil { lastTransferMessage = event.message ?? "歌曲已保存到手表" }
+            refresh()
         }
         #if DEBUG
-        if let debugLANEventLog {
+        if event.kind != .progress {
+            appendLANLifecycleEvent(event.kind.rawValue, sessionID: event.sessionID, fileID: event.fileID)
+        }
+        if let debugLANEventLog, event.sessionID == debugLANSessionID {
             debugLANEvents.append(event)
             if let data = try? JSONEncoder().encode(debugLANEvents) { try? data.write(to: debugLANEventLog, options: .atomic) }
         }
         #endif
         guard let message = try? LANTransferWire.message(event, type: LANTransferWire.eventType),
               let session, session.activationState == .activated else { return }
-        if event.kind != .progress { session.transferUserInfo(message) }
+        if event.kind != .progress {
+            session.transferUserInfo(message)
+            // The OS now owns a durable copy. Before activation the receiver
+            // keeps its protected outbox and replays it on the next wake.
+            lanReceiver.acknowledgeTerminalEvent(sessionID: event.sessionID, fileID: event.fileID)
+        }
         if session.isReachable { session.sendMessage(message, replyHandler: nil, errorHandler: nil) }
     }
 
@@ -382,6 +485,40 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
     }
 
     #if DEBUG
+    /// Observation only: the App passes actual SwiftUI scene phase changes here.
+    func recordLANScenePhase(_ phase: String) {
+        appendLANLifecycleEvent("scenePhase", phase: phase)
+    }
+
+    private func appendLANLifecycleEvent(_ event: String, phase: String? = nil,
+                                         sessionID: String? = nil, fileID: String? = nil) {
+        guard let debugLANLifecycleLog else { return }
+        var item: [String: Any] = ["event": event, "timestamp": Date().timeIntervalSince1970]
+        if let phase { item["phase"] = phase }
+        if let sessionID = sessionID ?? lanSessionID { item["sessionID"] = sessionID }
+        if let fileID { item["fileID"] = fileID }
+        debugLANLifecycleEvents.append(item)
+        if debugLANLifecycleEvents.count > 4_096 { debugLANLifecycleEvents.removeFirst(debugLANLifecycleEvents.count - 4_096) }
+        if let data = try? JSONSerialization.data(withJSONObject: debugLANLifecycleEvents) {
+            try? data.write(to: debugLANLifecycleLog, options: .atomic)
+        }
+    }
+
+    private func configureLANEventLog(reset: Bool) {
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let log = documents.appendingPathComponent("lan-test-events.json")
+        debugLANEventLog = log
+        if !reset, let data = try? Data(contentsOf: log), data.count <= 4_194_304,
+           let restored = try? JSONDecoder().decode([LANTransferEvent].self, from: data) {
+            debugLANEvents = restored
+            debugLANSessionID = restored.last?.sessionID
+        } else {
+            debugLANEvents = []
+            debugLANSessionID = nil
+            try? Data("[]".utf8).write(to: log, options: .atomic)
+        }
+    }
+
     /// Real HTTP downloads for simulator verification; test data stays in Documents.
     func startLANPreviewIfRequested() {
         guard !didStartLANPreview, lanAppForeground else { return }
@@ -390,12 +527,22 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
               let name = safeComponent(arguments[index + 1]) else { return }
         didStartLANPreview = true
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        debugLANEventLog = documents.appendingPathComponent("lan-test-events.json")
-        debugLANEvents = []
-        try? Data("[]".utf8).write(to: debugLANEventLog!, options: .atomic)
+        configureLANEventLog(reset: true)
         do {
             let offer = try JSONDecoder().decode(LANTransferOffer.self, from: Data(contentsOf: documents.appendingPathComponent(name)))
+            debugLANSessionID = offer.sessionID
             try receiveLANOffer(offer, allowLoopbackForTesting: true)
+            if let flag = arguments.firstIndex(of: "-lan-background-after"), arguments.indices.contains(flag + 1),
+               let seconds = Double(arguments[flag + 1]), seconds.isFinite, (0.1...60).contains(seconds) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
+                    guard let self, self.lanSessionID == offer.sessionID else { return }
+                    self.updateLANForeground(false)
+                    let marker = documents.appendingPathComponent("lan-test-background.json")
+                    if let data = try? JSONSerialization.data(withJSONObject: ["enteredBackground": true, "simulated": true, "sessionID": offer.sessionID]) {
+                        try? data.write(to: marker, options: .atomic)
+                    }
+                }
+            }
             if let flag = arguments.firstIndex(of: "-lan-cancel-after"), arguments.indices.contains(flag + 1),
                let seconds = Double(arguments[flag + 1]), seconds.isFinite, (0.1...60).contains(seconds) {
                 DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in

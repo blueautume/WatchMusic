@@ -15,9 +15,9 @@ final class LANHTTPServer {
     private let allowLoopbackForTesting: Bool
     private let lifetime: TimeInterval
 
-    init(allowLoopbackForTesting: Bool = false, sessionLifetime: TimeInterval = 900) {
+    init(allowLoopbackForTesting: Bool = false, sessionLifetime: TimeInterval = 3_600) {
         self.allowLoopbackForTesting = allowLoopbackForTesting
-        lifetime = min(900, max(1, sessionLifetime))
+        lifetime = min(3_600, max(1, sessionLifetime))
     }
 
     func start(sources: [LANTransferSource]) async throws -> LANTransferOffer {
@@ -389,7 +389,15 @@ private final class LANHTTPClient {
             armTimeout()
             connection.send(content: data, completion: .contentProcessed { [weak self] error in
                 guard let self, !self.isClosed else { return }
-                if error != nil { self.close() } else { self.sendNextChunk() }
+                if error != nil { self.close(); return }
+                #if DEBUG
+                if let text = ProcessInfo.processInfo.environment["LAN_PROBE_THROTTLE_BYTES_PER_SECOND"],
+                   let bytesPerSecond = Double(text), bytesPerSecond.isFinite, bytesPerSecond >= 32_768 {
+                    self.queue.asyncAfter(deadline: .now() + Double(data.count) / bytesPerSecond) { [weak self] in self?.sendNextChunk() }
+                    return
+                }
+                #endif
+                self.sendNextChunk()
             })
         } catch { close() }
     }

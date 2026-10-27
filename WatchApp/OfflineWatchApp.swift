@@ -11,10 +11,16 @@ struct OfflineWatchApp: App {
         WindowGroup {
             rootView.environmentObject(library).environmentObject(player)
                 .tint(AppPalette.accent).preferredColorScheme(.dark)
-                .onAppear { library.updateLANForeground(scenePhase != .background) }
+                .onAppear {
+                    library.updateLANForeground(scenePhase != .background)
+                    #if DEBUG
+                    library.recordLANScenePhase(scenePhase == .background ? "background" : (scenePhase == .active ? "active" : "inactive"))
+                    #endif
+                }
                 .onChange(of: scenePhase) { _, phase in
                     library.updateLANForeground(phase != .background)
                     #if DEBUG
+                    library.recordLANScenePhase(phase == .background ? "background" : (phase == .active ? "active" : "inactive"))
                     if phase == .active { library.startLANPreviewIfRequested() }
                     #endif
                 }
@@ -45,6 +51,7 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate {
     func handle(_ backgroundTasks: Set<WKRefreshBackgroundTask>) {
         for task in backgroundTasks {
             if let task = task as? WKWatchConnectivityRefreshBackgroundTask { WatchLibrary.shared.addBackgroundTask(task) }
+            else if let task = task as? WKURLSessionRefreshBackgroundTask { WatchLibrary.shared.addURLSessionBackgroundTask(task) }
             else { task.setTaskCompletedWithSnapshot(false) }
         }
     }
@@ -72,7 +79,7 @@ struct FolderListView: View {
                         } else {
                             ProgressView(value: Double(reception.completedBytes), total: Double(max(1, reception.totalBytes)))
                                 .tint(AppPalette.accent).accessibilityLabel("接收进度")
-                            Text("\(Int(Double(reception.completedBytes) / Double(max(1, reception.totalBytes)) * 100))% · 保持 App 打开")
+                            Text("\(Int(Double(reception.completedBytes) / Double(max(1, reception.totalBytes)) * 100))% · 可息屏接收")
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                     }.listRowBackground(AppPalette.surface)

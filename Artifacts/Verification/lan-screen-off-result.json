@@ -1,0 +1,67 @@
+{
+  "date": "2026-10-28",
+  "devices": [
+    "iPhone 15 Plus",
+    "Apple Watch Series 9"
+  ],
+  "transport": "LAN HTTP with native WatchConnectivity negotiation",
+  "debugSourceLimitBytesPerSecond": 32768,
+  "verifiedFiles": [
+    {
+      "file": "LANProbe.flac",
+      "bytes": 3973284,
+      "sha256": "36b864daec7a89426216545c6bb1fbe27e24283499fd5be3754a61f34baf23af"
+    },
+    {
+      "file": "LANProbe.mp3",
+      "bytes": 286919,
+      "sha256": "5b18c5a710d2ec67558b2cb8cfcc094b62c48ba255355d53a504de8599ac250b"
+    }
+  ],
+  "totalBytes": 4260203,
+  "comparison": "byte-for-byte and SHA-256 equal to source",
+  "phoneFinalReceipts": "both stored",
+  "screenOff": "user confirmed natural screen sleep and return to watch face; passive lifecycle only",
+  "observedLifecycle": [
+    {
+      "secondsAfterAccepted": 0.0,
+      "event": "offerAccepted"
+    },
+    {
+      "secondsAfterAccepted": 9.441,
+      "event": "stored",
+      "file": "LANProbe.mp3"
+    },
+    {
+      "secondsAfterAccepted": 23.842,
+      "event": "scenePhase",
+      "phase": "inactive"
+    },
+    {
+      "secondsAfterAccepted": 120.991,
+      "event": "scenePhase",
+      "phase": "active"
+    },
+    {
+      "secondsAfterAccepted": 136.549,
+      "event": "scenePhase",
+      "phase": "inactive"
+    },
+    {
+      "secondsAfterAccepted": 143.463,
+      "event": "stored",
+      "file": "LANProbe.flac"
+    },
+    {
+      "secondsAfterAccepted": 143.485,
+      "event": "sessionFinished"
+    }
+  ],
+  "scope": "physical scene phase was inactive at FLAC save; no physical WKURLSessionRefreshBackgroundTask wake was observed in this run",
+  "simulatorChecks": [
+    "business background transition keeps two system downloads alive",
+    "SIGKILL then relaunch restores two system downloads and saves matching files"
+  ],
+  "route": "watchOS-managed; no forced watch Wi-Fi claim",
+  "testAudioPlayback": "not played"
+}

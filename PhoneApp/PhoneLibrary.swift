@@ -85,7 +85,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
     private lazy var lanServer: LANHTTPServer = {
         let server = LANHTTPServer()
         server.onStopped = { [weak self] message in
-            self?.stopLANTransfers(message: message, state: .failed)
+            self?.stopLANTransfers(message: message, state: .failed, notifyWatch: false)
         }
         return server
     }()
@@ -410,7 +410,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
         lanProbeWaitTask?.cancel()
         lanProbeWaitTask = nil
         #endif
-        stopLANTransfers(message: "手机已进入后台，请保持两端 App 打开后重试。", state: .failed)
+        stopLANTransfers(message: "手机已进入后台，请保持手机 App 打开后重试。", state: .failed)
     }
 
     func stopLANTransfers() { stopLANTransfers(message: "已停止局域网传输", state: .cancelled) }
@@ -546,12 +546,12 @@ final class PhoneLibrary: NSObject, ObservableObject {
         }
     }
 
-    private func stopLANTransfers(message: String, state: TransferRecord.State) {
+    private func stopLANTransfers(message: String, state: TransferRecord.State, notifyWatch: Bool = true) {
         guard isLANActive || !lanRecordIDs.isEmpty else { return }
         let sessionID = activeLANSessionID
         let ids = lanRecordIDs
         closeLANSession()
-        if let sessionID { sendLANCommand(LANTransferCommand(sessionID: sessionID, kind: .stop, fileID: nil)) }
+        if notifyWatch, let sessionID { sendLANCommand(LANTransferCommand(sessionID: sessionID, kind: .stop, fileID: nil)) }
         for id in ids { updateTransfer(id: id, state: state, message: message, onlyIfPending: true) }
         lanStatus = message
         refreshProgress()

@@ -32,7 +32,11 @@ open OfflineWatchPlayerLab.xcodeproj
 
 `experiment/lan-transfer` 分支增加可选的“局域网”模式：手机临时提供文件下载服务，手表通过 HTTP 接收并校验后保存。普通传输仍为默认模式。[实验说明与测试步骤](LANTransferExperiment.md)
 
-使用 WatchConnectivity 的原生 `WCSessionFileTransfer.progress` 读取进度。已传大小由进度比例与源音频大小换算；速度与剩余时间由近期采样估算，界面以“约”标注。系统尚未开始发送、进度停滞或等待保存回执时不显示虚假的速度与时间。
+局域网模式需要手机 App 保持前台，发送期间会暂时保持手机屏幕常亮；手表在打开 App 并开始接收后可息屏。手表使用系统后台下载会话，并持久保存恢复清单、已下载文件和待发送回执，进程重新启动时重新关联系统任务。系统可能延迟进度和结果回调，因此不保证息屏期间实时更新速度或预计时间；手动强退 App 可能使系统取消后台传输。
+
+手机源服务有效期最长 1 小时。恢复所需令牌保存在手表受文件保护、排除备份的 Application Support 文件中，不进入正式日志或用户传输记录。系统后台会话可能跟随重定向，接收器在保存前严格校验最终端点和文件内容。
+
+普通模式使用 WatchConnectivity 的原生 `WCSessionFileTransfer.progress` 读取进度。已传大小由进度比例与源音频大小换算；局域网模式使用手表实际接收字节。速度与剩余时间由近期采样估算，界面以“约”标注。系统尚未开始发送、进度停滞或等待保存回执时不显示虚假的速度与时间。
 
 传输达到 100% 只表示发送阶段完成；只有手表完成文件校验、写入并返回成功回执后，手机才显示“已保存到手表”。系统负责后台调度，排队等待时间和手表保存时间不包含在发送剩余时间估算内。
 
@@ -60,4 +64,12 @@ Tests/run-player-integration-probe.sh ios SIMULATOR_UDID \
   "$PWD/Tests/Fixtures/EmbeddedResources.mp3" "$PWD/Tests/Fixtures/EmbeddedResources.flac"
 ```
 
-WatchConnectivity 文件传输、真实吞吐量/剩余时间、锁屏后台播放、耳机和双指互点操作需要配对真机验收。模拟器布局截图和本次验证记录见 `Verification.md`。
+手表 LAN 探针的后台与进程恢复场景：
+
+```sh
+python3 Tests/run-watch-lan-probe.py WATCH_SIMULATOR_UDID \
+  --app /absolute/path/to/Debug-watchsimulator/OfflineWatchPlayerLabWatch.app \
+  --background-only
+```
+
+该探针模拟业务层前后台状态，并用 `SIGKILL` 检查进程重建后的系统任务恢复；它不能证明硬件息屏场景已经通过。Debug 的 `-lan-record-lifecycle` 仅被动记录真实 scene phase、终态及后台唤醒，可用于配对真机验收。WatchConnectivity 文件传输、手表自然息屏接收、真实吞吐量/剩余时间、锁屏后台播放、耳机和双指互点操作需要配对真机验收。模拟器布局截图和本次验证记录见 `Verification.md`。

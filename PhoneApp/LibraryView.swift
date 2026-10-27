@@ -318,7 +318,7 @@ private struct TransfersView: View {
                         ForEach(TransferMethod.allCases) { method in Text(method.title).tag(method) }
                     }.pickerStyle(.segmented).disabled(library.isLANActive)
                     if library.transferMethod == .localNetwork {
-                        Text("同一局域网，保持两端 App 打开").font(.caption).foregroundStyle(AppPalette.textSecondary)
+                        Text("同一局域网，保持手机 App 打开；手表可息屏").font(.caption).foregroundStyle(AppPalette.textSecondary)
                         if library.isLANActive {
                             HStack(spacing: 10) {
                                 if library.isPreparingLAN { ProgressView().tint(AppPalette.accent) }
@@ -366,7 +366,7 @@ private struct TransferRow: View {
             if record.state == .queued {
                 if library.isPreparingLAN && record.lanSessionID == nil { return "正在准备…" }
                 if library.isAwaitingLANAcceptance { return "等待手表接收" }
-                return metrics?.isTransferring == true ? "传输中" : "等待手表下载"
+                return metrics?.isTransferring == true ? "传输中" : "等待手表后台处理"
             }
         }
         guard record.state == .queued else { return record.state.title }
