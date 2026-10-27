@@ -6,6 +6,7 @@ struct OfflineWatchApp: App {
     @WKApplicationDelegateAdaptor(WatchAppDelegate.self) private var appDelegate
     @StateObject private var library = WatchLibrary.shared
     @StateObject private var player: WatchPlayer
+    @StateObject private var display = WatchAppDisplay()
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
@@ -15,10 +16,12 @@ struct OfflineWatchApp: App {
     }
     var body: some Scene {
         WindowGroup {
-            rootView.environmentObject(library).environmentObject(player)
+            WatchAppSurface { rootView }
+                .environmentObject(library).environmentObject(player).environmentObject(display)
                 .tint(AppPalette.accent).preferredColorScheme(.dark)
                 .onAppear {
                     PlaybackControlCenter.shared.configure(player: player)
+                    display.start(foreground: scenePhase != .background)
                     library.updateLANForeground(scenePhase != .background)
                     #if DEBUG
                     library.recordLANScenePhase(scenePhase == .background ? "background" : (scenePhase == .active ? "active" : "inactive"))
@@ -26,6 +29,7 @@ struct OfflineWatchApp: App {
                 }
                 .onChange(of: scenePhase) { _, phase in
                     library.updateLANForeground(phase != .background)
+                    display.setForeground(phase != .background)
                     if phase == .active { PlaybackControlCenter.shared.connectionDidChange() }
                     #if DEBUG
                     library.recordLANScenePhase(phase == .background ? "background" : (phase == .active ? "active" : "inactive"))
@@ -50,8 +54,7 @@ struct OfflineWatchApp: App {
             }
         } else if ProcessInfo.processInfo.arguments.contains("-preview-lan-transfer") {
             LANTransferView(reception: LANReceptionStatus(fileName: "夜空中的旋律 · 夜跑歌单.flac", completedBytes: 6_300_000,
-                                                        totalBytes: 10_000_000, fileIndex: 2, fileCount: 12, isSaving: false), cancel: {},
-                            previewOrientation: ProcessInfo.processInfo.arguments.contains("-preview-landscape") ? .landscapeRight : .portrait)
+                                                        totalBytes: 10_000_000, fileIndex: 2, fileCount: 12, isSaving: false), cancel: {})
         } else { applicationView }
         #else
         applicationView
@@ -81,6 +84,7 @@ struct FolderListView: View {
     @ObservedObject private var remote = PlaybackControlCenter.shared
     @State private var newFolder = false
     @State private var libraryInfo = false
+    @State private var previewTrackList = false
     var body: some View {
         NavigationStack {
             List {
@@ -128,12 +132,20 @@ struct FolderListView: View {
                 }
                 Button { libraryInfo = true } label: { Label("存储与连接", systemImage: "internaldrive") }.font(.caption)
             }
-            .navigationTitle("随身音乐")
-            .onAppear { library.refresh() }
-            .sheet(isPresented: $newFolder) {
-                WatchNameEntry(title: "新建目录", initial: "", prompt: "目录名称") { name, done in library.createFolder(name, completion: done) }
+            .watchPage(title: "随身音乐")
+            .navigationDestination(isPresented: $previewTrackList) { WatchTrackListView(folderName: nil) }
+            .onAppear {
+                library.refresh()
+                #if DEBUG && targetEnvironment(simulator)
+                if ProcessInfo.processInfo.arguments.contains("-preview-track-list") { previewTrackList = true }
+                #endif
             }
-            .sheet(isPresented: $libraryInfo) { WatchLibraryInfoView() }
+            .sheet(isPresented: $newFolder) {
+                WatchAppSurface {
+                    WatchNameEntry(title: "新建目录", initial: "", prompt: "目录名称") { name, done in library.createFolder(name, completion: done) }
+                }
+            }
+            .sheet(isPresented: $libraryInfo) { WatchAppSurface { WatchLibraryInfoView() } }
         }
         .alert("音乐提示", isPresented: Binding(get: { library.errorMessage != nil || player.errorMessage != nil }, set: { if !$0 { library.errorMessage = nil; player.errorMessage = nil } })) {
             Button("好", role: .cancel) { library.errorMessage = nil; player.errorMessage = nil }
@@ -156,6 +168,7 @@ private struct WatchTrackListView: View {
     }
     var body: some View {
         List {
+            TextField("搜索歌曲", text: $search)
             if !tracks.isEmpty {
                 Button {
                     if let first = tracks.first { player.play(first, in: tracks); showingPlayer = true }
@@ -182,12 +195,13 @@ private struct WatchTrackListView: View {
                 Button { managingFolder = true } label: { Label("管理此目录", systemImage: "folder.badge.gearshape") }.font(.caption)
             }
         }
-        .navigationTitle(folderName ?? "全部歌曲")
-        .searchable(text: $search, prompt: "搜索歌曲")
+        .watchPage(title: folderName ?? "全部歌曲", action: { dismiss() }, symbol: "chevron.left")
         .navigationDestination(isPresented: $showingPlayer) { NowPlayingView() }
-        .sheet(item: $managingTrack) { item in WatchTrackActionsView(track: item.url).modifier(WatchOperationErrorAlert()) }
+        .sheet(item: $managingTrack) { item in WatchAppSurface { WatchTrackActionsView(track: item.url).modifier(WatchOperationErrorAlert()) } }
         .sheet(isPresented: $managingFolder) {
-            if let folderName { WatchFolderActionsView(folderName: folderName).modifier(WatchOperationErrorAlert()) }
+            WatchAppSurface {
+                if let folderName { WatchFolderActionsView(folderName: folderName).modifier(WatchOperationErrorAlert()) }
+            }
         }
         .onChange(of: library.folders.map(\.name)) { _, names in
             if let folderName, !names.contains(folderName) { dismiss() }
@@ -199,12 +213,14 @@ private struct WatchTrackListView: View {
 struct NowPlayingView: View {
     @EnvironmentObject private var player: WatchPlayer
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.watchContentViewport) private var viewport
     @State private var showingQueue = false
     @State private var showingSettings = false
 
     var body: some View {
         GeometryReader { geometry in
-            let compact = geometry.size.width < 180 || geometry.size.height < 185
+            let size = viewport?.size ?? geometry.size
+            let compact = size.width < 180 || size.height < 185
             let controlSize: CGFloat = compact ? 44 : 56
             VStack(spacing: compact ? 5 : 9) {
                 HStack(spacing: 0) {
@@ -257,11 +273,22 @@ struct NowPlayingView: View {
             .padding(.horizontal, 12)
             .padding(.top, 4)
             .padding(.bottom, compact ? 12 : 16)
+            .frame(width: size.width, height: size.height)
+            .position(viewport?.center(in: geometry) ?? CGPoint(x: size.width / 2, y: size.height / 2))
         }
+        // The app surface already reserves the clock/battery strip. A hidden
+        // navigation bar still contributes watchOS insets unless ignored here.
+        .ignoresSafeArea()
         .background(AppPalette.background)
         .navigationTitle("").toolbar(.hidden, for: .navigationBar)
-        .sheet(isPresented: $showingQueue) { WatchQueueDetailView().modifier(WatchOperationErrorAlert()) }
-        .sheet(isPresented: $showingSettings) { WatchPlaybackSettingsView().modifier(WatchOperationErrorAlert()) }
+        .sheet(isPresented: $showingQueue) { WatchAppSurface { WatchQueueDetailView().modifier(WatchOperationErrorAlert()) } }
+        .sheet(isPresented: $showingSettings) { WatchAppSurface { WatchPlaybackSettingsView().modifier(WatchOperationErrorAlert()) } }
+        #if DEBUG && targetEnvironment(simulator)
+        .onAppear {
+            if ProcessInfo.processInfo.arguments.contains("-preview-player-settings") { showingSettings = true }
+            if ProcessInfo.processInfo.arguments.contains("-preview-player-queue") { showingQueue = true }
+        }
+        #endif
     }
 
     @ViewBuilder private func nextButton(size: CGFloat, compact: Bool) -> some View {
@@ -296,8 +323,7 @@ private struct WatchQueueDetailView: View {
                     }
                 }
                 if player.queue.isEmpty { Text("还没有播放队列").font(.caption).foregroundStyle(.secondary) }
-            }.navigationTitle("播放队列")
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } } }
+            }.watchPage(title: "播放队列", action: { dismiss() })
                 .confirmationDialog("调整播放队列", isPresented: Binding(get: { selectedIndex != nil }, set: { if !$0 { selectedIndex = nil } }), titleVisibility: .visible) {
                     Button("移到最前") { if let index = selectedIndex, player.queue.indices.contains(index) { player.moveQueueItems(from: IndexSet(integer: index), to: 0) }; selectedIndex = nil }
                     Button("从队列移除", role: .destructive) { if let index = selectedIndex { player.removeQueueItem(at: index) }; selectedIndex = nil }
@@ -311,6 +337,7 @@ private struct WatchPlaybackSettingsView: View {
     @EnvironmentObject private var player: WatchPlayer
     @ObservedObject private var remote = PlaybackControlCenter.shared
     @Environment(\.dismiss) private var dismiss
+    @State private var previewRate = false
     var body: some View {
         NavigationStack {
             List {
@@ -319,10 +346,10 @@ private struct WatchPlaybackSettingsView: View {
                 }
                 Section("播放方式") {
                     Button(action: player.cycleMode) { Label(player.mode.title, systemImage: player.mode.symbol) }
-                    Picker("播放速度", selection: Binding(get: { player.playbackRate }, set: player.setRate)) {
-                        ForEach([0.75, 1.0, 1.25, 1.5, 2.0], id: \.self) { Text(String(format: "%g×", $0)).tag($0) }
+                    NavigationLink(destination: WatchPlaybackRateView()) {
+                        LabeledContent("播放速度", value: String(format: "%g×", player.playbackRate))
                     }
-                    NavigationLink(destination: WatchQueueDetailView()) { Label("播放队列", systemImage: "list.bullet") }
+                    NavigationLink(destination: WatchQueueDetailView().navigationBarBackButtonHidden()) { Label("播放队列", systemImage: "list.bullet") }
                 }
                 Section("音频输出") {
                     Button(action: player.requestAudioOutput) { Label("连接音频输出", systemImage: "headphones") }
@@ -339,9 +366,35 @@ private struct WatchPlaybackSettingsView: View {
                 Section {
                     Button("停止播放", role: .destructive) { player.stop(); dismiss() }
                 }
-            }.navigationTitle("播放设置")
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } } }
+            }.watchPage(title: "播放设置", action: { dismiss() })
+                .navigationDestination(isPresented: $previewRate) { WatchPlaybackRateView() }
+                #if DEBUG && targetEnvironment(simulator)
+                .onAppear { if ProcessInfo.processInfo.arguments.contains("-preview-playback-rate") { previewRate = true } }
+                #endif
         }
+    }
+}
+
+private struct WatchPlaybackRateView: View {
+    @EnvironmentObject private var player: WatchPlayer
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        List {
+            ForEach([0.75, 1.0, 1.25, 1.5, 2.0], id: \.self) { rate in
+                Button {
+                    player.setRate(rate)
+                    dismiss()
+                } label: {
+                    HStack {
+                        Text(String(format: "%g×", rate))
+                        Spacer()
+                        if player.playbackRate == rate { Image(systemName: "checkmark").foregroundStyle(AppPalette.accent) }
+                    }.frame(minHeight: 44)
+                }
+            }
+        }
+        .watchPage(title: "播放速度", action: { dismiss() }, symbol: "chevron.left")
     }
 }
 
@@ -371,18 +424,17 @@ private struct WatchTrackActionsView: View {
                 Button { renaming = true } label: { Label("重命名", systemImage: "pencil") }
                 Button { moving = true } label: { Label("移动到目录", systemImage: "folder") }
                 Button(role: .destructive) { deleting = true } label: { Label("删除歌曲", systemImage: "trash") }
-            }.navigationTitle("管理歌曲")
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } } }
+            }.watchPage(title: "管理歌曲", action: { dismiss() })
                 .sheet(isPresented: $renaming) {
-                    WatchNameEntry(title: "重命名歌曲", initial: track.deletingPathExtension().lastPathComponent, prompt: "歌曲名称") { value, done in
+                    WatchAppSurface { WatchNameEntry(title: "重命名歌曲", initial: track.deletingPathExtension().lastPathComponent, prompt: "歌曲名称") { value, done in
                         library.renameTrack(track, to: value) { success in
                             done(success)
                             if success { if !FileManager.default.fileExists(atPath: track.path) { player.removeFromQueue(track) }; dismiss() }
                         }
-                    }
+                    } }
                 }
                 .sheet(isPresented: $moving) {
-                    NavigationStack {
+                    WatchAppSurface { NavigationStack {
                         List {
                             ForEach(library.folders.filter { $0.name != track.deletingLastPathComponent().lastPathComponent }) { folder in
                                 Button(folder.name) {
@@ -392,9 +444,8 @@ private struct WatchTrackActionsView: View {
                                 }
                             }
                             if library.folders.count < 2 { Text("请先在音乐库中新建另一个目录。").font(.caption).foregroundStyle(.secondary) }
-                        }.navigationTitle("移动到")
-                            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { moving = false } } }
-                    }.modifier(WatchOperationErrorAlert())
+                        }.watchPage(title: "移动到", action: { moving = false })
+                    }.modifier(WatchOperationErrorAlert()) }
                 }
                 .confirmationDialog("从手表删除歌曲？", isPresented: $deleting, titleVisibility: .visible) {
                     Button("删除", role: .destructive) {
@@ -422,16 +473,15 @@ private struct WatchFolderActionsView: View {
                 Text(folderName).font(.headline)
                 Button("重命名目录") { renaming = true }
                 Button("删除目录", role: .destructive) { deleting = true }
-            }.navigationTitle("管理目录")
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } } }
+            }.watchPage(title: "管理目录", action: { dismiss() })
                 .sheet(isPresented: $renaming) {
-                    WatchNameEntry(title: "重命名目录", initial: folderName, prompt: "目录名称") { value, done in
+                    WatchAppSurface { WatchNameEntry(title: "重命名目录", initial: folderName, prompt: "目录名称") { value, done in
                         let affectedTracks = tracks
                         library.renameFolder(folderName, to: value) { success in
                             done(success)
                             if success { affectedTracks.filter { !FileManager.default.fileExists(atPath: $0.path) }.forEach { player.removeFromQueue($0) }; dismiss() }
                         }
-                    }
+                    } }
                 }
                 .confirmationDialog("删除此目录及全部歌曲？", isPresented: $deleting, titleVisibility: .visible) {
                     Button("删除目录", role: .destructive) {
@@ -463,8 +513,7 @@ private struct WatchNameEntry: View {
                     saving = true
                     save(value) { success in saving = false; if success { dismiss() } }
                 }.disabled(saving || value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }.navigationTitle(title)
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } } }
+            }.watchPage(title: title, action: { dismiss() })
                 .onAppear { value = initial }
                 .alert("无法保存", isPresented: Binding(get: { library.errorMessage != nil }, set: { if !$0 { library.errorMessage = nil } })) {
                     Button("好", role: .cancel) { library.errorMessage = nil }
@@ -488,8 +537,7 @@ private struct WatchLibraryInfoView: View {
                     Label(library.connectionStatus, systemImage: "iphone.and.arrow.forward").font(.caption)
                     if let message = library.lastTransferMessage { Text(message).font(.caption2).foregroundStyle(AppPalette.accent) }
                 }
-            }.navigationTitle("存储与连接")
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } } }
+            }.watchPage(title: "存储与连接", action: { dismiss() })
         }
     }
 }

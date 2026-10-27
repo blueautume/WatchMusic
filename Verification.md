@@ -96,7 +96,7 @@
 - 最终两端 Debug / Release 模拟器完整构建、真机签名构建通过。安装前确认手机没有未完成传输；最终构建已安装到配对 iPhone 和 Apple Watch，均以普通参数启动。
 - 已检查[音乐多选](Artifacts/Previews/phone-music-multiselect.png)、[传输多选](Artifacts/Previews/phone-transfer-multiselect.png)、[暂停列表](Artifacts/Previews/phone-transfers-paused.png)、[手机遥控](Artifacts/Previews/phone-remote-controls.png)与[40mm 手表遥控](Artifacts/Previews/watch-remote-controls-40mm.png)。截图使用仅 Debug 模拟器的布局夹具；遥控状态与传输指标用于布局检查，不作为真实连接或吞吐量证据。
 
-配对真机上的双向点按遥控、真实声音输出及断连重连仍待用户验收；新版已经安装，未自动播放用户音乐。局域网源服务仍需手机 App 保持前台，暂停不延长一小时的源会话有效期。
+用户已在配对真机确认两端播放/暂停和切歌互控正常；断连重连仍待专项真机验收。测试程序未自动播放用户音乐。局域网源服务仍需手机 App 保持前台，暂停不延长一小时的源会话有效期。
 
 ## 逐首串行传输（2026-10-28）
 
@@ -107,3 +107,16 @@
 - Debug / Release 模拟器完整构建和真机签名构建通过。安装前确认没有未完成传输，最终构建已安装到配对手机和手表。截图布局未改变；串行结论来自真实下载请求和保存结果，未使用界面夹具证明。
 
 后台系统仍可能延迟当前项完成回调及下一首启动，手机文件源仍需保持前台且会话最长一小时。上述串行请求证据来自模拟器，未进行新的真机批量传输测试。
+
+## 全 App 充电旋转与顶部电量（2026-10-28）
+
+- 显示状态由整个 Watch App 共享，音乐库、歌曲、播放器、传输页及管理弹出页使用同一方向。充电及满电接电时按重力自动四向旋转，拔电固定佩戴竖屏；移除手动旋转按钮。平放或运动数据不可用时保留最近稳定方向，后台停止运动采样。
+- 左上角显示本机电量百分比和充电标记，与系统时间保持同一物理顶部区域，不随内容旋转；弹出页继承同一顶部位置。可见时约每三秒读取电量，回到前台立即刷新；未知电量显示 `—%`。仅 Debug 模拟器支持固定电量、充电与方向的布局参数，真机普通启动读取实际设备。
+- 应用自有页头提供 44pt 返回/关闭操作，避开电量行；搜索和原有倍速选项继续保留。导航、表单和选择状态不因方向切换重建。系统键盘、音频输出选择和系统确认弹窗仍沿用 watchOS 呈现。
+- 四向重力、防抖、平放、无效输入和左右表冠修正规则的 145 个断言通过。最终 Debug / Release 模拟器完整构建、真机签名构建及 Watch Info.plist 校验通过。
+- 安装前确认没有未完成传输，最终构建已安装到配对手机和手表，并以普通参数启动；模拟电量、充电和方向参数未用于真机。
+- 最终界面容器下的真实 watchOS URLSession 探针通过：MP3 与 FLAC 正常下载、摘要校验并保存，终态回执正常，测试音频未播放且测试目录已清理。
+- 已检查 40mm 的[音乐库竖屏](Artifacts/Previews/watch-battery-library-portrait-40mm.png)、[音乐库横屏](Artifacts/Previews/watch-battery-library-landscape-40mm.png)、[播放器竖屏](Artifacts/Previews/watch-battery-player-portrait-40mm.png)、[播放器横屏](Artifacts/Previews/watch-battery-player-landscape-40mm.png)、[传输横屏](Artifacts/Previews/watch-battery-transfer-landscape-40mm.png)、[设置竖屏](Artifacts/Previews/watch-battery-settings-portrait-40mm.png)与[设置横屏](Artifacts/Previews/watch-battery-settings-landscape-40mm.png)，另检查倒置设置页、歌曲搜索和倍速页面，返回/关闭操作不占用电量行。
+- 49mm 的[充电横屏播放器](Artifacts/Previews/watch-battery-player-landscape-49mm.png)和[非充电竖屏传输页](Artifacts/Previews/watch-battery-transfer-portrait-49mm.png)已检查；非充电即使带横屏布局参数仍保持竖屏，未知电量显示正常。截图均为模拟器布局夹具，不作为实际充电或运动传感器验收的证据。
+
+实际充电器上的四向旋转、拔电恢复与真实电量变化仍需真机操作验收；本轮未自动播放或发送用户歌曲。
