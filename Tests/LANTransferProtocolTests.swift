@@ -62,6 +62,49 @@ struct LANTransferProtocolTests {
         try expect(decoded?.files == offer().files && decoded?.token == token, "manifest wire round trip")
         try expect(LANTransferWire.decode(LANTransferOffer.self, from: message, type: LANTransferWire.eventType) == nil, "message type cannot be confused")
         try expect(LANTransferWire.decode(LANTransferOffer.self, from: ["type": LANTransferWire.offerType, "payload": Data(repeating: 0, count: 1_048_577)], type: LANTransferWire.offerType) == nil, "wire payload bounded")
+        var pausedOffer = offer()
+        pausedOffer.pausedFileIDs = [fileID]
+        try expect(!rejected(pausedOffer), "preparation pause may reference an offered file")
+        pausedOffer.pausedFileIDs = [UUID().uuidString]
+        try expect(rejected(pausedOffer), "preparation pause cannot reference another file")
+        pausedOffer.pausedFileIDs = [fileID, fileID]
+        try expect(rejected(pausedOffer), "duplicate paused intents rejected")
+        try expect(decoded?.pausedFileIDs == nil, "legacy manifests decode without pause metadata")
+        let command = LANTransferCommand(sessionID: sessionID, kind: .pause, fileID: nil,
+                                          fileIDs: [fileID], controlRevision: 42)
+        let controlMessage = try LANTransferWire.message(command, type: LANTransferWire.commandType)
+        let decodedCommand = LANTransferWire.decode(LANTransferCommand.self, from: controlMessage, type: LANTransferWire.commandType)
+        try expect(decodedCommand?.kind == .pause && decodedCommand?.fileIDs == [fileID] && decodedCommand?.controlRevision == 42,
+                   "batch pause preserves identities and monotonic revision on the wire")
+        let legacyCancel = try JSONDecoder().decode(LANTransferCommand.self, from: Data("{\"sessionID\":\"\(sessionID)\",\"kind\":\"cancel\",\"fileID\":\"\(fileID)\"}".utf8))
+        try expect(legacyCancel.kind == .cancel && legacyCancel.fileIDs == nil, "legacy cancellation remains wire compatible")
+        let pausedEvent = LANTransferEvent(sessionID: sessionID, fileID: fileID, kind: .paused,
+                                            completedBytes: 35, totalBytes: 100, message: nil, controlRevision: 42)
+        let reply = try LANTransferWire.message(LANTransferControlReply(events: [pausedEvent]), type: LANTransferWire.controlReplyType)
+        let decodedReply = LANTransferWire.decode(LANTransferControlReply.self, from: reply, type: LANTransferWire.controlReplyType)
+        try expect(decodedReply?.events.first?.controlRevision == 42 && decodedReply?.events.first?.kind == .paused,
+                   "control acknowledgement is separate from terminal receipts")
+        try expect(!LANTransferEvent.Kind.paused.isTerminal && !LANTransferEvent.Kind.resumed.isTerminal,
+                   "pause and start are not terminal states")
+        try expect(LANTransferValidation.isValidDownloadResponse(statusCode: 200, contentRange: nil, expectedByteCount: 100),
+                   "ordinary whole-file response accepted")
+        for header in ["bytes 0-99/100", "bytes 35-99/100", "bytes 99-99/100", "BYTES 0-99/100"] {
+            try expect(LANTransferValidation.isValidDownloadResponse(statusCode: 206, contentRange: header, expectedByteCount: 100),
+                       "resume response may end the complete offered resource: \(header)")
+        }
+        for header in ["", "bytes */100", "bytes 0-99/*", "bytes 0-99/101", "bytes 0-98/100", "bytes 100-99/100",
+                       "bytes -1-99/100", "bytes +0-99/100", "bytes ０-99/100", "bytes 0-99/100, bytes 0-99/100",
+                       "bytes 0-99/100/100", "bytes  0-99/100", "bytes\t0-99/100", "items 0-99/100",
+                       "bytes 0-9223372036854775808/100"] {
+            try expect(!LANTransferValidation.isValidDownloadResponse(statusCode: 206, contentRange: header, expectedByteCount: 100),
+                       "malformed or mismatched resume response rejected: \(header)")
+        }
+        try expect(!LANTransferValidation.isValidDownloadResponse(statusCode: 206, contentRange: nil, expectedByteCount: 100),
+                   "partial response must identify a range")
+        try expect(!LANTransferValidation.isValidDownloadResponse(statusCode: 416, contentRange: "bytes 0-99/100", expectedByteCount: 100),
+                   "range failure cannot be treated as a successful response")
+        try expect(!LANTransferValidation.isValidDownloadResponse(statusCode: 200, contentRange: nil, expectedByteCount: 0),
+                   "zero-sized offered resource cannot be accepted")
         let temp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: temp) }
         try Data("abc".utf8).write(to: temp)

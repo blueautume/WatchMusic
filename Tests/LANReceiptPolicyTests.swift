@@ -34,12 +34,12 @@ struct LANReceiptPolicyTests {
     }
 
     static func main() throws {
-        for state in [TransferRecordState.queued, .awaitingReceipt, .failed, .cancelled] {
+        for state in [TransferRecordState.queued, .paused, .awaitingReceipt, .failed, .cancelled] {
             expect(accepts(event(), state: state), "Committed save fact wins for \(state.rawValue)")
         }
         expect(!accepts(event(), state: .stored), "Duplicate stored receipt is idempotent")
         expect(!accepts(event(), state: .outdated), "Old save cannot certify changed content")
-        for kind in [LANTransferEvent.Kind.progress, .failed, .cancelled] {
+        for kind in [LANTransferEvent.Kind.progress, .paused, .resumed, .failed, .cancelled] {
             expect(!accepts(event(kind: kind), state: .cancelled), "Only stored can correct cancellation")
         }
         expect(!accepts(event(file: UUID().uuidString), state: .cancelled), "Another file cannot correct cancellation")
@@ -61,7 +61,7 @@ struct LANReceiptPolicyTests {
         expect(!confirms(event(kind: .progress, completed: -1)), "Negative progress cannot confirm acceptance")
         expect(!confirms(event(kind: .progress), state: .cancelled), "Stale progress cannot revive cancellation")
 
-        for state in [TransferRecordState.queued, .awaitingReceipt, .stored, .failed, .cancelled, .outdated] {
+        for state in [TransferRecordState.queued, .paused, .awaitingReceipt, .stored, .failed, .cancelled, .outdated] {
             let decoded = try JSONDecoder().decode(TransferRecordState.self, from: Data(("\"" + state.rawValue + "\"").utf8))
             expect(decoded == state, "Existing persisted state raw values remain compatible")
         }

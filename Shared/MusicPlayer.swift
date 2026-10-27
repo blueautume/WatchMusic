@@ -174,8 +174,14 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
     }
 
     func previous() {
-        guard let currentURL, let index = queue.firstIndex(of: currentURL) else { return }
         if elapsed > 3 { seek(to: 0); return }
+        previousTrack()
+    }
+
+    /// A counterpart's previous-track button always requests an actual item,
+    /// without exposing or synchronizing the current playback position.
+    func previousTrack() {
+        guard let currentURL, let index = queue.firstIndex(of: currentURL) else { return }
         if mode == .shuffle, let previous = history.popLast(), queue.contains(previous) {
             startPlayback(previous, in: queue, recordHistory: false)
         } else if let index = PlaybackQueueLogic.previousIndex(current: index, count: queue.count) {

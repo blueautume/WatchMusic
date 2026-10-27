@@ -78,7 +78,7 @@ struct TransferListOrderingTests {
         expect(TransferListOrdering.activeTransfers(confirmations).map(\.id) == ["confirm-old", "confirm-new"],
                "Save confirmations retain FIFO order")
 
-        for state in [TransferRecordState.queued, .awaitingReceipt, .stored, .failed, .cancelled, .outdated] {
+        for state in [TransferRecordState.queued, .paused, .awaitingReceipt, .stored, .failed, .cancelled, .outdated] {
             let issue = state == .failed || state == .cancelled || state == .outdated
             expect(TransferListOrdering.canClearUnfinished(state, isLive: false) == issue,
                    "Issue cleanup preserves pending work and stored history")
@@ -109,6 +109,10 @@ struct TransferListOrderingTests {
         expect(TransferListOrdering.activeTransfers([Record("stored", .stored, 0)]).isEmpty,
                "A fully stored history has no ongoing entries")
         expect(TransferListOrdering.storedTransfers([] as [Record]).isEmpty, "An empty history has no completed entries")
+        let pauses = [Record("paused", .paused, 0), Record("failed", .failed, 10), Record("waiting", .queued, 30), Record("moving", .queued, 40)]
+        expect(TransferListOrdering.activeTransfers(pauses, metrics: ["paused": metrics(9_000, transferring: true), "moving": metrics(1)]).map(\.id) == ["moving", "waiting", "paused", "failed"],
+               "Explicitly paused work stays after waiting work even if stale active metrics remain")
+        expect(TransferRecordState.paused.isPending, "Paused work remains pending and keeps its source protected")
         print("PASS: \(assertions) transfer list ordering and grouping assertions")
     }
 }

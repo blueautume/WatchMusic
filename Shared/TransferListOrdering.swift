@@ -25,7 +25,7 @@ enum TransferListOrdering {
             if left != right { return left < right }
             if lhs.createdAt != rhs.createdAt {
                 // Pending work is FIFO; terminal issues show the latest first.
-                return left == 3 ? lhs.createdAt > rhs.createdAt : lhs.createdAt < rhs.createdAt
+                return left == 4 ? lhs.createdAt > rhs.createdAt : lhs.createdAt < rhs.createdAt
             }
             return lhs.id < rhs.id
         }
@@ -48,8 +48,9 @@ enum TransferListOrdering {
             // A paused transfer keeps its place even after rate estimates stale.
             return received > 0 || metrics[record.id]?.isTransferring == true ? 0 : 2
         case .awaitingReceipt: return 1
-        case .failed, .cancelled, .outdated: return 3
-        case .stored: return 4
+        case .paused: return 3
+        case .failed, .cancelled, .outdated: return 4
+        case .stored: return 5
         }
     }
 }

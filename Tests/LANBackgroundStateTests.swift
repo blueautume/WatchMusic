@@ -156,6 +156,43 @@ struct LANBackgroundStateTests {
         try expect(!barrier.canComplete, "drain waits for asynchronous daemon task reconciliation")
         barrier.finishReconciliation()
         try expect(barrier.canComplete, "reconciled missing tasks permit native completion")
+
+        // Pause is durable transport state, not a terminal success/failure.
+        var pauseOffer = offer()
+        pauseOffer.pausedFileIDs = [fileA.id]
+        var paused = LANBackgroundTransferState(offer: pauseOffer, acceptedAt: accepted)
+        try expect(paused.items[fileA.id]?.phase == .paused, "preparation pause starts with a suspended intent")
+        try expect(paused.pendingFileIDs.contains(fileA.id), "paused paths remain reserved and unfinished")
+        paused.items[fileA.id]?.taskIdentifier = 81
+        try expect(paused.recordProgress(fileID: fileA.id, bytes: 35), "in-flight bytes are counted after a pause request")
+        try expect(paused.items[fileA.id]?.phase == .paused, "late bytes cannot silently resume a paused task")
+        try expect(paused.setPaused(fileID: fileA.id, paused: false, revision: 1), "resume changes paused intent to downloading")
+        try expect(paused.items[fileA.id]?.receivedBytes == 35, "resume preserves native partial progress")
+        try expect(paused.setPaused(fileID: fileA.id, paused: true, revision: 2), "a newer pause is accepted")
+        try expect(!paused.setPaused(fileID: fileA.id, paused: true, revision: 2), "duplicate controls cannot add another native suspension")
+        try expect(!paused.setPaused(fileID: fileA.id, paused: false, revision: 1), "delayed resume cannot overtake a newer pause")
+        let pausedCache = UUID().uuidString + ".download"
+        try expect(paused.recordDownloaded(fileID: fileA.id, stagingName: pausedCache), "completion racing pause is moved into durable cache")
+        try expect(paused.items[fileA.id]?.phase == .paused, "complete bytes remain paused until explicit resume")
+        try expect(!paused.recordTerminal(fileID: fileA.id, kind: .stored), "paused cached data cannot publish a saved file")
+        paused = try roundTrip(paused)
+        try paused.validateForRestoration(allowLoopback: false)
+        try expect(paused.items[fileA.id]?.stagingName == pausedCache && paused.items[fileA.id]?.controlRevision == 2,
+                   "paused cache and control ordering survive process restart")
+        try expect(paused.setPaused(fileID: fileA.id, paused: false, revision: 3), "explicit start releases cached bytes for validation")
+        try expect(paused.items[fileA.id]?.phase == .validating && paused.items[fileA.id]?.taskIdentifier == nil,
+                   "cached resume validates locally instead of issuing another download")
+        try expect(!paused.setPaused(fileID: fileA.id, paused: true, revision: 4), "saving already in flight is not falsely reported paused")
+        try expect(paused.recordTerminal(fileID: fileA.id, kind: .stored), "released cache may finish storage")
+        try expect(!paused.setPaused(fileID: fileA.id, paused: true, revision: 5), "late pause cannot resurrect a stored task")
+        var pauseOutbox = LANBackgroundReceiptOutbox()
+        pauseOutbox.insert(receipt(kind: .paused, bytes: 35))
+        pauseOutbox.insert(receipt(kind: .resumed, bytes: 35))
+        try expect(pauseOutbox.count == 0, "pause/resume states are never persisted as terminal receipts")
+        var cancellable = initial()
+        try expect(cancellable.setPaused(fileID: fileA.id, paused: true, revision: 1), "queued task can pause before download")
+        try expect(cancellable.recordTerminal(fileID: fileA.id, kind: .cancelled), "clear can cancel a paused task")
+        try expect(!cancellable.setPaused(fileID: fileA.id, paused: false, revision: 2), "late start cannot resurrect a cleared task")
         print("PASS: \(assertions) LAN background state assertions")
     }
 }

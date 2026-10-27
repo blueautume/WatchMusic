@@ -182,8 +182,8 @@ struct LANTransferView: View {
     }
 
     private var percentage: some View {
-        Text(reception.isSaving ? "保存中" : "\(Int(progress * 100))%")
-            .font(.system(size: reception.isSaving ? 24 : 34, weight: .semibold, design: .rounded))
+        Text(reception.isPaused ? "已暂停" : (reception.isSaving ? "保存中" : "\(Int(progress * 100))%"))
+            .font(.system(size: reception.isSaving || reception.isPaused ? 24 : 34, weight: .semibold, design: .rounded))
             .monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
             .foregroundStyle(AppPalette.accent)
     }

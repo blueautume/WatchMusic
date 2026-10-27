@@ -273,6 +273,7 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
     func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
         DispatchQueue.main.async {
             self.activationFinished = true; self.updateConnectionStatus()
+            PlaybackControlCenter.shared.connectionDidChange()
             if let error { self.lastTransferMessage = "手机连接暂不可用：\(error.localizedDescription)" }
             if activationState == .activated { self.lanReceiver.replayTerminalEvents() }
             self.completeBackgroundTasksIfPossible()
@@ -281,6 +282,7 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
     func sessionReachabilityDidChange(_ session: WCSession) {
         DispatchQueue.main.async {
             self.updateConnectionStatus()
+            PlaybackControlCenter.shared.connectionDidChange()
             if session.activationState == .activated { self.lanReceiver.replayTerminalEvents() }
         }
     }
@@ -366,18 +368,24 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
 
     func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
         DispatchQueue.main.async {
+            if PlaybackControlCenter.shared.handle(message, reply: replyHandler) { return }
             if let offer = LANTransferWire.decode(LANTransferOffer.self, from: message, type: LANTransferWire.offerType) {
                 do { try self.receiveLANOffer(offer); replyHandler(["accepted": true]) }
                 catch { replyHandler(["accepted": false, "message": error.localizedDescription]) }
             } else if let command = LANTransferWire.decode(LANTransferCommand.self, from: message, type: LANTransferWire.commandType) {
-                self.lanReceiver.handle(command); replyHandler(["accepted": true])
+                self.lanReceiver.handle(command) { events in
+                    replyHandler((try? LANTransferWire.message(LANTransferControlReply(events: events), type: LANTransferWire.controlReplyType)) ?? ["accepted": false])
+                }
             } else { replyHandler(["accepted": false, "message": "无法识别局域网传输信息。 "]) }
         }
     }
 
     func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
-        guard let command = LANTransferWire.decode(LANTransferCommand.self, from: message, type: LANTransferWire.commandType) else { return }
-        lanReceiver.handle(command)
+        DispatchQueue.main.async {
+            if PlaybackControlCenter.shared.handle(message) { return }
+            guard let command = LANTransferWire.decode(LANTransferCommand.self, from: message, type: LANTransferWire.commandType) else { return }
+            self.lanReceiver.handle(command)
+        }
     }
 
     func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
@@ -387,8 +395,8 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
 
     private func reportLANEvent(_ event: LANTransferEvent) {
         let belongsToCurrentSession = event.sessionID == lanSessionID
-        guard event.kind != .progress || belongsToCurrentSession else { return }
-        if event.kind != .progress, belongsToCurrentSession, let file = lanFiles[event.fileID] {
+        guard event.kind.isTerminal || belongsToCurrentSession else { return }
+        if event.kind.isTerminal, belongsToCurrentSession, let file = lanFiles[event.fileID] {
             receiveLock.lock(); lanReservedPaths.remove((file.folder + "/" + file.fileName).precomposedStringWithCanonicalMapping.lowercased()); receiveLock.unlock()
             if event.kind == .stored {
                 lastTransferMessage = "已收到：\((file.fileName as NSString).deletingPathExtension)"
@@ -403,7 +411,7 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
             refresh()
         }
         #if DEBUG
-        if event.kind != .progress {
+        if event.kind.isTerminal {
             appendLANLifecycleEvent(event.kind.rawValue, sessionID: event.sessionID, fileID: event.fileID)
         }
         if let debugLANEventLog, event.sessionID == debugLANSessionID {
@@ -413,7 +421,7 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
         #endif
         guard let message = try? LANTransferWire.message(event, type: LANTransferWire.eventType),
               let session, session.activationState == .activated else { return }
-        if event.kind != .progress {
+        if event.kind.isTerminal {
             session.transferUserInfo(message)
             // The OS now owns a durable copy. Before activation the receiver
             // keeps its protected outbox and replays it on the next wake.
@@ -548,6 +556,17 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
                 DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
                     guard self?.lanSessionID == offer.sessionID else { return }
                     self?.cancelLANTransfer()
+                }
+            }
+            for (option, kind, revision) in [("-lan-pause-after", LANTransferCommand.Kind.pause, 1),
+                                              ("-lan-resume-after", LANTransferCommand.Kind.resume, 2)] {
+                if let flag = arguments.firstIndex(of: option), arguments.indices.contains(flag + 1),
+                   let seconds = Double(arguments[flag + 1]), seconds.isFinite, (0.1...60).contains(seconds) {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
+                        guard let self, self.lanSessionID == offer.sessionID else { return }
+                        self.lanReceiver.handle(LANTransferCommand(sessionID: offer.sessionID, kind: kind,
+                                                                  fileID: nil, controlRevision: Int64(revision)))
+                    }
                 }
             }
         } catch { errorMessage = error.localizedDescription }

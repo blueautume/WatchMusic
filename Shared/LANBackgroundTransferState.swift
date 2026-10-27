@@ -4,8 +4,8 @@ import Foundation
 /// download files. Completed data stays recoverable until its save is recorded.
 struct LANBackgroundTransferState: Codable {
     enum Phase: String, Codable {
-        case queued, downloading, validating, stored, failed, cancelled
-        var isPending: Bool { self == .queued || self == .downloading || self == .validating }
+        case queued, downloading, paused, validating, stored, failed, cancelled
+        var isPending: Bool { self == .queued || self == .downloading || self == .paused || self == .validating }
     }
 
     struct Item: Codable {
@@ -14,6 +14,7 @@ struct LANBackgroundTransferState: Codable {
         var taskIdentifier: Int?
         var stagingName: String?
         var addressIndex = 0
+        var controlRevision: Int64? = nil
     }
 
     let offer: LANTransferOffer
@@ -25,7 +26,12 @@ struct LANBackgroundTransferState: Codable {
         self.offer = offer
         self.acceptedAt = acceptedAt
         self.allowsLoopbackForTesting = allowsLoopbackForTesting
-        items = Dictionary(uniqueKeysWithValues: offer.files.map { ($0.id, Item()) })
+        let paused = Set(offer.pausedFileIDs ?? [])
+        items = Dictionary(uniqueKeysWithValues: offer.files.map { file in
+            var item = Item()
+            if paused.contains(file.id) { item.phase = .paused }
+            return (file.id, item)
+        })
     }
 
     var pendingFileIDs: Set<String> { Set(items.filter { $0.value.phase.isPending }.map(\.key)) }
@@ -41,9 +47,10 @@ struct LANBackgroundTransferState: Codable {
         for file in offer.files {
             guard let item = items[file.id], item.receivedBytes >= 0, item.receivedBytes <= file.byteCount,
                   item.addressIndex >= 0, item.addressIndex < offer.baseURLs.count,
-                  item.taskIdentifier.map({ $0 > 0 }) ?? true else { throw invalidState() }
+                  item.taskIdentifier.map({ $0 > 0 }) ?? true,
+                  item.controlRevision.map({ $0 >= 0 }) ?? true else { throw invalidState() }
             if let name = item.stagingName {
-                guard Self.isStagingName(name), item.phase == .validating,
+                guard Self.isStagingName(name), item.phase == .validating || item.phase == .paused,
                       item.taskIdentifier == nil, item.receivedBytes == file.byteCount else { throw invalidState() }
             } else if item.phase == .validating { throw invalidState() }
             if !item.phase.isPending, item.taskIdentifier != nil { throw invalidState() }
@@ -69,19 +76,19 @@ struct LANBackgroundTransferState: Codable {
 
     @discardableResult mutating func recordProgress(fileID: String, bytes: Int64) -> Bool {
         guard let file = file(for: fileID), var item = items[fileID],
-              item.phase == .queued || item.phase == .downloading,
+              item.phase == .queued || item.phase == .downloading || item.phase == .paused,
               bytes >= item.receivedBytes, bytes <= file.byteCount else { return false }
         item.receivedBytes = bytes
-        item.phase = .downloading
+        if item.phase != .paused { item.phase = .downloading }
         items[fileID] = item
         return true
     }
 
     @discardableResult mutating func recordDownloaded(fileID: String, stagingName: String) -> Bool {
         guard let file = file(for: fileID), var item = items[fileID],
-              item.phase == .queued || item.phase == .downloading,
+              item.phase == .queued || item.phase == .downloading || item.phase == .paused,
               Self.isStagingName(stagingName) else { return false }
-        item.phase = .validating
+        if item.phase != .paused { item.phase = .validating }
         item.receivedBytes = file.byteCount
         item.taskIdentifier = nil
         item.stagingName = stagingName
@@ -102,7 +109,7 @@ struct LANBackgroundTransferState: Codable {
             item.phase = .stored
         case .failed: item.phase = .failed
         case .cancelled: item.phase = .cancelled
-        case .progress: return false
+        case .progress, .paused, .resumed: return false
         }
         item.receivedBytes = event.completedBytes
         item.taskIdentifier = nil
@@ -120,10 +127,22 @@ struct LANBackgroundTransferState: Codable {
             item.receivedBytes = file.byteCount
         case .failed: item.phase = .failed
         case .cancelled: item.phase = .cancelled
-        case .progress: return false
+        case .progress, .paused, .resumed: return false
         }
         item.taskIdentifier = nil
         item.stagingName = nil
+        items[fileID] = item
+        return true
+    }
+
+    /// Revisions make duplicated/reordered WatchConnectivity controls idempotent.
+    /// Validation already in flight is a save operation, not pausable network work.
+    @discardableResult mutating func setPaused(fileID: String, paused: Bool, revision: Int64) -> Bool {
+        guard revision > 0, var item = items[fileID], item.phase.isPending,
+              item.phase != .validating, revision > (item.controlRevision ?? 0) else { return false }
+        item.controlRevision = revision
+        if paused { item.phase = .paused }
+        else { item.phase = item.stagingName == nil ? .downloading : .validating }
         items[fileID] = item
         return true
     }
@@ -148,7 +167,7 @@ struct LANBackgroundReceiptOutbox: Codable {
         receipts = decoded.filter { key, event in
             key == Self.key(sessionID: event.sessionID, fileID: event.fileID) &&
             UUID(uuidString: event.sessionID) != nil && UUID(uuidString: event.fileID) != nil &&
-            event.kind != .progress && event.totalBytes > 0 &&
+            event.kind.isTerminal && event.totalBytes > 0 &&
             event.completedBytes >= 0 && event.completedBytes <= event.totalBytes &&
             (event.kind != .stored || event.completedBytes == event.totalBytes)
         }
@@ -160,7 +179,7 @@ struct LANBackgroundReceiptOutbox: Codable {
     }
 
     mutating func insert(_ event: LANTransferEvent) {
-        guard event.kind != .progress else { return }
+        guard event.kind.isTerminal else { return }
         receipts[Self.key(sessionID: event.sessionID, fileID: event.fileID)] = event
     }
 

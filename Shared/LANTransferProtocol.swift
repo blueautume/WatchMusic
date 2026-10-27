@@ -23,29 +23,41 @@ struct LANTransferOffer: Codable {
     let baseURLs: [URL]
     let expiresAt: Date
     let files: [LANTransferFile]
+    var pausedFileIDs: [String]? = nil
 }
 
 struct LANTransferEvent: Codable {
-    enum Kind: String, Codable { case progress, stored, failed, cancelled }
+    enum Kind: String, Codable {
+        case progress, paused, resumed, stored, failed, cancelled
+        var isTerminal: Bool { self == .stored || self == .failed || self == .cancelled }
+    }
     let sessionID: String
     let fileID: String
     let kind: Kind
     let completedBytes: Int64
     let totalBytes: Int64
     let message: String?
+    var controlRevision: Int64? = nil
 }
 
 struct LANTransferCommand: Codable {
-    enum Kind: String, Codable { case cancel, stop }
+    enum Kind: String, Codable { case cancel, stop, pause, resume, status }
     let sessionID: String
     let kind: Kind
     let fileID: String?
+    var fileIDs: [String]? = nil
+    var controlRevision: Int64? = nil
+}
+
+struct LANTransferControlReply: Codable {
+    let events: [LANTransferEvent]
 }
 
 enum LANTransferWire {
     static let offerType = "lan.offer.v1"
     static let eventType = "lan.event.v1"
     static let commandType = "lan.command.v1"
+    static let controlReplyType = "lan.control-reply.v1"
 
     static func message<T: Encodable>(_ payload: T, type: String) throws -> [String: Any] {
         ["type": type, "payload": try JSONEncoder().encode(payload)]
@@ -93,6 +105,10 @@ enum LANTransferValidation {
               !offer.files.isEmpty, offer.files.count <= 1_000,
               Set(offer.files.map(\.id)).count == offer.files.count else { throw invalidOffer() }
         var paths = Set<String>()
+        if let paused = offer.pausedFileIDs {
+            guard Set(paused).count == paused.count,
+                  Set(paused).isSubset(of: Set(offer.files.map(\.id))) else { throw invalidOffer() }
+        }
         for file in offer.files {
             guard UUID(uuidString: file.id) != nil, isSafeComponent(file.folder), isSafeComponent(file.fileName),
                   AudioFileFormat.supports(URL(fileURLWithPath: file.fileName)),
@@ -100,6 +116,29 @@ enum LANTransferValidation {
                   file.sha256.count == 64, file.sha256.allSatisfy({ $0.isHexDigit && $0.isASCII }),
                   paths.insert((file.folder + "/" + file.fileName).precomposedStringWithCanonicalMapping.lowercased()).inserted else { throw invalidOffer() }
         }
+    }
+
+    static func isValidDownloadResponse(statusCode: Int, contentRange: String?, expectedByteCount: Int64) -> Bool {
+        guard expectedByteCount > 0 else { return false }
+        if statusCode == 200 { return true }
+        // A resumed system download can end with a 206 response. Its range must
+        // finish the exact offered resource; the receiver still checks the
+        // assembled temporary file's full size, SHA-256 and authorized URL.
+        guard statusCode == 206, let contentRange else { return false }
+        let fields = contentRange.trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: " ", omittingEmptySubsequences: false)
+        guard fields.count == 2, fields[0].lowercased() == "bytes" else { return false }
+        let rangeAndTotal = fields[1].split(separator: "/", omittingEmptySubsequences: false)
+        guard rangeAndTotal.count == 2 else { return false }
+        let bounds = rangeAndTotal[0].split(separator: "-", omittingEmptySubsequences: false)
+        func number(_ value: Substring) -> Int64? {
+            guard !value.isEmpty, value.utf8.allSatisfy({ (48...57).contains($0) }) else { return nil }
+            return Int64(value)
+        }
+        guard bounds.count == 2, let start = number(bounds[0]), let end = number(bounds[1]),
+              let total = number(rangeAndTotal[1]), total == expectedByteCount,
+              start <= end, end == total - 1 else { return false }
+        return true
     }
 
     private static func invalidOffer() -> NSError {

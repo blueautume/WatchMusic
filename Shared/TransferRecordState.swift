@@ -1,10 +1,11 @@
 import Foundation
 
 enum TransferRecordState: String, Codable {
-    case queued, awaitingReceipt, stored, failed, cancelled, outdated
+    case queued, paused, awaitingReceipt, stored, failed, cancelled, outdated
     var title: String {
         switch self {
         case .queued: return "等待传输"
+        case .paused: return "已暂停"
         case .awaitingReceipt: return "等待手表确认"
         case .stored: return "已保存到手表"
         case .failed: return "传输失败"
@@ -15,6 +16,7 @@ enum TransferRecordState: String, Codable {
     var symbol: String {
         switch self {
         case .queued: return "arrow.up.circle.fill"
+        case .paused: return "pause.circle.fill"
         case .awaitingReceipt: return "clock.fill"
         case .stored: return "checkmark.circle.fill"
         case .failed: return "exclamationmark.circle.fill"
@@ -22,5 +24,5 @@ enum TransferRecordState: String, Codable {
         case .outdated: return "arrow.triangle.2.circlepath"
         }
     }
-    var isPending: Bool { self == .queued || self == .awaitingReceipt }
+    var isPending: Bool { self == .queued || self == .paused || self == .awaitingReceipt }
 }

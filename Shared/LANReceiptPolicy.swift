@@ -10,7 +10,7 @@ enum LANReceiptPolicy {
               sessionID == event.sessionID, totalBytes > 0,
               event.totalBytes == totalBytes, event.completedBytes == totalBytes else { return false }
         switch state {
-        case .queued, .awaitingReceipt, .failed, .cancelled: return true
+        case .queued, .paused, .awaitingReceipt, .failed, .cancelled: return true
         case .stored, .outdated: return false
         }
     }
