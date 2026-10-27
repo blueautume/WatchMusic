@@ -10,6 +10,8 @@
 4. 手机“传输”页通过“进行中”和“已传输”两个标签展示记录，支持多选和全选；传输时显示接收进度、估算速度和剩余时间。手表自动进入专用全屏接收页，显示百分比、歌曲、批次及取消按钮。
 5. 等待“已保存到手表”，记录才会进入“已传输”。接收完成或取消后，手表自动退出接收页并返回音乐库。失败记录可直接“重试”，仍使用局域网。
 
+歌曲按队列逐首串行传输：整批先持久保存为等待队列，同一时间只运行一首原生下载；当前歌曲完成下载、校验和保存后，再开始下一首。当前项失败或取消后继续后续任务，避免一首异常阻塞整批。
+
 局域网传输期间手机 App 需保持前台，应用会暂时保持手机屏幕常亮，结束后恢复原设置；手机进入后台会停止源服务。手表在打开 App 并开始接收后可自然息屏或返回表盘，应用不会因此取消系统下载。系统可能延迟交付进度和保存结果，唤醒手表后才更新界面也属于后台调度范围；不保证息屏期间实时显示速度和预计时间。旧版普通 WatchConnectivity 任务的历史记录、取消和保存回执继续兼容，但当前界面不再提供普通传输入口或切换选项。
 
 “进行中”按以下顺序派生显示，不修改持久化历史数组：正在传输或部分接收的任务（进度暂时停滞仍保留位置）、校验或等待确认、按加入顺序排队的任务、已暂停任务、失败及本地已更新的待处理记录。“已传输”只显示手表确认保存成功的记录，按发起时间从新到旧排列；到达 100% 但仍等待校验或保存回执的任务留在“进行中”。已取消记录从两个标签及其数量中排除，不会被当作已传输。重试入口不再区分传输方式。
@@ -19,6 +21,8 @@
 ## 暂停与继续
 
 运行中的暂停、继续需手表实时可达并返回确认；手机收到确认后才改变暂停状态，不可达或超时不会伪装成已经暂停。手表挂起对应系统下载任务，持久保存暂停状态；暂停时保留字节数与百分比，隐藏速度及预计时间。准备阶段暂停的项目通过清单以初始暂停状态提交，开始后才运行；已进入校验保存的文件不暂停。
+
+暂停当前歌曲会让出下载位置，队列可继续未暂停项；全部暂停时不启动等待项。恢复单项会重新加入可运行队列，当前正在下载或保存的歌曲保持优先，不被抢占。保存结束、失败或取消后再选择下一项；恢复时优先处理已经完整下载的暂存文件和已有部分下载，再处理尚未开始的等待项。
 
 手机源服务仍需保持前台，本轮有效期最长 1 小时。暂停不会无限延长会话；过期或源会话结束后，“开始”会在停止旧会话后重新发送，不保证跨会话断点续传。升级前遗留的普通 WatchConnectivity 任务不能使用此暂停能力，可取消后从音乐库重新发送，界面不显示虚假的暂停状态。
 
@@ -38,7 +42,7 @@
 
 - 手机使用 Network.framework 临时开启 HTTP 文件服务，仅选择 Wi-Fi 接口，使用随机端口。
 - 地址限定私有 IPv4（当前枚举 iPhone 的 `en0`）；IPv6-only、非私有地址和蜂窝网络不在本轮范围内。
-- 双方通过配对设备的 WatchConnectivity 交换短期清单与接收进度，手表用固定标识的后台 `URLSessionDownloadTask` 主动下载，一次在前台提交整批任务。
+- 双方通过配对设备的 WatchConnectivity 交换短期清单与接收进度，手表持久保存整批等待队列，用固定标识的后台会话逐首创建和运行 `URLSessionDownloadTask`，当前文件校验保存后才启动下一首。
 - 每批最多 100 首，清单还有 55 KB 上限；手机源服务和清单有效期最长 1 小时，完成、停止或过期时关闭监听并清除手机内存中的令牌。单个请求无响应时有超时处理。
 - 服务仅允许凭会话令牌读取清单内 UUID 对应的音频；拒绝目录浏览、任意路径和无效请求。音频按 64 KB 分块发送，不整体载入内存。
 - 系统后台会话会自动跟随 HTTP 重定向，不能依赖重定向 delegate 阻止。接收器保存前严格验证最终响应 URL：协议、主机、端口和文件 UUID 路径必须匹配清单端点，且无查询、片段或用户信息；不符即拒绝保存。这只验证最终端点，不保证中间跳转未发生。
@@ -51,11 +55,11 @@
 
 ## 后台与恢复
 
-手表网络下载由系统独立进程执行。应用启动时先恢复清单，再以同一会话标识重新关联系统任务；已完整下载的文件先保存在受保护的暂存目录中，随后进行完整性校验与原子保存。清单过期后不再发起新请求，已经下载完整的文件仍可继续校验保存。
+手表当前歌曲的网络下载由系统独立进程执行，其余歌曲作为持久化等待队列保存。应用启动时先恢复清单，再以同一会话标识重新关联系统任务；已完整下载的文件先保存在受保护的暂存目录中，随后进行完整性校验与原子保存，再推进下一首。升级前遗留的并发任务恢复时会收敛为一个运行项，其余下载挂起等待；不会为恢复队列同时启动多首。清单过期后不再发起新请求，已经下载完整的文件仍可继续校验保存。
 
-系统通过 `WKURLSessionRefreshBackgroundTask` 交付后台事件。应用等待本轮 URLSession 事件处理和已完成文件的校验保存结束，再完成该次后台唤醒任务，不用整批仍在下载的任务阻塞这一轮唤醒。普通 WatchConnectivity 后台任务分别处理。保存、失败和取消的终态先持久写入回执队列，待 WatchConnectivity 激活后交给系统发送，再清除队列条目；进程重建或回执延迟不会直接丢失终态。
+系统通过 `WKURLSessionRefreshBackgroundTask` 交付后台事件。应用等待本轮 URLSession 事件处理和已完成文件的校验保存结束，再完成该次后台唤醒任务，不用尚未完成的整批队列阻塞这一轮唤醒。普通 WatchConnectivity 后台任务分别处理。保存、失败和取消的终态先持久写入回执队列，待 WatchConnectivity 激活后交给系统发送，再清除队列条目；进程重建或回执延迟不会直接丢失终态。
 
-系统是否立即运行下载、何时唤醒应用和交付进度/结果仍受网络、电量和资源调度影响。手动从系统界面强退 App 可能使系统取消后台传输，不能等同于正常息屏或系统回收进程；这种情况需要重新打开 App 并从手机重试。
+系统是否立即运行下载、何时唤醒应用和交付进度/结果仍受网络、电量和资源调度影响，后台下一首的启动也可能等待系统交付上一首结果。手机源 App 仍需保持前台，源服务有效期最长一小时。手动从系统界面强退 App 可能使系统取消后台传输，不能等同于正常息屏或系统回收进程；这种情况需要重新打开 App 并从手机重试。
 
 ## 自动验证
 
@@ -99,6 +103,16 @@ python3 Tests/run-watch-lan-probe.py WATCH_SIMULATOR_UDID \
 
 将最后一项参数改为 `--range-only` 可检查合法 HTTP 206、畸形 Content-Range 和不完整尾片段；`--disconnect-resume-only` 检查暂停期间 TCP 断开后系统重新发起 Range 请求的恢复流程。206 仅在范围总大小与清单一致、终点为文件末尾时准入，最终仍须通过完整文件大小、SHA-256 和授权地址校验。
 
+仅运行逐首传输和队列推进场景：
+
+```sh
+python3 Tests/run-watch-lan-probe.py WATCH_SIMULATOR_UDID \
+  --app /absolute/path/to/Debug-watchsimulator/OfflineWatchPlayerLabWatch.app \
+  --serial-only
+```
+
+该组检查当前文件保存后才开始下一首，以及暂停、继续、失败和取消后的调度；整批清单仍持久保存，但不预先并行启动系统下载。
+
 批量文件和播放遥控的原生集成探针在已启动的模拟器运行，不播放声音：
 
 ```sh
@@ -126,6 +140,7 @@ Tests/run-playback-control-integration-probe.sh watchos WATCH_SIMULATOR_UDID \
 - 检查音乐库与目录内多选、全选、移动冲突和删除手机副本，未成功的文件应保留并汇总错误。
 - 检查“进行中”的下载、校验、排队、暂停和待处理顺序，以及“已传输”只收录成功保存记录；取消记录不显示在两个标签或计数中。多选控制只影响所选项，无选择时控制全部可操作项；清除前先停止对应任务，保存的音乐仍保留。
 - 在真实可达和不可达状态分别测试暂停、开始与更多菜单清除；校验中的任务不应假报暂停，暂停不显示过期速度或预计时间。源会话过期后开始按新会话重发验收。
+- 多选发送数首歌曲，检查始终逐首下载并在保存完成后推进；暂停全部时等待项不启动，恢复单项不抢占当前项，当前项失败或取消后可继续后续歌曲。
 - 分别由手机和手表本地开始播放，再在另一端操作上一首、下一首、暂停和播放；确认声音仍从原设备输出。断连时遥控禁用，重新连接后不能执行断连期间的旧指令。
 - 升级前遗留的普通 WatchConnectivity 任务可能继续完成；检查其取消和保存回执兼容。遗留任务与新局域网任务的相同目标路径冲突仍会被阻止。
 - 模拟器可以验证 HTTP 收发与文件落盘，无法据此判断手表真实无线链路和速度。
@@ -137,7 +152,7 @@ Tests/run-playback-control-integration-probe.sh watchos WATCH_SIMULATOR_UDID \
 - [URLSession 下载进度](https://developer.apple.com/documentation/foundation/urlsessiondownloaddelegate/urlsession(_:downloadtask:didwritedata:totalbyteswritten:totalbytesexpectedtowrite:))：进度使用真实接收字节。
 - [watchOS 后台请求](https://developer.apple.com/documentation/watchos-apps/making-background-requests)：后台会话可跨 App 进程结束继续，结果交付可能延后。
 - [WatchKit URLSession 后台任务](https://developer.apple.com/documentation/watchkit/wkurlsessionrefreshbackgroundtask)：用相同会话标识重新关联，在委托事件处理完成后结束后台任务。
-- [后台下载](https://developer.apple.com/documentation/foundation/downloading-files-in-the-background)：系统独立进程下载、相同标识恢复及整批提交任务。
+- [后台下载](https://developer.apple.com/documentation/foundation/downloading-files-in-the-background)：系统独立进程下载及相同会话标识恢复；本实现由持久化队列逐首提交任务。
 - [后台配置与手动强退](https://developer.apple.com/documentation/foundation/urlsessionconfiguration/background(withidentifier:))：用户强退与系统正常结束进程的后台行为有区别。
 - [重定向回调范围](https://developer.apple.com/documentation/foundation/urlsessiontaskdelegate/urlsession(_:task:willperformhttpredirection:newrequest:completionhandler:))：后台会话自动跟随重定向。
 - [Always On 界面](https://developer.apple.com/documentation/watchos-apps/designing-your-app-for-the-always-on-state)：设备与用户设置影响显示，系统会降低亮度和更新频率。

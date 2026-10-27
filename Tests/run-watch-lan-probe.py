@@ -23,6 +23,15 @@ def simctl(*args):
     return subprocess.check_output(["xcrun", "simctl", *args], text=True, timeout=45).strip()
 
 
+def terminal_receipts(path):
+    try:
+        value = json.loads(path.read_text())
+        events = value.values() if isinstance(value, dict) else value
+        return {item["fileID"]: item for item in events if item["kind"] in ("stored", "failed", "cancelled")}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -37,6 +46,26 @@ class Handler(BaseHTTPRequestHandler):
         if not route:
             self.send_error(404)
             return
+        # Capture the durable receiver outcome at request arrival, rather than
+        # relying on the asynchronous main-queue debug log reaching disk first.
+        terminal = terminal_receipts(self.server.outbox_path)
+        terminal.update(terminal_receipts(self.server.log_path))
+        identifier = self.path.rsplit("/", 1)[-1]
+        with self.server.request_lock:
+            self.server.active_requests[self] = identifier
+            self.server.peak_requests = max(self.server.peak_requests, len(self.server.active_requests))
+            live = [file_id for file_id in self.server.active_requests.values() if file_id not in terminal]
+            self.server.peak_live_requests = max(self.server.peak_live_requests, len(live))
+            self.server.requests.append({"fileID": identifier, "terminal": terminal,
+                                         "saved": {file["id"]: (self.server.destination / file["fileName"]).is_file()
+                                                   for file in self.server.manifest}})
+        try:
+            self.serve_route(route)
+        finally:
+            with self.server.request_lock:
+                self.server.active_requests.pop(self, None)
+
+    def serve_route(self, route):
         body, behavior = route
         if behavior == "redirect":
             self.send_response(302)
@@ -91,9 +120,18 @@ class Handler(BaseHTTPRequestHandler):
         interval = 0.2 if behavior in ("trickle", "disconnect_resume") else 0.04
         try:
             for index in range(0, len(body), chunk):
-                self.wfile.write(body[index:index + chunk])
-                self.wfile.flush()
-                time.sleep(interval)
+                last_chunk = index + chunk >= len(body)
+                if last_chunk:
+                    # The last response bytes and accounting are one ordering:
+                    # handler teardown / close are not ongoing file transfer.
+                    with self.server.request_lock:
+                        self.wfile.write(body[index:index + chunk])
+                        self.wfile.flush()
+                        self.server.active_requests.pop(self, None)
+                else:
+                    self.wfile.write(body[index:index + chunk])
+                    self.wfile.flush()
+                    time.sleep(interval)
                 if disconnect_this_request and index >= chunk * 14:
                     self.connection.shutdown(socket.SHUT_RDWR)
                     self.connection.close()
@@ -103,7 +141,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def run_case(device, documents, title, specifications, expected_kind, capture=None, cancel=False, background=False, restart=False, pause=False,
-             pause_after=0.3, resume_after=3.5, partial=False, require_range=False):
+             pause_after=0.3, resume_after=3.5, partial=False, require_range=False, serial=False, cancel_first=False):
     folder = "LANProbe-" + str(uuid.uuid4())
     manifest = []
     routes = {}
@@ -121,6 +159,13 @@ def run_case(device, documents, title, specifications, expected_kind, capture=No
     server.routes, server.token = routes, token
     server.range_requests, server.disconnected_paths = [], set()
     server.request_started = threading.Event()
+    server.request_lock = threading.Lock()
+    server.active_requests, server.requests = {}, []
+    server.peak_requests = server.peak_live_requests = 0
+    server.log_path = documents / "lan-test-events.json"
+    server.outbox_path = documents.parent / "Library/Application Support/LANBackground-v2/receipts.json"
+    server.destination = documents / "Music" / folder
+    server.manifest = manifest
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     offer_path = documents / "lan-probe-offer.json"
@@ -139,6 +184,8 @@ def run_case(device, documents, title, specifications, expected_kind, capture=No
         args = ["launch", device, BUNDLE, "-lan-offer-file", offer_path.name]
         if cancel:
             args += ["-lan-cancel-after", str(pause_after + 0.9) if pause else "0.3"]
+        if cancel_first:
+            args += ["-lan-cancel-first-after", "0.8"]
         if pause:
             args += ["-lan-pause-after", str(pause_after), "-lan-resume-after", str(resume_after)]
         if background:
@@ -176,6 +223,9 @@ def run_case(device, documents, title, specifications, expected_kind, capture=No
                         resumed = any(event.get("controlRevision") == 2 for event in events)
                         if not resumed and not terminal and time.monotonic() - pause_observed >= 0.5:
                             assert not destination.exists() or not any(destination.iterdir()), "paused data entered the library"
+                            if serial:
+                                with server.request_lock:
+                                    assert len(server.requests) == 1, "a waiting file started while the batch was paused"
                             held_without_store = True
                 except (json.JSONDecodeError, OSError):
                     pass
@@ -189,7 +239,9 @@ def run_case(device, documents, title, specifications, expected_kind, capture=No
             for file in manifest:
                 paused_states = [item for item in states if item["fileID"] == file["id"] and item["revision"] == 1]
                 assert paused_states and paused_states[-1]["phase"] == "paused", "receiver did not persist pause"
-                assert paused_states[-1]["nativeState"] in ("suspended", "cached"), "native task was not suspended"
+                assert paused_states[-1]["nativeState"] in ("suspended", "cached", "notCreated"), "native task was not suspended"
+                if paused_states[-1]["nativeState"] == "notCreated":
+                    assert paused_states[-1]["receivedBytes"] == 0, "partly received paused work lost its native task"
                 if partial:
                     assert 0 < paused_states[0]["receivedBytes"] < file["byteCount"], "partial data was not received before pausing"
                     assert len(paused_states) >= 3, "native pause did not remain observable for two seconds"
@@ -202,11 +254,12 @@ def run_case(device, documents, title, specifications, expected_kind, capture=No
                 time.sleep(3.6)
             else:
                 assert any(event.get("controlRevision") == 2 for event in events), "resume acknowledgement was not observed"
-        for file in manifest:
+        expected = [expected_kind] * len(manifest) if isinstance(expected_kind, str) else expected_kind
+        for file, expected_file_kind in zip(manifest, expected, strict=True):
             event = terminal[file["id"]]
-            assert event["kind"] == expected_kind, f"{title}: expected {expected_kind}, got {event}"
+            assert event["kind"] == expected_file_kind, f"{title}: expected {expected_file_kind}, got {event}"
             target = destination / file["fileName"]
-            if expected_kind == "stored":
+            if expected_file_kind == "stored":
                 assert target.is_file(), f"{title}: receipt without saved file"
                 assert target.stat().st_size == file["byteCount"], f"{title}: wrong saved size"
                 assert hashlib.sha256(target.read_bytes()).hexdigest() == file["sha256"], f"{title}: wrong saved content"
@@ -217,6 +270,21 @@ def run_case(device, documents, title, specifications, expected_kind, capture=No
         if require_range:
             assert server.range_requests, "system download did not request a Range continuation"
             print("Native continuation observed: " + ", ".join(server.range_requests), flush=True)
+        if serial:
+            with server.request_lock:
+                requests = list(server.requests)
+                peak, live_peak = server.peak_requests, server.peak_live_requests
+            assert [request["fileID"] for request in requests] == [file["id"] for file in manifest], "HTTP requests did not follow manifest order exactly once"
+            assert live_peak == 1, f"multiple unfinished downloads active at once: {live_peak}"
+            if not cancel_first:
+                assert peak == 1, f"multiple HTTP response bodies active at once: {peak}"
+            for index in range(1, len(manifest)):
+                previous = manifest[index - 1]
+                outcome = requests[index]["terminal"].get(previous["id"])
+                assert outcome and outcome["kind"] == expected[index - 1], "next request began before previous terminal outcome was durable"
+                if expected[index - 1] == "stored":
+                    assert requests[index]["saved"][previous["id"]], "next request began before previous music file was saved"
+            print(f"Serial requests verified: {len(requests)}, peak unfinished downloads {live_peak}", flush=True)
         print(f"PASS: {title} ({len(manifest)} file(s))", flush=True)
     finally:
         server.shutdown()
@@ -235,6 +303,23 @@ def run_range_cases(device, documents, mp3):
              [(mp3, "range_tail")], "failed")
 
 
+def run_serial_cases(device, documents, mp3, flac):
+    run_case(device, documents, "three files download and save strictly one at a time",
+             [(mp3, "slow"), (flac, "normal"), (mp3, "normal")], "stored", serial=True)
+    run_case(device, documents, "failed first file advances to the remaining serial queue",
+             [(mp3, "http_error"), (flac, "normal"), (mp3, "normal")], ["failed", "stored", "stored"], serial=True)
+    run_case(device, documents, "cancelled current file advances without starting two unfinished downloads",
+             [(flac, "trickle"), (mp3, "normal"), (mp3, "normal")], ["cancelled", "stored", "stored"],
+             cancel_first=True, serial=True)
+    run_case(device, documents, "paused serial batch keeps waiting files unrequested until resume",
+             [(mp3, "trickle"), (flac, "normal"), (mp3, "normal")], "stored", pause=True, serial=True,
+             pause_after=2, resume_after=6)
+    run_case(device, documents, "receiver process recovery preserves one-at-a-time queue order",
+             [(mp3, "slow"), (flac, "normal"), (mp3, "normal")], "stored", restart=True, serial=True)
+    run_case(device, documents, "background receiver advances the remaining serial queue after each save",
+             [(mp3, "slow"), (flac, "normal"), (mp3, "normal")], "stored", background=True, serial=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("device", help="Booted watch simulator UDID")
@@ -245,6 +330,7 @@ def main():
     parser.add_argument("--pause-only", action="store_true", help="Run native pause/resume and cancellation-while-paused scenarios")
     parser.add_argument("--range-only", action="store_true", help="Run complete, malformed and incomplete HTTP 206 response scenarios")
     parser.add_argument("--disconnect-resume-only", action="store_true", help="Diagnose one suspended TCP disconnect and native Range continuation")
+    parser.add_argument("--serial-only", action="store_true", help="Verify serial order, terminal gating, failure/cancel advance, pause and process recovery")
     args = parser.parse_args()
     if args.app:
         simctl("install", args.device, str(args.app.resolve()))
@@ -253,6 +339,9 @@ def main():
     documents.mkdir(exist_ok=True)
     mp3, flac = (ROOT / "Tests/Fixtures" / name for name in ["EmbeddedResources.mp3", "EmbeddedResources.flac"])
     try:
+        if args.serial_only:
+            run_serial_cases(args.device, documents, mp3, flac)
+            return
         if args.disconnect_resume_only:
             run_case(args.device, documents, "suspended TCP disconnect resumes with native Range request and matching SHA",
                      [(mp3, "disconnect_resume")], "stored", pause=True, pause_after=2, resume_after=6,

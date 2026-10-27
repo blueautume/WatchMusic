@@ -37,6 +37,19 @@ struct LANBackgroundTransferState: Codable {
     var pendingFileIDs: Set<String> { Set(items.filter { $0.value.phase.isPending }.map(\.key)) }
     var isFinished: Bool { pendingFileIDs.isEmpty }
 
+    /// One file owns the download/save lane until it finishes or is paused.
+    /// Explicitly retaining its identity prevents a resumed earlier file from
+    /// interrupting the current one. On restoration, prioritize complete caches
+    /// and existing partial downloads before starting untouched queued files.
+    func nextRunnableFileID(keeping currentFileID: String? = nil) -> String? {
+        if let currentFileID, let phase = items[currentFileID]?.phase,
+           phase == .downloading || phase == .validating { return currentFileID }
+        for phase in [Phase.validating, .downloading, .queued] {
+            if let file = offer.files.first(where: { items[$0.id]?.phase == phase }) { return file.id }
+        }
+        return nil
+    }
+
     func canStartRequest(at date: Date) -> Bool { offer.expiresAt > date }
 
     func validateForRestoration(allowLoopback: Bool) throws {
@@ -142,7 +155,7 @@ struct LANBackgroundTransferState: Codable {
               item.phase != .validating, revision > (item.controlRevision ?? 0) else { return false }
         item.controlRevision = revision
         if paused { item.phase = .paused }
-        else { item.phase = item.stagingName == nil ? .downloading : .validating }
+        else { item.phase = item.stagingName == nil ? .queued : .validating }
         items[fileID] = item
         return true
     }

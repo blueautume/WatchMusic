@@ -558,6 +558,15 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
                     self?.cancelLANTransfer()
                 }
             }
+            if let flag = arguments.firstIndex(of: "-lan-cancel-first-after"), arguments.indices.contains(flag + 1),
+               let seconds = Double(arguments[flag + 1]), seconds.isFinite, (0.1...60).contains(seconds),
+               let first = offer.files.first {
+                DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
+                    guard let self, self.lanSessionID == offer.sessionID else { return }
+                    self.lanReceiver.handle(LANTransferCommand(sessionID: offer.sessionID, kind: .cancel,
+                                                              fileID: first.id))
+                }
+            }
             for (option, kind, revision) in [("-lan-pause-after", LANTransferCommand.Kind.pause, 1),
                                               ("-lan-resume-after", LANTransferCommand.Kind.resume, 2)] {
                 if let flag = arguments.firstIndex(of: option), arguments.indices.contains(flag + 1),

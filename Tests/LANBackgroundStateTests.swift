@@ -166,7 +166,8 @@ struct LANBackgroundStateTests {
         paused.items[fileA.id]?.taskIdentifier = 81
         try expect(paused.recordProgress(fileID: fileA.id, bytes: 35), "in-flight bytes are counted after a pause request")
         try expect(paused.items[fileA.id]?.phase == .paused, "late bytes cannot silently resume a paused task")
-        try expect(paused.setPaused(fileID: fileA.id, paused: false, revision: 1), "resume changes paused intent to downloading")
+        try expect(paused.setPaused(fileID: fileA.id, paused: false, revision: 1), "resume releases paused intent to the serial queue")
+        try expect(paused.items[fileA.id]?.phase == .queued, "resuming does not claim the network lane before scheduling")
         try expect(paused.items[fileA.id]?.receivedBytes == 35, "resume preserves native partial progress")
         try expect(paused.setPaused(fileID: fileA.id, paused: true, revision: 2), "a newer pause is accepted")
         try expect(!paused.setPaused(fileID: fileA.id, paused: true, revision: 2), "duplicate controls cannot add another native suspension")
@@ -193,6 +194,51 @@ struct LANBackgroundStateTests {
         try expect(cancellable.setPaused(fileID: fileA.id, paused: true, revision: 1), "queued task can pause before download")
         try expect(cancellable.recordTerminal(fileID: fileA.id, kind: .cancelled), "clear can cancel a paused task")
         try expect(!cancellable.setPaused(fileID: fileA.id, paused: false, revision: 2), "late start cannot resurrect a cleared task")
+
+        // A single deterministic lane includes both the network and final save.
+        var serial = initial()
+        try expect(serial.nextRunnableFileID() == fileA.id, "untouched batch starts in manifest order")
+        serial.items[fileA.id]?.phase = .downloading
+        try expect(serial.nextRunnableFileID(keeping: fileA.id) == fileA.id, "download keeps the lane while the next file is queued")
+        try expect(serial.recordDownloaded(fileID: fileA.id, stagingName: UUID().uuidString + ".download"), "serial first download reaches save phase")
+        try expect(serial.nextRunnableFileID(keeping: fileA.id) == fileA.id, "next download waits until current file finishes saving")
+        try expect(serial.recordTerminal(fileID: fileA.id, kind: .stored), "serial first file saves")
+        try expect(serial.nextRunnableFileID(keeping: fileA.id) == fileB.id, "saved file releases the lane to the next manifest item")
+        try expect(serial.recordTerminal(fileID: fileB.id, kind: .failed), "failed final file closes its work")
+        try expect(serial.nextRunnableFileID() == nil, "stored and failed items never restart")
+
+        serial = initial()
+        try expect(serial.recordTerminal(fileID: fileA.id, kind: .failed), "queued first file may fail")
+        try expect(serial.nextRunnableFileID() == fileB.id, "failure advances to the next song")
+        serial = initial()
+        try expect(serial.recordTerminal(fileID: fileA.id, kind: .cancelled), "queued first file may cancel")
+        try expect(serial.nextRunnableFileID() == fileB.id, "cancellation advances to the next song")
+
+        serial = initial()
+        try expect(serial.setPaused(fileID: fileA.id, paused: true, revision: 1), "first item can be held before its turn")
+        try expect(serial.nextRunnableFileID(keeping: fileA.id) == fileB.id, "paused item releases the lane without blocking eligible songs")
+        serial.items[fileB.id]?.phase = .downloading
+        try expect(serial.setPaused(fileID: fileA.id, paused: false, revision: 2), "earlier held song can rejoin the queue")
+        try expect(serial.nextRunnableFileID(keeping: fileB.id) == fileB.id, "resuming an earlier song does not preempt the active download")
+        try expect(serial.nextRunnableFileID() == fileB.id, "existing download outranks a resumed queued song after restoration")
+        try expect(serial.setPaused(fileID: fileB.id, paused: true, revision: 1), "active download can release the lane by pausing")
+        try expect(serial.nextRunnableFileID(keeping: fileB.id) == fileA.id, "a paused active identity cannot retain the lane")
+        try expect(serial.setPaused(fileID: fileA.id, paused: true, revision: 3), "last eligible song can pause")
+        try expect(serial.nextRunnableFileID() == nil && !serial.isFinished, "all paused means no runnable work, not a finished batch")
+
+        // Upgrade from an older concurrent receiver deterministically chooses
+        // one active intent, independently of dictionary insertion order.
+        serial = initial()
+        serial.items[fileB.id]?.phase = .downloading
+        serial.items[fileA.id]?.phase = .downloading
+        try expect(serial.nextRunnableFileID() == fileA.id, "legacy parallel downloads choose the first manifest item")
+        try expect(serial.nextRunnableFileID(keeping: fileB.id) == fileB.id, "an explicitly retained active download remains stable")
+        try expect(serial.recordDownloaded(fileID: fileB.id, stagingName: UUID().uuidString + ".download"), "legacy later file can already have complete cached data")
+        try expect(serial.nextRunnableFileID() == fileB.id, "restore drains complete cached validation before starting another download")
+        try expect(serial.nextRunnableFileID(keeping: fileA.id) == fileA.id, "newly released cached data does not preempt an existing lane")
+        try expect(serial.recordDownloaded(fileID: fileA.id, stagingName: UUID().uuidString + ".download"), "legacy first file can also await save")
+        try expect(serial.nextRunnableFileID() == fileA.id, "multiple restored caches save in manifest order")
+        try expect(serial.nextRunnableFileID(keeping: UUID().uuidString) == fileA.id, "unknown active identity cannot steal or block the lane")
         print("PASS: \(assertions) LAN background state assertions")
     }
 }
