@@ -1,0 +1,24 @@
+{
+  "date": "2026-10-28",
+  "verifiedFiles": [
+    {
+      "file": "LANProbe.flac",
+      "bytes": 3973284,
+      "sha256": "36b864daec7a89426216545c6bb1fbe27e24283499fd5be3754a61f34baf23af"
+    },
+    {
+      "file": "LANProbe.mp3",
+      "bytes": 286919,
+      "sha256": "5b18c5a710d2ec67558b2cb8cfcc094b62c48ba255355d53a504de8599ac250b"
+    }
+  ],
+  "transport": "LAN HTTP with native WatchConnectivity negotiation",
+  "route": "watchOS-managed; no forced watch Wi-Fi claim",
+  "devices": [
+    "iPhone 15 Plus",
+    "Apple Watch Series 9"
+  ],
+  "totalBytes": 4260203,
+  "comparison": "byte-for-byte equal to source",
+  "testAudioPlayback": "not played"
+}

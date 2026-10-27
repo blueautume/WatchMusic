@@ -35,3 +35,18 @@
 - 支持设备上的双指互点下一首。
 
 编译出现的 AppIntents 元数据提取跳过提示来自未使用 AppIntents 框架，不影响构建。模拟器无法代表真实蓝牙吞吐量和后台系统调度。
+
+## 局域网分支验证（2026-10-28）
+
+分支：`experiment/lan-transfer`。使用方式与范围见 [局域网传输实验](LANTransferExperiment.md)。
+
+- 两端 Debug / Release 模拟器完整构建通过，真机自动签名构建通过。
+- LAN 清单、端点与摘要验证：54 个断言通过。
+- HTTP 解析与真实 Network/URLSession 服务探针：45 个断言通过。
+- 取消/保存竞态、握手及历史回执隔离：32 个断言通过。
+- watchOS 26.5 的真实 HTTP 接收探针通过五个场景：MP3/FLAC 正常下载保存、同大小内容损坏拒绝、HTTP 失败拒绝、超出清单大小拒绝、取消后无落盘。
+- 界面已检查：[手机模式选择](Artifacts/Previews/phone-lan-transfer.png)、[40mm 手表接收状态](Artifacts/Previews/watch-lan-transfer-40mm.png)。
+- 配对真机 iPhone 15 Plus → Apple Watch Series 9：通过真实 WatchConnectivity 握手与手机临时 HTTP 服务，成功传送 3,973,284 字节 FLAC 和 286,919 字节 MP3。手机收到保存成功回执后，从手表读回两份文件，与源文件逐字节及 SHA-256 比较一致。
+- [真机验证记录](Artifacts/Verification/lan-physical-result.json) 仅包含测试音频摘要和设备型号，不含会话令牌、局域网地址或设备标识。自主生成测试音频未播放；手机测试音频已清理。手表清理命令已执行，随后开发连接中断，未复核清理结果。如曲库仍显示 `LANProbe-` 开头的测试目录，可直接删除。
+
+本次证明局域网 HTTP 传输可用；没有通过无线链路抓包证明手表绕过了 iPhone 代理，也未完成同条件普通模式/局域网模式的速度基准对比。

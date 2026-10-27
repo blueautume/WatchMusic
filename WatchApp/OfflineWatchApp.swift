@@ -6,10 +6,23 @@ struct OfflineWatchApp: App {
     @WKApplicationDelegateAdaptor(WatchAppDelegate.self) private var appDelegate
     @StateObject private var library = WatchLibrary.shared
     @StateObject private var player = WatchPlayer()
+    @Environment(\.scenePhase) private var scenePhase
     var body: some Scene {
         WindowGroup {
             rootView.environmentObject(library).environmentObject(player)
                 .tint(AppPalette.accent).preferredColorScheme(.dark)
+                .onAppear { library.updateLANForeground(scenePhase != .background) }
+                .onChange(of: scenePhase) { _, phase in
+                    library.updateLANForeground(phase != .background)
+                    #if DEBUG
+                    if phase == .active { library.startLANPreviewIfRequested() }
+                    #endif
+                }
+                #if DEBUG
+                .task {
+                    if scenePhase == .active { library.startLANPreviewIfRequested() }
+                }
+                #endif
         }
     }
 
@@ -45,6 +58,25 @@ struct FolderListView: View {
     var body: some View {
         NavigationStack {
             List {
+                if let reception = library.lanReception {
+                    VStack(alignment: .leading, spacing: 7) {
+                        HStack {
+                            Text("局域网 · \(reception.fileIndex)/\(reception.fileCount)").font(.caption2).foregroundStyle(AppPalette.accent)
+                            Spacer(minLength: 4)
+                            Button(action: library.cancelLANTransfer) { Image(systemName: "xmark.circle").frame(width: 44, height: 44) }
+                                .buttonStyle(.plain).accessibilityLabel("取消局域网传输")
+                        }
+                        Text(reception.fileName).font(.caption).lineLimit(1)
+                        if reception.isSaving {
+                            HStack { ProgressView().controlSize(.mini); Text("正在校验并保存…").font(.caption2) }
+                        } else {
+                            ProgressView(value: Double(reception.completedBytes), total: Double(max(1, reception.totalBytes)))
+                                .tint(AppPalette.accent).accessibilityLabel("接收进度")
+                            Text("\(Int(Double(reception.completedBytes) / Double(max(1, reception.totalBytes)) * 100))% · 保持 App 打开")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }.listRowBackground(AppPalette.surface)
+                }
                 if player.currentURL != nil {
                     NavigationLink(destination: NowPlayingView()) {
                         HStack(spacing: 9) {
@@ -60,7 +92,7 @@ struct FolderListView: View {
                 NavigationLink(destination: WatchTrackListView(folderName: nil)) {
                     Label("全部歌曲 · \(library.trackCount)", systemImage: "music.note.list").font(.headline)
                 }.listRowBackground(AppPalette.surface)
-                if library.isReceiving {
+                if library.isReceiving && library.lanReception == nil {
                     HStack { ProgressView().controlSize(.mini); Text("正在保存歌曲…").font(.caption2) }
                 }
                 if library.folders.isEmpty {

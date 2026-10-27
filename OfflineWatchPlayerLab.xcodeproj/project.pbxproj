@@ -35,14 +35,14 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		CA2B4963723B7EC567B4CE1F /* OfflineWatchPlayerLab.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OfflineWatchPlayerLab.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BA8AE886E0153A5E49FECD72 /* OfflineWatchPlayerLabWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OfflineWatchPlayerLabWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		CA2B4963723B7EC567B4CE1F /* OfflineWatchPlayerLab.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OfflineWatchPlayerLab.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		E21E3F79A7F692C246C9BE72 /* PhoneApp */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = PhoneApp; sourceTree = "<group>"; };
-		A998CA22E679FAAE9D18AB5D /* WatchApp */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = WatchApp; sourceTree = "<group>"; };
 		657193940AE356BE1E63F587 /* Shared */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Shared; sourceTree = "<group>"; };
+		A998CA22E679FAAE9D18AB5D /* WatchApp */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = WatchApp; sourceTree = "<group>"; };
+		E21E3F79A7F692C246C9BE72 /* PhoneApp */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = PhoneApp; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -100,8 +100,8 @@
 				D84D0BA7654A461F0420FC94 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
-				E21E3F79A7F692C246C9BE72 /* PhoneApp */,
 				657193940AE356BE1E63F587 /* Shared */,
+				E21E3F79A7F692C246C9BE72 /* PhoneApp */,
 			);
 			name = OfflineWatchPlayerLab;
 			productName = OfflineWatchPlayerLab;
@@ -121,8 +121,8 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				A998CA22E679FAAE9D18AB5D /* WatchApp */,
 				657193940AE356BE1E63F587 /* Shared */,
+				A998CA22E679FAAE9D18AB5D /* WatchApp */,
 			);
 			name = OfflineWatchPlayerLabWatch;
 			productName = OfflineWatchPlayerLabWatch;
@@ -167,14 +167,14 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		17DBF29F3D4E606AB197E03C /* Resources */ = {
+		00AFEB3A63B24640D1584D72 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		00AFEB3A63B24640D1584D72 /* Resources */ = {
+		17DBF29F3D4E606AB197E03C /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -225,6 +225,27 @@
 				BASE_BUNDLE_IDENTIFIER = com.lihao.OfflineWatchPlayerLab;
 				CLANG_ENABLE_MODULES = YES;
 				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		29C9DDC7F4BA3E5863CDBF05 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = A82X46N3WS;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Config/WatchInfo.plist;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(BASE_BUNDLE_IDENTIFIER).watchkitapp";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "watchos watchsimulator";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 10.0;
 			};
 			name = Release;
 		};
@@ -293,44 +314,23 @@
 			};
 			name = Debug;
 		};
-		29C9DDC7F4BA3E5863CDBF05 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = A82X46N3WS;
-				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = Config/WatchInfo.plist;
-				MARKETING_VERSION = 0.1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "$(BASE_BUNDLE_IDENTIFIER).watchkitapp";
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = watchos;
-				SKIP_INSTALL = YES;
-				SUPPORTED_PLATFORMS = "watchos watchsimulator";
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = 4;
-				WATCHOS_DEPLOYMENT_TARGET = 10.0;
-			};
-			name = Release;
-		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		520CFA5378A2A4F95DF2DA9C /* Build configuration list for PBXProject "OfflineWatchPlayerLab" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				1BABB2C1E57E1A79628F8AA2 /* Debug */,
-				27E117CCA8DB8C1BD706B918 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
 		0D902E6D0A314B84259F1250 /* Build configuration list for PBXNativeTarget "OfflineWatchPlayerLab" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				A7EE36E519BA114F5C912E11 /* Debug */,
 				BB61ABF5D7BCF66097C2B901 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		520CFA5378A2A4F95DF2DA9C /* Build configuration list for PBXProject "OfflineWatchPlayerLab" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1BABB2C1E57E1A79628F8AA2 /* Debug */,
+				27E117CCA8DB8C1BD706B918 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

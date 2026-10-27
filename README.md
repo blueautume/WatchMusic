@@ -30,6 +30,8 @@ open OfflineWatchPlayerLab.xcodeproj
 
 ## 传输进度
 
+`experiment/lan-transfer` 分支增加可选的“局域网”模式：手机临时提供文件下载服务，手表通过 HTTP 接收并校验后保存。普通传输仍为默认模式。[实验说明与测试步骤](LANTransferExperiment.md)
+
 使用 WatchConnectivity 的原生 `WCSessionFileTransfer.progress` 读取进度。已传大小由进度比例与源音频大小换算；速度与剩余时间由近期采样估算，界面以“约”标注。系统尚未开始发送、进度停滞或等待保存回执时不显示虚假的速度与时间。
 
 传输达到 100% 只表示发送阶段完成；只有手表完成文件校验、写入并返回成功回执后，手机才显示“已保存到手表”。系统负责后台调度，排队等待时间和手表保存时间不包含在发送剩余时间估算内。
@@ -45,6 +47,9 @@ Tests/run-audio-format-tests.sh
 Tests/run-audio-metadata-tests.sh
 Tests/run-artwork-tests.sh
 Tests/run-transfer-tests.sh
+Tests/run-lan-protocol-tests.sh
+Tests/run-lan-http-server-probe.sh
+Tests/run-lan-receipt-tests.sh
 ```
 
 播放器集成探针可在已启动的模拟器运行，不会播放声音：

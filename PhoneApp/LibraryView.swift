@@ -24,11 +24,20 @@ struct LibraryView: View {
         .alert("提示", isPresented: Binding(get: { !showingPlayer && (library.errorMessage != nil || player.errorMessage != nil) }, set: { if !$0 { library.errorMessage = nil; player.errorMessage = nil } })) {
             Button("好", role: .cancel) { library.errorMessage = nil; player.errorMessage = nil }
         } message: { Text(library.errorMessage ?? player.errorMessage ?? "") }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active { library.refreshConnection(); library.refreshFolders() }
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            if phase == .active {
+                library.sceneDidBecomeActive(); library.refreshConnection(); library.refreshFolders()
+                #if DEBUG
+                library.startLANProbeIfRequested()
+                #endif
+            } else if phase == .background { library.sceneDidEnterBackground() }
         }
         #if DEBUG
         .task {
+            if ProcessInfo.processInfo.arguments.contains("-preview-lan") {
+                tab = 1
+                library.transferMethod = .localNetwork
+            }
             if ProcessInfo.processInfo.arguments.contains("-preview-player"), let track = library.allTracks.first {
                 player.prepareLayoutPreview(track.url)
                 showingPlayer = true
@@ -304,6 +313,25 @@ private struct TransfersView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Picker("传输方式", selection: $library.transferMethod) {
+                        ForEach(TransferMethod.allCases) { method in Text(method.title).tag(method) }
+                    }.pickerStyle(.segmented).disabled(library.isLANActive)
+                    if library.transferMethod == .localNetwork {
+                        Text("同一局域网，保持两端 App 打开").font(.caption).foregroundStyle(AppPalette.textSecondary)
+                        if library.isLANActive {
+                            HStack(spacing: 10) {
+                                if library.isPreparingLAN { ProgressView().tint(AppPalette.accent) }
+                                Text(library.lanStatus).font(.caption).foregroundStyle(AppPalette.accent)
+                                Spacer(minLength: 4)
+                                Button("停止") { library.stopLANTransfers() }
+                                    .font(.caption.weight(.semibold)).buttonStyle(.bordered).tint(.red).frame(minHeight: 44)
+                            }
+                        } else if !library.lanStatus.isEmpty {
+                            Text(library.lanStatus).font(.caption).foregroundStyle(AppPalette.textSecondary)
+                        }
+                    }
+                }.padding(16).background(AppPalette.surface, in: RoundedRectangle(cornerRadius: 18))
                 Label(library.connectionDescription, systemImage: "applewatch")
                     .font(.subheadline).foregroundStyle(library.canSend ? Color.green : AppPalette.textSecondary)
                     .padding(16).frame(maxWidth: .infinity, alignment: .leading)
@@ -333,6 +361,14 @@ private struct TransferRow: View {
     private var metrics: TransferMetrics? { library.transferMetrics[record.id] }
     private var tint: Color { record.state == .stored ? .green : (record.state == .failed ? .red : AppPalette.accent) }
     private var status: String {
+        if record.method == .localNetwork {
+            if record.state == .awaitingReceipt { return "手表正在校验和保存" }
+            if record.state == .queued {
+                if library.isPreparingLAN && record.lanSessionID == nil { return "正在准备…" }
+                if library.isAwaitingLANAcceptance { return "等待手表接收" }
+                return metrics?.isTransferring == true ? "传输中" : "等待手表下载"
+            }
+        }
         guard record.state == .queued else { return record.state.title }
         guard let metrics else { return "等待系统传输" }
         if metrics.totalBytes > 0 && metrics.completedBytes >= metrics.totalBytes { return "等待手表确认" }
@@ -346,15 +382,26 @@ private struct TransferRow: View {
                 Image(systemName: record.state.symbol).font(.title2).foregroundStyle(tint).frame(width: 26, height: 44)
                 VStack(alignment: .leading, spacing: 6) {
                     Text(record.songTitle).font(.subheadline.weight(.semibold)).lineLimit(2)
-                    Text(status).font(.caption).foregroundStyle(tint)
+                    HStack(spacing: 6) {
+                        Text(status).foregroundStyle(tint)
+                        Text(record.method.title).foregroundStyle(AppPalette.textSecondary)
+                    }.font(.caption)
                     if record.state == .failed { Text(record.message).font(.caption2).foregroundStyle(AppPalette.textSecondary) }
                 }.frame(maxWidth: .infinity, alignment: .leading)
-                if record.state == .queued {
+                if record.state == .queued || (record.method == .localNetwork && record.state == .awaitingReceipt) {
                     Button { library.cancel(record) } label: { Image(systemName: "xmark.circle").frame(width: 44, height: 44) }
                         .buttonStyle(.plain).foregroundStyle(AppPalette.textSecondary).accessibilityLabel("取消传输 \(record.songTitle)")
                 } else if record.state != .stored {
-                    Button("重试") { library.retry(record) }.font(.caption.weight(.semibold))
-                        .buttonStyle(.bordered).tint(AppPalette.accent).frame(minHeight: 44)
+                    if record.method == .localNetwork {
+                        Menu {
+                            Button("重试局域网") { library.retry(record) }
+                            Button("改用普通传输") { library.retry(record, using: .system) }
+                        } label: { Text("重试").font(.caption.weight(.semibold)).frame(minHeight: 44) }
+                            .buttonStyle(.bordered).tint(AppPalette.accent)
+                    } else {
+                        Button("重试") { library.retry(record) }.font(.caption.weight(.semibold))
+                            .buttonStyle(.bordered).tint(AppPalette.accent).frame(minHeight: 44)
+                    }
                 }
             }
             if record.state == .queued {

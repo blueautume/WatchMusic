@@ -35,5 +35,7 @@
 		<string>UIInterfaceOrientationPortrait</string>
 		<string>UIInterfaceOrientationPortraitUpsideDown</string>
 	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>通过同一局域网向你的 Apple Watch 传输音乐。</string>
 </dict>
 </plist>
