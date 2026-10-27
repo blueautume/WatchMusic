@@ -36,8 +36,12 @@ struct LibraryView: View {
         .task {
             if ProcessInfo.processInfo.arguments.contains("-preview-lan") {
                 tab = 1
-                library.transferMethod = .localNetwork
             }
+            #if targetEnvironment(simulator)
+            library.prepareTransferListPreviewIfRequested()
+            if ProcessInfo.processInfo.arguments.contains("-preview-transfers-in-progress") ||
+                ProcessInfo.processInfo.arguments.contains("-preview-transfers-completed") { tab = 1 }
+            #endif
             if ProcessInfo.processInfo.arguments.contains("-preview-player"), let track = library.allTracks.first {
                 player.prepareLayoutPreview(track.url)
                 showingPlayer = true
@@ -306,52 +310,71 @@ private struct MusicTrackRow: View {
     }
 }
 
+private enum TransferListTab: String, CaseIterable, Identifiable {
+    case inProgress = "进行中", stored = "已传输"
+    var id: String { rawValue }
+}
+
 private struct TransfersView: View {
     @EnvironmentObject private var library: PhoneLibrary
     @State private var clearing = false
+    @State private var selectedTab = TransferListTab.inProgress
+    private var records: [TransferRecord] {
+        selectedTab == .inProgress ? library.activeTransfers : library.storedTransfers
+    }
+    private var canClearRecords: Bool {
+        selectedTab == .stored ? !records.isEmpty : library.transfers.contains { !$0.state.isPending && $0.state != .stored }
+    }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                VStack(alignment: .leading, spacing: 12) {
-                    Picker("传输方式", selection: $library.transferMethod) {
-                        ForEach(TransferMethod.allCases) { method in Text(method.title).tag(method) }
-                    }.pickerStyle(.segmented).disabled(library.isLANActive)
-                    if library.transferMethod == .localNetwork {
-                        Text("同一 Wi-Fi，保持手机 App 打开").font(.caption).foregroundStyle(AppPalette.textSecondary)
-                        if library.isLANActive {
-                            HStack(spacing: 10) {
-                                if library.isPreparingLAN { ProgressView().tint(AppPalette.accent) }
-                                Text(library.lanStatus).font(.caption).foregroundStyle(AppPalette.accent)
-                                Spacer(minLength: 4)
-                                Button("停止") { library.stopLANTransfers() }
-                                    .font(.caption.weight(.semibold)).buttonStyle(.bordered).tint(.red).frame(minHeight: 44)
-                            }
-                        } else if !library.lanStatus.isEmpty {
-                            Text(library.lanStatus).font(.caption).foregroundStyle(AppPalette.textSecondary)
-                        }
-                    }
-                }.padding(16).background(AppPalette.surface, in: RoundedRectangle(cornerRadius: 18))
-                Label(library.connectionDescription, systemImage: "applewatch")
-                    .font(.subheadline).foregroundStyle(library.canSend ? Color.green : AppPalette.textSecondary)
-                    .padding(16).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(AppPalette.surface, in: RoundedRectangle(cornerRadius: 18))
-                if library.transfers.isEmpty {
-                    ContentUnavailableView("还没有传输", systemImage: "arrow.up.doc")
-                } else {
-                    LazyVStack(spacing: 12) { ForEach(library.transfers) { TransferRow(record: $0) } }
+        VStack(spacing: 0) {
+            Picker("传输记录", selection: $selectedTab) {
+                ForEach(TransferListTab.allCases) { tab in
+                    let count = tab == .inProgress ? library.activeTransfers.count : library.storedTransfers.count
+                    Text("\(tab.rawValue) · \(count)").tag(tab)
                 }
-            }.padding(20)
+            }.pickerStyle(.segmented)
+                .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 16)
+            ScrollView {
+                if records.isEmpty {
+                    ContentUnavailableView(selectedTab == .inProgress ? "没有进行中的传输" : "还没有已传输的歌曲",
+                                           systemImage: selectedTab == .inProgress ? "arrow.up.doc" : "checkmark.circle")
+                        .padding(.top, 48)
+                    if selectedTab == .inProgress && !library.canSend {
+                        Label(library.connectionDescription, systemImage: "applewatch")
+                            .font(.caption).foregroundStyle(AppPalette.textSecondary).padding(.horizontal, 20)
+                    }
+                } else {
+                    LazyVStack(spacing: 12) {
+                        ForEach(records) { TransferRow(record: $0) }
+                    }.padding(.horizontal, 20).padding(.bottom, 20)
+                }
+            }.id(selectedTab)
         }
         .background(AppPalette.background).navigationTitle("传输")
         .toolbar {
-            Button { clearing = true } label: { Image(systemName: "ellipsis.circle").frame(width: 44, height: 44) }
-                .accessibilityLabel("管理传输记录")
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                if selectedTab == .inProgress && library.isLANActive {
+                    Button("全部取消") { library.stopLANTransfers() }
+                        .font(.subheadline).tint(.red).frame(minHeight: 44)
+                }
+                Button { clearing = true } label: { Image(systemName: "ellipsis.circle").frame(width: 44, height: 44) }
+                    .accessibilityLabel("管理传输记录").disabled(!canClearRecords)
+            }
         }
         .confirmationDialog("传输记录", isPresented: $clearing) {
-            Button("清除已完成记录") { library.clearCompletedTransfers() }
+            if selectedTab == .stored {
+                Button("清除已传输记录") { library.clearCompletedTransfers() }
+            } else {
+                Button("清除已结束记录") { library.clearUnfinishedTransfers() }
+            }
             Button("取消", role: .cancel) {}
         }
+        #if DEBUG && targetEnvironment(simulator)
+        .task {
+            if ProcessInfo.processInfo.arguments.contains("-preview-transfers-completed") { selectedTab = .stored }
+        }
+        #endif
     }
 }
 
@@ -359,22 +382,29 @@ private struct TransferRow: View {
     @EnvironmentObject private var library: PhoneLibrary
     let record: TransferRecord
     private var metrics: TransferMetrics? { library.transferMetrics[record.id] }
-    private var tint: Color { record.state == .stored ? .green : (record.state == .failed ? .red : AppPalette.accent) }
+    private var fraction: Double { min(1, max(0, library.progress[record.id] ?? 0)) }
+    private var hasStarted: Bool { (metrics?.completedBytes ?? 0) > 0 || metrics?.isTransferring == true || fraction > 0 }
+    private var tint: Color {
+        switch record.state {
+        case .stored: return .green
+        case .failed: return .red
+        case .cancelled: return AppPalette.textSecondary
+        case .queued: return hasStarted ? AppPalette.accent : AppPalette.textSecondary
+        case .awaitingReceipt, .outdated: return AppPalette.accent
+        }
+    }
     private var status: String {
-        if record.method == .localNetwork {
-            if record.state == .awaitingReceipt { return "手表正在校验和保存" }
-            if record.state == .queued {
-                if library.isPreparingLAN && record.lanSessionID == nil { return "正在准备…" }
-                if library.isAwaitingLANAcceptance { return "等待手表接收" }
-                return metrics?.isTransferring == true ? "传输中" : "等待手表后台处理"
-            }
+        if record.state == .awaitingReceipt {
+            return record.method == .localNetwork ? "正在校验和保存" : "等待手表确认"
         }
         guard record.state == .queued else { return record.state.title }
-        guard let metrics else { return "等待系统传输" }
-        if metrics.totalBytes > 0 && metrics.completedBytes >= metrics.totalBytes { return "等待手表确认" }
-        return metrics.isTransferring ? "传输中" : "等待系统传输"
+        if record.method == .localNetwork && library.isPreparingLAN && record.lanSessionID == nil { return "正在准备…" }
+        if fraction >= 1 { return "等待手表确认" }
+        if metrics?.isTransferring == true { return "传输中" }
+        if hasStarted { return "等待进度更新" }
+        if record.method == .localNetwork && library.isAwaitingLANAcceptance { return "等待手表接收" }
+        return "等待传输"
     }
-    private var fraction: Double { min(1, max(0, library.progress[record.id] ?? 0)) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -382,29 +412,23 @@ private struct TransferRow: View {
                 Image(systemName: record.state.symbol).font(.title2).foregroundStyle(tint).frame(width: 26, height: 44)
                 VStack(alignment: .leading, spacing: 6) {
                     Text(record.songTitle).font(.subheadline.weight(.semibold)).lineLimit(2)
-                    HStack(spacing: 6) {
-                        Text(status).foregroundStyle(tint)
-                        Text(record.method.title).foregroundStyle(AppPalette.textSecondary)
-                    }.font(.caption)
-                    if record.state == .failed { Text(record.message).font(.caption2).foregroundStyle(AppPalette.textSecondary) }
+                    Text(status).font(.caption).foregroundStyle(tint)
+                    if record.state == .failed && !record.message.isEmpty && record.message != record.state.title {
+                        Text(record.message).font(.caption2).foregroundStyle(AppPalette.textSecondary)
+                    }
+                    if record.state == .stored && record.totalBytes > 0 {
+                        Text(transferBytes(record.totalBytes)).font(.caption2).foregroundStyle(AppPalette.textSecondary)
+                    }
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 if record.state == .queued || (record.method == .localNetwork && record.state == .awaitingReceipt) {
                     Button { library.cancel(record) } label: { Image(systemName: "xmark.circle").frame(width: 44, height: 44) }
                         .buttonStyle(.plain).foregroundStyle(AppPalette.textSecondary).accessibilityLabel("取消传输 \(record.songTitle)")
-                } else if record.state != .stored {
-                    if record.method == .localNetwork {
-                        Menu {
-                            Button("重试局域网") { library.retry(record) }
-                            Button("改用普通传输") { library.retry(record, using: .system) }
-                        } label: { Text("重试").font(.caption.weight(.semibold)).frame(minHeight: 44) }
-                            .buttonStyle(.bordered).tint(AppPalette.accent)
-                    } else {
-                        Button("重试") { library.retry(record) }.font(.caption.weight(.semibold))
-                            .buttonStyle(.bordered).tint(AppPalette.accent).frame(minHeight: 44)
-                    }
+                } else if record.state != .stored && !record.state.isPending {
+                    Button("重试") { library.retry(record) }.font(.caption.weight(.semibold))
+                        .buttonStyle(.bordered).tint(AppPalette.accent).frame(minHeight: 44)
                 }
             }
-            if record.state == .queued {
+            if record.state == .queued && hasStarted {
                 ProgressView(value: fraction).tint(AppPalette.accent)
                     .accessibilityLabel("传输进度").accessibilityValue("\(Int(fraction * 100))%")
                 HStack {

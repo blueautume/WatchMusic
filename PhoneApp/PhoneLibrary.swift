@@ -27,7 +27,7 @@ enum TransferMethod: String, Codable, CaseIterable, Identifiable {
     var title: String { self == .system ? "普通" : "局域网" }
 }
 
-struct TransferRecord: Identifiable, Codable {
+struct TransferRecord: Identifiable, Codable, TransferListRecord {
     typealias State = TransferRecordState
     let id: String
     let folder: String
@@ -46,7 +46,6 @@ struct TransferRecord: Identifiable, Codable {
 
 @MainActor
 final class PhoneLibrary: NSObject, ObservableObject {
-    @Published var transferMethod: TransferMethod = .localNetwork
     @Published private(set) var isPreparingLAN = false
     @Published private(set) var activeLANSessionID: String?
     @Published private(set) var lanStatus = ""
@@ -82,6 +81,11 @@ final class PhoneLibrary: NSObject, ObservableObject {
     private var hasRunLANProbe = false
     private var lanProbeWaitTask: Task<Void, Never>?
     #endif
+    #if DEBUG && targetEnvironment(simulator)
+    private let isTransferListPreview = ProcessInfo.processInfo.arguments.contains("-preview-transfers-in-progress") ||
+        ProcessInfo.processInfo.arguments.contains("-preview-transfers-completed")
+    private var didPrepareTransferListPreview = false
+    #endif
     private lazy var lanServer: LANHTTPServer = {
         let server = LANHTTPServer()
         server.onStopped = { [weak self] message in
@@ -92,6 +96,10 @@ final class PhoneLibrary: NSObject, ObservableObject {
 
     var isLANActive: Bool { isPreparingLAN || activeLANSessionID != nil }
     var isAwaitingLANAcceptance: Bool { activeLANSessionID != nil && !lanHandshakeAccepted }
+    var activeTransfers: [TransferRecord] {
+        TransferListOrdering.activeTransfers(transfers, metrics: transferMetrics, completedBytes: lanCompletedBytes)
+    }
+    var storedTransfers: [TransferRecord] { TransferListOrdering.storedTransfers(transfers) }
 
     var allTracks: [PhoneTrack] { folders.flatMap { tracks(in: $0) } }
     var totalBytes: Int64 { allTracks.reduce(0) { $0 + $1.bytes } }
@@ -104,6 +112,9 @@ final class PhoneLibrary: NSObject, ObservableObject {
         root = documents.appendingPathComponent("Music", isDirectory: true)
         transferIndex = documents.appendingPathComponent("transfers.json")
         super.init()
+        #if DEBUG && targetEnvironment(simulator)
+        if isTransferListPreview { return }
+        #endif
         do {
             try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
             try fileManager.createDirectory(at: root.appendingPathComponent("默认目录", isDirectory: true), withIntermediateDirectories: true)
@@ -128,6 +139,9 @@ final class PhoneLibrary: NSObject, ObservableObject {
     func tracks(in folder: PhoneFolder) -> [PhoneTrack] { trackIndex[folder.name] ?? [] }
 
     func refreshFolders() {
+        #if DEBUG && targetEnvironment(simulator)
+        if isTransferListPreview { return }
+        #endif
         do {
             let directories = try fileManager.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
             folders = directories.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
@@ -279,41 +293,26 @@ final class PhoneLibrary: NSObject, ObservableObject {
     func send(_ tracks: [PhoneTrack], retryPending: Bool = false) {
         guard !isImporting else { errorMessage = "导入完成后再发送。"; return }
         guard !tracks.isEmpty, transferSessionReady() else { return }
-        if transferMethod == .localNetwork {
-            startLANTransfer(tracks, retryPending: retryPending)
-            return
-        }
-        for track in tracks {
-            queueTransfer(track: track, retryPending: retryPending)
-        }
-        refreshProgress()
+        startLANTransfer(tracks, retryPending: retryPending)
     }
 
     private func transferSessionReady() -> Bool {
+        #if DEBUG && targetEnvironment(simulator)
+        if isTransferListPreview { return false }
+        #endif
         guard WCSession.isSupported(), WCSession.default.activationState == .activated else { errorMessage = "Apple Watch 连接尚未就绪，请稍后重试。"; return false }
         guard WCSession.default.isPaired else { errorMessage = "请先在 iPhone 上配对 Apple Watch。"; return false }
         guard WCSession.default.isWatchAppInstalled else { errorMessage = "请先在 Apple Watch 上安装“随身音乐 Lab”。"; return false }
         return true
     }
 
-    private func queueTransfer(track: PhoneTrack, retryPending: Bool) {
-        let session = WCSession.default
-        guard fileManager.fileExists(atPath: track.url.path) else { errorMessage = "歌曲已被移动或删除。"; return }
-        if let pending = transfers.first(where: { $0.folder == track.folder && $0.fileName == track.fileName && $0.state.isPending }) {
-            let outstanding = session.outstandingFileTransfers.contains { $0.file.metadata?["transferID"] as? String == pending.id }
-            let localTransferIsLive = pending.method == .localNetwork && lanRecordIDs.contains(pending.id)
-            guard retryPending && !outstanding && !localTransferIsLive else { return }
-            updateTransfer(id: pending.id, state: .cancelled, message: "已重新发送")
-        }
-        let bytes = Int64((try? track.url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
-        let record = TransferRecord(id: UUID().uuidString, folder: track.folder, fileName: track.fileName, createdAt: Date(), state: .queued, message: "等待系统安排传输", totalBytes: bytes)
-        let metadata: [String: Any] = ["transferID": record.id, "folder": track.folder, "fileName": track.fileName, "kind": "audio"]
-        transfers.insert(record, at: 0)
-        saveTransfers()
-        session.transferFile(track.url, metadata: metadata)
-    }
-
     func cancel(_ record: TransferRecord) {
+        #if DEBUG && targetEnvironment(simulator)
+        if isTransferListPreview {
+            updateTransfer(id: record.id, state: .cancelled, message: "已取消")
+            return
+        }
+        #endif
         guard record.state.isPending, WCSession.isSupported() else { return }
         if record.method == .localNetwork {
             lanServer.cancel(fileID: record.id)
@@ -331,15 +330,30 @@ final class PhoneLibrary: NSObject, ObservableObject {
         refreshProgress()
     }
 
-    func retry(_ record: TransferRecord, using method: TransferMethod? = nil) {
+    func retry(_ record: TransferRecord) {
         guard !isImporting, transferSessionReady() else { return }
         guard let track = allTracks.first(where: { $0.folder == record.folder && $0.fileName == record.audioFileName }) else { errorMessage = "本地文件已被移动或删除，请从音乐库重新发送。"; return }
-        if (method ?? record.method) == .localNetwork { startLANTransfer([track], retryPending: true) }
-        else { queueTransfer(track: track, retryPending: true); refreshProgress() }
+        startLANTransfer([track], retryPending: true)
     }
 
     func clearCompletedTransfers() {
-        transfers.removeAll { !$0.state.isPending && !lanRecordIDs.contains($0.id) }
+        transfers.removeAll { $0.state == .stored }
+        saveTransfers()
+        refreshProgress()
+    }
+
+    func clearUnfinishedTransfers() {
+        var liveIDs = lanRecordIDs
+        #if DEBUG && targetEnvironment(simulator)
+        if !isTransferListPreview, WCSession.isSupported() {
+            liveIDs.formUnion(WCSession.default.outstandingFileTransfers.compactMap { $0.file.metadata?["transferID"] as? String })
+        }
+        #else
+        if WCSession.isSupported() {
+            liveIDs.formUnion(WCSession.default.outstandingFileTransfers.compactMap { $0.file.metadata?["transferID"] as? String })
+        }
+        #endif
+        transfers.removeAll { TransferListOrdering.canClearUnfinished($0.state, isLive: liveIDs.contains($0.id)) }
         saveTransfers()
         refreshProgress()
     }
@@ -351,6 +365,9 @@ final class PhoneLibrary: NSObject, ObservableObject {
     func isFullyTransferred(_ track: PhoneTrack) -> Bool { latestTransfer(for: track)?.state == .stored }
 
     private func saveTransfers() {
+        #if DEBUG && targetEnvironment(simulator)
+        if isTransferListPreview { return }
+        #endif
         do { try JSONEncoder().encode(transfers).write(to: transferIndex, options: .atomic) }
         catch { errorMessage = "无法保存传输记录：\(error.localizedDescription)" }
     }
@@ -369,6 +386,9 @@ final class PhoneLibrary: NSObject, ObservableObject {
     }
 
     private func refreshProgress() {
+        #if DEBUG && targetEnvironment(simulator)
+        if isTransferListPreview { return }
+        #endif
         let records = Dictionary(uniqueKeysWithValues: transfers.filter { $0.state == .queued }.map { ($0.id, $0) })
         var values: [String: Double] = [:]
         var metrics: [String: TransferMetrics] = [:]
@@ -415,6 +435,43 @@ final class PhoneLibrary: NSObject, ObservableObject {
 
     func stopLANTransfers() { stopLANTransfers(message: "已停止局域网传输", state: .cancelled) }
 
+    #if DEBUG && targetEnvironment(simulator)
+    /// Isolated screenshot fixtures: startup skips disk access and WC activation,
+    /// and all persistence/progress refresh paths remain disabled in this mode.
+    func prepareTransferListPreviewIfRequested() {
+        guard isTransferListPreview, !didPrepareTransferListPreview else { return }
+        didPrepareTransferListPreview = true
+        timer?.cancel()
+        timer = nil
+        let now = Date()
+        func record(_ id: String, _ name: String, state: TransferRecord.State,
+                    age: TimeInterval, bytes: Int64 = 18_000_000,
+                    transport: TransferMethod? = .localNetwork) -> TransferRecord {
+            TransferRecord(id: id, folder: "夜跑歌单", fileName: name, createdAt: now.addingTimeInterval(-age),
+                           state: state, message: state.title, totalBytes: bytes, transport: transport)
+        }
+        let active = record("preview-active", "夜空中的旋律.flac", state: .queued, age: 90)
+        let waitingOld = record("preview-waiting-old", "海风与落日.mp3", state: .queued, age: 120, bytes: 8_600_000)
+        let waitingNew = record("preview-waiting-new", "城市漫步.flac", state: .queued, age: 60, bytes: 26_000_000)
+        // Active belongs at the front only through the derived sort. Stored
+        // records and waiting records are deliberately reversed in this array.
+        transfers = [
+            waitingNew,
+            record("preview-stored-old", "晴天的远方.mp3", state: .stored, age: 3_600, bytes: 9_200_000, transport: nil),
+            waitingOld,
+            record("preview-confirming", "山间回声.flac", state: .awaitingReceipt, age: 150, bytes: 21_000_000),
+            record("preview-failed", "雨后散步.mp3", state: .failed, age: 300, bytes: 7_400_000),
+            record("preview-stored-new", "晚风轻拂.flac", state: .stored, age: 600, bytes: 24_000_000),
+            active
+        ]
+        progress = [active.id: 0.35, waitingOld.id: 0, waitingNew.id: 0]
+        transferMetrics = [active.id: TransferMetrics(completedBytes: 6_300_000, totalBytes: active.totalBytes,
+                                                      bytesPerSecond: 1_100_000, estimatedTimeRemaining: 10.6,
+                                                      isTransferring: true)]
+        connectionDescription = "Apple Watch 已连接"
+    }
+    #endif
+
     #if DEBUG
     /// Starts only a deliberately provisioned fixture folder, never a user's library.
     /// Device validation uses real WCSession messages, HTTP requests, and save receipts.
@@ -434,7 +491,6 @@ final class PhoneLibrary: NSObject, ObservableObject {
                    WCSession.default.isReachable, WCSession.default.isPaired, WCSession.default.isWatchAppInstalled {
                     let currentTracks = self.tracks(in: folder)
                     guard !currentTracks.isEmpty, !Task.isCancelled, self.isAppForeground else { return }
-                    self.transferMethod = .localNetwork
                     self.send(currentTracks)
                     return
                 }
@@ -666,6 +722,9 @@ final class PhoneLibrary: NSObject, ObservableObject {
     }
 
     func refreshConnection() {
+        #if DEBUG && targetEnvironment(simulator)
+        if isTransferListPreview { return }
+        #endif
         guard WCSession.isSupported() else { return }
         let session = WCSession.default
         canSend = session.activationState == .activated && session.isPaired && session.isWatchAppInstalled
@@ -677,6 +736,9 @@ final class PhoneLibrary: NSObject, ObservableObject {
     }
 
     private func reconcileTransfers() {
+        #if DEBUG && targetEnvironment(simulator)
+        if isTransferListPreview { return }
+        #endif
         let outstandingIDs = Set(WCSession.default.outstandingFileTransfers.compactMap { $0.file.metadata?["transferID"] as? String })
         for index in transfers.indices where transfers[index].method == .system && transfers[index].state == .queued && !outstandingIDs.contains(transfers[index].id) {
             // Completion callbacks and save receipts can arrive after activation.
