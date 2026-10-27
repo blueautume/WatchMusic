@@ -1,0 +1,5 @@
+Tool: built-in ImageGen
+
+Use case: logo-brand. Asset type: one final production app icon, same identity used on an iPhone and Apple Watch offline MP3 music player named 随身音乐. Create a premium, distinctive, minimal symbol: a sculptural warm orange continuous ribbon that forms a forward play triangle and a subtle circular sound groove. Central bold silhouette that stays legible at 40 pixels, elegant slightly dimensional soft material, intentional geometry, centered in a solid deep graphite almost-black square. Restrained amber highlights and very subtle depth, not photorealistic. Full bleed opaque square, no rounded outer corners (OS supplies mask), no framing, no margin or device mockup. No text, no letters, no numbers, no Apple branding, no headphones or watch illustration, no watermark. 1024x1024 composition with icon silhouette occupying central 65 percent; safe for the circular watchOS icon crop. Deliver a single clean app icon.
+
+Original output: AppIcon-source.png. Export: RGB 1024px via deterministic resize for each platform appiconset; RGB 256px BrandMark in shared assets.
