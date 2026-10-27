@@ -22,7 +22,7 @@ struct PhoneTrack: Identifiable, Hashable {
 }
 
 enum TransferMethod: String, Codable, CaseIterable, Identifiable {
-    case system, localNetwork
+    case localNetwork, system
     var id: String { rawValue }
     var title: String { self == .system ? "普通" : "局域网" }
 }
@@ -46,7 +46,7 @@ struct TransferRecord: Identifiable, Codable {
 
 @MainActor
 final class PhoneLibrary: NSObject, ObservableObject {
-    @Published var transferMethod: TransferMethod = .system
+    @Published var transferMethod: TransferMethod = .localNetwork
     @Published private(set) var isPreparingLAN = false
     @Published private(set) var activeLANSessionID: String?
     @Published private(set) var lanStatus = ""

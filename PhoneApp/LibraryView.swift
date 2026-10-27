@@ -318,7 +318,7 @@ private struct TransfersView: View {
                         ForEach(TransferMethod.allCases) { method in Text(method.title).tag(method) }
                     }.pickerStyle(.segmented).disabled(library.isLANActive)
                     if library.transferMethod == .localNetwork {
-                        Text("同一局域网，保持手机 App 打开；手表可息屏").font(.caption).foregroundStyle(AppPalette.textSecondary)
+                        Text("同一 Wi-Fi，保持手机 App 打开").font(.caption).foregroundStyle(AppPalette.textSecondary)
                         if library.isLANActive {
                             HStack(spacing: 10) {
                                 if library.isPreparingLAN { ProgressView().tint(AppPalette.accent) }

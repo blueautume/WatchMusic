@@ -30,7 +30,11 @@ open OfflineWatchPlayerLab.xcodeproj
 
 ## 传输进度
 
-`experiment/lan-transfer` 分支增加可选的“局域网”模式：手机临时提供文件下载服务，手表通过 HTTP 接收并校验后保存。普通传输仍为默认模式。[实验说明与测试步骤](LANTransferExperiment.md)
+`experiment/lan-transfer` 分支默认使用“局域网”模式：手机临时提供文件下载服务，手表通过 HTTP 接收并校验后保存。可在手机“传输”页手动切换为“普通”，使用 WatchConnectivity 发送。[实验说明与测试步骤](LANTransferExperiment.md)
+
+LAN 接收开始后，手表自动进入专用全屏接收页，显示进度、歌曲和批次，完成或取消后自动返回音乐库。充电或满电仍接电时，自动模式使用 CoreMotion 重力识别四个显示方向，并修正左侧表冠的坐标；平放时保留当前方向，也可通过方向按钮选择“自动”或“旋转 90°”。检测到拔电后恢复竖屏，退出接收页后停止传感器。
+
+watchOS 公共接口不能保证屏幕持续全亮到传输结束，充电也没有通用的保持全亮 API。Always On 取决于设备和用户设置，系统仍会降低亮度和更新频率；本次实现不承诺全程常亮，底层继续保留系统后台接收与恢复作为息屏后的保障。
 
 局域网模式需要手机 App 保持前台，发送期间会暂时保持手机屏幕常亮；手表在打开 App 并开始接收后可息屏。手表使用系统后台下载会话，并持久保存恢复清单、已下载文件和待发送回执，进程重新启动时重新关联系统任务。系统可能延迟进度和结果回调，因此不保证息屏期间实时更新速度或预计时间；手动强退 App 可能使系统取消后台传输。
 
@@ -44,8 +48,7 @@ open OfflineWatchPlayerLab.xcodeproj
 
 ```sh
 xcodebuild -project OfflineWatchPlayerLab.xcodeproj -scheme OfflineWatchPlayerLab \
-  -configuration Debug -destination 'generic/platform=iOS Simulator' \
-  CODE_SIGNING_ALLOWED=NO build
+  -configuration Debug -destination 'generic/platform=iOS Simulator' build
 Tests/run-playback-tests.sh
 Tests/run-audio-format-tests.sh
 Tests/run-audio-metadata-tests.sh
@@ -54,6 +57,7 @@ Tests/run-transfer-tests.sh
 Tests/run-lan-protocol-tests.sh
 Tests/run-lan-http-server-probe.sh
 Tests/run-lan-receipt-tests.sh
+Tests/run-watch-orientation-tests.sh
 ```
 
 播放器集成探针可在已启动的模拟器运行，不会播放声音：

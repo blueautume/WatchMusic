@@ -6,11 +6,19 @@
 
 1. 用此分支构建并安装 iPhone 与 Apple Watch 两端实验 App。
 2. 两台设备连接能互相访问的同一 Wi-Fi 局域网，在两端打开 App。
-3. 手机进入“传输”，选择“局域网”，然后从歌曲菜单或目录发送音乐。
-4. 手机显示接收进度、估算速度和剩余时间，手表音乐库显示正在接收的歌曲并提供取消。
-5. 等待“已保存到手表”。失败记录可以“重试局域网”或“改用普通传输”。
+3. 手机启动后默认选择“局域网”，从歌曲菜单或目录发送音乐；如需普通 WatchConnectivity 传输，可在“传输”页手动切换“普通”。
+4. 手机显示接收进度、估算速度和剩余时间，手表自动进入专用全屏接收页，显示百分比、歌曲、批次及取消按钮。
+5. 等待“已保存到手表”。接收完成或取消后，手表自动退出接收页并返回音乐库。失败记录可以“重试局域网”或“改用普通传输”。
 
 局域网传输期间手机 App 需保持前台，应用会暂时保持手机屏幕常亮，结束后恢复原设置；手机进入后台会停止源服务。手表在打开 App 并开始接收后可自然息屏或返回表盘，应用不会因此取消系统下载。系统可能延迟交付进度和保存结果，唤醒手表后才更新界面也属于后台调度范围；不保证息屏期间实时显示速度和预计时间。普通模式继续使用原来的 WatchConnectivity 系统传输。
+
+## 接收页与显示方向
+
+充电或满电仍接电时，接收页在自动模式下通过 CoreMotion 读取重力，识别竖屏、左右横屏和倒置四个方向；左侧表冠设置会先做坐标修正。平放时重力无法确定屏幕内的旋转方向，页面会保留上一个稳定方向；斜角和短暂抖动也不会立即触发旋转，需连续三个明确同向样本才切换。
+
+方向按钮提供“自动”和“旋转 90°”。手动旋转后保持所选方向，重新选择“自动”可恢复重力判断；平放时自动模式仍保留当前方向。检测到拔电后自动回到竖屏及自动模式。退出接收页时停止 CoreMotion，并恢复进入页面前的电量监控设置；进入后台也停止方向采样。
+
+本页不实现“传输期间始终全亮”。watchOS 公共接口不能保证屏幕持续全亮到传输结束，充电也没有通用的保持全亮 API。[Always On](https://developer.apple.com/documentation/watchos-apps/designing-your-app-for-the-always-on-state) 由设备能力和用户设置决定，系统仍会降低亮度和界面更新频率，并可能返回表盘。接收页适配低亮度状态，底层继续保留此前的系统后台下载及进程恢复，屏幕状态不会主动取消网络任务。
 
 ## 实现与范围
 
@@ -43,6 +51,7 @@ Tests/run-lan-http-server-probe.sh
 Tests/run-lan-receipt-tests.sh
 Tests/run-lan-background-tests.sh
 Tests/run-transfer-tests.sh
+Tests/run-watch-orientation-tests.sh
 ```
 
 先以 Xcode 默认模拟器签名构建 Debug 并启动一个 watchOS 模拟器，再运行真实 HTTP 下载探针。不要禁用 `CODE_SIGNING_ALLOWED`：后台下载守护进程需要构建时生成的应用标识 entitlement，单独补一个无 entitlement 的临时签名不足以运行：
@@ -73,6 +82,8 @@ python3 Tests/run-watch-lan-probe.py WATCH_SIMULATOR_UDID \
 - 先用小 MP3 验证连接，再用较大 FLAC 观察实际吞吐量；分别用普通模式和局域网模式发送同一文件比较。
 - 检查路由器是否开启访客网络或客户端隔离；连上相同名称的 Wi-Fi 不一定能互访。
 - 在传输开始后让手表自然息屏、返回表盘并再次打开，检查最终落盘和保存回执；用真实生命周期日志核对后台状态与终态先后。
+- 充电及满电接电时测试四个重力方向、左侧表冠、平放保留和方向按钮，拔电后检查恢复竖屏；完成或取消后检查自动退出接收页。
+- 分别检查设备支持且开启 Always On、用户关闭 Always On 时的界面；低亮度和低更新频率属于系统行为，不能以接收页出现作为全程常亮的证据。
 - 检查手机切后台、断网、单首取消、停止整批、失败后重试及手表空间不足；手动强退单独测试。
 - 普通模式与局域网模式不要同时发送相同目标路径；应用也会阻止冲突。
 - 模拟器可以验证 HTTP 收发与文件落盘，无法据此判断手表真实无线链路和速度。
@@ -87,3 +98,4 @@ python3 Tests/run-watch-lan-probe.py WATCH_SIMULATOR_UDID \
 - [后台下载](https://developer.apple.com/documentation/foundation/downloading-files-in-the-background)：系统独立进程下载、相同标识恢复及整批提交任务。
 - [后台配置与手动强退](https://developer.apple.com/documentation/foundation/urlsessionconfiguration/background(withidentifier:))：用户强退与系统正常结束进程的后台行为有区别。
 - [重定向回调范围](https://developer.apple.com/documentation/foundation/urlsessiontaskdelegate/urlsession(_:task:willperformhttpredirection:newrequest:completionhandler:))：后台会话自动跟随重定向。
+- [Always On 界面](https://developer.apple.com/documentation/watchos-apps/designing-your-app-for-the-always-on-state)：设备与用户设置影响显示，系统会降低亮度和更新频率。

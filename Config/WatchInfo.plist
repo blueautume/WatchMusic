@@ -28,6 +28,10 @@
 	</array>
 	<key>WKApplication</key>
 	<true/>
+	<key>WKSupportsAlwaysOnDisplay</key>
+	<true/>
+	<key>NSMotionUsageDescription</key>
+	<string>根据手表摆放方向旋转充电时的传输界面。</string>
 	<key>WKCompanionAppBundleIdentifier</key>
 	<string>$(BASE_BUNDLE_IDENTIFIER)</string>
 	<key>WKRunsIndependentlyOfCompanionApp</key>

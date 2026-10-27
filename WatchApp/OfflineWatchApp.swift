@@ -40,10 +40,20 @@ struct OfflineWatchApp: App {
                 let fixture = documents.appendingPathComponent("Music/UI预览/测试旋律.flac")
                 if FileManager.default.fileExists(atPath: fixture.path) { player.prepareLayoutPreview(fixture) }
             }
-        } else { FolderListView() }
+        } else if ProcessInfo.processInfo.arguments.contains("-preview-lan-transfer") {
+            LANTransferView(reception: LANReceptionStatus(fileName: "夜空中的旋律 · 夜跑歌单.flac", completedBytes: 6_300_000,
+                                                        totalBytes: 10_000_000, fileIndex: 2, fileCount: 12, isSaving: false), cancel: {},
+                            previewOrientation: ProcessInfo.processInfo.arguments.contains("-preview-landscape") ? .landscapeRight : .portrait)
+        } else { applicationView }
         #else
-        FolderListView()
+        applicationView
         #endif
+    }
+
+    @ViewBuilder private var applicationView: some View {
+        if let reception = library.lanReception {
+            LANTransferView(reception: reception, cancel: library.cancelLANTransfer)
+        } else { FolderListView() }
     }
 }
 
@@ -65,25 +75,6 @@ struct FolderListView: View {
     var body: some View {
         NavigationStack {
             List {
-                if let reception = library.lanReception {
-                    VStack(alignment: .leading, spacing: 7) {
-                        HStack {
-                            Text("局域网 · \(reception.fileIndex)/\(reception.fileCount)").font(.caption2).foregroundStyle(AppPalette.accent)
-                            Spacer(minLength: 4)
-                            Button(action: library.cancelLANTransfer) { Image(systemName: "xmark.circle").frame(width: 44, height: 44) }
-                                .buttonStyle(.plain).accessibilityLabel("取消局域网传输")
-                        }
-                        Text(reception.fileName).font(.caption).lineLimit(1)
-                        if reception.isSaving {
-                            HStack { ProgressView().controlSize(.mini); Text("正在校验并保存…").font(.caption2) }
-                        } else {
-                            ProgressView(value: Double(reception.completedBytes), total: Double(max(1, reception.totalBytes)))
-                                .tint(AppPalette.accent).accessibilityLabel("接收进度")
-                            Text("\(Int(Double(reception.completedBytes) / Double(max(1, reception.totalBytes)) * 100))% · 可息屏接收")
-                                .font(.caption2).foregroundStyle(.secondary)
-                        }
-                    }.listRowBackground(AppPalette.surface)
-                }
                 if player.currentURL != nil {
                     NavigationLink(destination: NowPlayingView()) {
                         HStack(spacing: 9) {
