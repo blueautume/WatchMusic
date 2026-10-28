@@ -214,3 +214,27 @@
 最终构建：完整 Debug 与 Release 通用 iOS Simulator 构建均成功（含嵌入的 Watch target）；Watch 独立 Debug 构建与最低 watchOS 10 检查通过。仅有工具链 AppIntents 未使用及已签名嵌入二进制不重复 strip 的标准提示，没有源码编译警告。最终 Watch 模拟器实际 HTTP 前台生命周期回归 2 场景通过，覆盖下载中 inactive 取消、保存前 inactive 保留缓存、回 active 新清单重试及最终 SHA 一致。
 
 Watch 重力采样另外改为 Core Motion 原生串行队列回调，移除 0.25 秒手动取样 Timer；停止和重启用 generation 排除迟到回调。相关 Watch 源码通过 Swift 6 严格并发类型检查。电量因 WatchKit 未提供变更通知，保留仅前台的受限采样，值未变时不发布界面更新。
+
+
+## 固定覆盖播放条与 Watch 原生导航（2026-10-29）
+
+- 手机播放条固定叠放在系统标签栏上方，两边 16pt、条高 72pt，保留封面入口和上一首/播放暂停/下一首。删除拖动手势、拖动柄、收起状态和悬浮球；旧 FloatingPlayerView 已删除，改为边界仅覆盖条本身的 PinnedPlayerView。系统 TabBar 上缘通过原生布局回调读取，没有高度轮询。
+- 音乐库根目录、歌曲和传输列表在播放条存在时增加 88pt 可滚动尾部空间。使用 14 个临时空目录在原生 iPhone 26.5 模拟器滚到最底部，确认最后一个目录可完整出现在条上方，播放条不参与列表的纵向排版。测试目录清理只删除本轮创建的空目录。
+- 手机播放页模式、速度、睡眠、系统音频输出统一为四个 44pt 图标入口，没有按钮说明文字，保留可访问性标签与选中状态。
+- Watch 电量移至“随身音乐”标题之后，移除独立电量栏；音乐库、歌曲、管理、表单及信息行统一显式圆角卡片和曲面侧边距。
+- Watch 播放器分为歌曲封面/歌名/歌手、四操作图标、三播放按钮三个纵向区块；四操作顺序与手机一致。移除旧“更多”、设置/队列专用入口及仅供旧页使用的子视图。竖屏使用原生返回，原生导航保留系统时钟所有权，未调用私有 API。
+- 表冠交给 WKInterfaceVolumeControl(origin: .local) 的原生 focus/resignFocus，关闭直接操作弹层或结束音频输出选择后恢复焦点；不模拟系统音量写入，也不通过轮询抢焦点。输出激活增加完成回调，成功、失败、忙碌拒绝或播放器释放后均能返回，旧无参数调用兼容。
+
+路由闪动确认包含两项原因：原先 viewport.center(in:) 用全局 frame 反向抵消 NavigationStack 的动画位移，令新旧页叠在同一位置；另根页隐藏导航栏、目的页显示导航栏，会在进入过程中改变 safeArea，导致内容先上移再下跳。现改为页内局部布局、不透明背景和裁切，并统一导航栏可见性，不增加私有导航参数、固定延时或安全区缓存。录屏调试只使用 Debug 一次性预览延迟，不进入 Release。
+
+验证：完整 Debug、Release 通用 iOS Simulator 构建（包含 Watch）通过，watchOS 最低版本继续为 10。原生 iOS / watchOS 静音播放器集成各 61 项通过，其中新增 7 项输出完成与焦点返回路径；Watch 本地页面布局 384 项、方向规则 145 项通过。模拟器检查包含 iPhone 长目录尾部、40/49mm 播放页、左右充电横屏、根页标题电量、圆角列表、速度与睡眠原生弹层。
+
+截图保存在 [PinnedPlayer 预览目录](Artifacts/Previews/PinnedPlayer)：[目录底部与固定条](Artifacts/Previews/PinnedPlayer/phone-library-last-folder-light.png)、[手机四图标](Artifacts/Previews/PinnedPlayer/phone-four-controls-light.png)、[40mm 播放页](Artifacts/Previews/PinnedPlayer/watch-40-player-portrait.png)。
+
+限制：watchOS 原生确认弹窗仍沿系统方向呈现；模拟器音频服务不能验证真实蓝牙耳机的表冠音量或焦点，需用户手动检查。未安装、启动或操作任何真机。
+
+最终补查：音乐库与目的页统一原生导航栏可见性后，重新安装最终候选到40/49mm模拟器；49mm圆角音乐库、歌曲列表、竖横屏播放器及横屏传输页再次检查通过。最终截图：[标题后电量及圆角目录](Artifacts/Previews/PinnedPlayer/watch-49-library-rounded.png)、[歌曲列表](Artifacts/Previews/PinnedPlayer/watch-49-tracklist-rounded.png)、[竖屏播放器](Artifacts/Previews/PinnedPlayer/watch-49-player-portrait.png)、[横屏播放器](Artifacts/Previews/PinnedPlayer/watch-49-player-landscape-right.png)、[横屏传输页](Artifacts/Previews/PinnedPlayer/watch-49-transfer-landscape-right.png)。固定播放条在浅色长目录中验证尾部留白，另保存[深色固定播放条](Artifacts/Previews/PinnedPlayer/phone-fixed-player-dark.png)。本轮14个临时空目录已清理。
+
+导航录屏逐帧复核：最终40mm真实 NavigationStack push 的播放器首帧出现后，24个采样的封面顶边均为106px，23个完整播放按钮采样的顶/底均为260/342px，未再出现导航栏后补引起的垂直跳位；只保留正常横向入场。供复核：[1.25秒过渡短片](Artifacts/Previews/PinnedPlayer/watch-40-navigation.mp4)、[关键帧对照](Artifacts/Previews/PinnedPlayer/watch-40-navigation-frames.png)。播放器测试及截图使用生成的MP3/FLAC夹具，没有发送用户音乐。
+
+最终代码补齐：音频会话尚未激活时首次表冠 focus 可能无效，因此真实播放从暂停转为开始时，以一次状态事件重新请求系统焦点；弹层期间仍不抢焦点，无轮询。手机尾部空白独立成 section，保留目录卡片最后一行的原生圆角。

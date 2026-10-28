@@ -209,6 +209,40 @@ struct MusicPlayerIntegrationProbe {
         player = nil
         print("COMPLETION_STATE_PASS")
 
+        // Output selection returns focus to its caller on every completion path,
+        // without a timer or an actual audio route in this probe.
+        var outputCallbacks: [@MainActor (Bool, String?) -> Void] = []
+        var outputCompletions = 0
+        let outputEngine = MusicPlayer(makeAudioPlayer: { try SilentCompletionDecoder(contentsOf: $0) },
+                                       activateAudioSession: { outputCallbacks.append($0) })
+        outputEngine.requestAudioOutput { outputCompletions += 1 }
+        try check(outputCallbacks.count == 1 && outputCompletions == 0,
+                  "output selection waits for native session activation completion")
+        outputCallbacks.removeFirst()(false, "Output test failure")
+        try check(outputCompletions == 1 && outputEngine.errorMessage == "Output test failure",
+                  "failed output selection reports the error and returns focus once")
+        outputEngine.errorMessage = nil
+        outputEngine.requestAudioOutput { outputCompletions += 1 }
+        outputCallbacks.removeFirst()(true, nil)
+        try check(outputCompletions == 2 && outputEngine.errorMessage == nil,
+                  "successful output selection returns focus once")
+        outputEngine.play(a, in: [a])
+        try check(outputEngine.isPreparing && outputCallbacks.count == 1, "fixture holds a pending playback activation")
+        outputEngine.requestAudioOutput { outputCompletions += 1 }
+        try check(outputCompletions == 3 && outputCallbacks.count == 1,
+                  "busy playback rejects output selection and immediately returns focus")
+        outputCallbacks.removeFirst()(false, "Held test activation")
+        outputEngine.stop()
+        do {
+            let releasedEngine = MusicPlayer(makeAudioPlayer: { try SilentCompletionDecoder(contentsOf: $0) },
+                                             activateAudioSession: { outputCallbacks.append($0) })
+            releasedEngine.requestAudioOutput { outputCompletions += 1 }
+        }
+        try check(outputCallbacks.count == 1, "output activation can outlive its player")
+        outputCallbacks.removeFirst()(true, nil)
+        try check(outputCompletions == 4, "late output completion returns focus even after the player is released")
+        print("OUTPUT_FOCUS_COMPLETION_PASS")
+
         // Optional real fixtures verify bounded embedded artwork on both platforms.
         for argument in arguments.dropFirst() {
             let fixture = URL(fileURLWithPath: argument)

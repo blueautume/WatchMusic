@@ -358,9 +358,10 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         savePlayback()
     }
 
-    func requestAudioOutput() {
-        guard !isPreparing else { return }
+    func requestAudioOutput(onCompletion: (@MainActor () -> Void)? = nil) {
+        guard !isPreparing else { onCompletion?(); return }
         activateSession { [weak self] success, message in
+            defer { onCompletion?() }
             guard let self else { return }
             self.updateRoute()
             if !success { self.errorMessage = message ?? "请在手表控制中心连接 AirPods 或蓝牙耳机。" }

@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 /// Actions need access to the player without subscribing the entire library to
@@ -19,6 +20,8 @@ struct LibraryView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var showingPlayer = false
     @State private var tab = 0
+    @State private var hasPlayer = false
+    @State private var tabBarClearance: CGFloat = 68
 
     var body: some View {
         TabView(selection: $tab) {
@@ -33,7 +36,21 @@ struct LibraryView: View {
         }
         .toolbarBackground(AppPalette.background, for: .tabBar)
         .toolbarBackground(.visible, for: .tabBar)
-        .overlay { FloatingPlayerView(openPlayer: { showingPlayer = true }) }
+        .background {
+            // Measurement stays behind content and never participates in the
+            // overlay's hit region or the lists' pan gestures.
+            TabBarLayoutReader { tabBarClearance = $0 ?? 68 }
+                .allowsHitTesting(false)
+        }
+        .overlay(alignment: .bottom) {
+            // The overlay's only view is the actual 72pt bar. Offset moves its
+            // drawing and hit region together, without a full-screen container.
+            PinnedPlayerView(openPlayer: { showingPlayer = true })
+                .padding(.horizontal, PinnedPlayerLayout.horizontalMargin)
+                .offset(y: -(tabBarClearance + PinnedPlayerLayout.tabBarGap))
+        }
+        .environment(\.pinnedPlayerClearance, hasPlayer ? PinnedPlayerLayout.listClearance : 0)
+        .onReceive(playerPresence) { hasPlayer = $0 }
         .overlay(alignment: .top) { TransferSummaryToast() }
         .overlay { PhonePlayerErrorPresenter(isShowingPlayer: showingPlayer) }
         .sheet(isPresented: $showingPlayer) {
@@ -73,11 +90,18 @@ struct LibraryView: View {
             if arguments.contains("-preview-player"), let track = library.allTracks.first {
                 player?.prepareLayoutPreview(track.url)
                 showingPlayer = true
-            } else if arguments.contains("-preview-floating-player"), let track = library.allTracks.first {
+            } else if arguments.contains("-preview-pinned-player"), let track = library.allTracks.first {
                 player?.prepareLayoutPreview(track.url)
             }
         }
         #endif
+    }
+
+    /// Subscribe only to presence changes, so playback ticks and play/pause do
+    /// not reconfigure navigation, list spacing or an open menu.
+    private var playerPresence: AnyPublisher<Bool, Never> {
+        guard let player else { return Just(false).eraseToAnyPublisher() }
+        return player.$currentURL.map { $0 != nil }.removeDuplicates().eraseToAnyPublisher()
     }
 }
 

@@ -3,6 +3,7 @@ import SwiftUI
 struct LibraryHome: View {
     @EnvironmentObject private var library: PhoneLibrary
     @Environment(\.phonePlayer) private var player
+    @Environment(\.pinnedPlayerClearance) private var playerClearance
     let openPlayer: () -> Void
     @State private var search = ""
     @State private var showCreate = false
@@ -46,6 +47,7 @@ struct LibraryHome: View {
                     }.disabled(library.isImporting)
                 }
             }
+            if playerClearance > 0 { PinnedPlayerListSpace(height: playerClearance) }
         }
         .foregroundStyle(AppPalette.textPrimary)
         .scrollContentBackground(.hidden).background(AppPalette.background)
@@ -130,6 +132,7 @@ private struct FolderRow: View {
 struct FolderDetailView: View {
     @EnvironmentObject private var library: PhoneLibrary
     @Environment(\.phonePlayer) private var player
+    @Environment(\.pinnedPlayerClearance) private var playerClearance
     let folder: PhoneFolder
     let openPlayer: () -> Void
     @State private var importing = false
@@ -201,6 +204,7 @@ struct FolderDetailView: View {
                 Text(summary).font(.caption).foregroundStyle(AppPalette.textSecondary)
                     .listRowBackground(Color.clear)
             }
+            if playerClearance > 0 { PinnedPlayerListSpace(height: playerClearance) }
         }
         .foregroundStyle(AppPalette.textPrimary)
         .scrollContentBackground(.hidden).background(AppPalette.background)
@@ -422,5 +426,20 @@ private struct TrackActionsMenu: View {
 
     private func cleanPlayerQueue() {
         if !FileManager.default.fileExists(atPath: track.url.path) { player?.removeFromQueue(track.url) }
+    }
+}
+
+/// A scrollable tail, not an inset or a permanent gap in the list layout.
+private struct PinnedPlayerListSpace: View {
+    let height: CGFloat
+
+    var body: some View {
+        // Keep the transparent tail out of the music section so its last
+        // visible row retains the system's rounded bottom corners.
+        Section {
+            Color.clear.frame(height: height)
+                .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
+                .listRowBackground(Color.clear).accessibilityHidden(true)
+        }
     }
 }

@@ -92,6 +92,7 @@ struct TransfersView: View {
 /// Sorting observes only transient measurements, so the active song can move to
 /// the front without publishing an unrelated library/navigation update.
 private struct TransferRecordCards: View {
+    @Environment(\.pinnedPlayerClearance) private var playerClearance
     let library: PhoneLibrary
     let records: [TransferRecord]
     @ObservedObject var progress: PhoneTransferProgress
@@ -114,7 +115,7 @@ private struct TransferRecordCards: View {
                             canToggle: library.canToggleTransfers(ids: [record.id]),
                             shouldStart: library.shouldStartTransfers(ids: [record.id]))
             }
-        }.padding(.horizontal, 20).padding(.bottom, 24)
+        }.padding(.horizontal, 20).padding(.bottom, 24 + playerClearance)
     }
 }
 

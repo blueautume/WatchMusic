@@ -66,22 +66,45 @@ struct PhoneNowPlayingView: View {
     private var secondaryControls: some View {
         HStack(spacing: 0) {
             Button(action: player.cycleMode) {
-                VStack(spacing: 7) { Image(systemName: player.mode.symbol).font(.system(size: 20)); Text(player.mode.title).font(.caption2) }.frame(maxWidth: .infinity, minHeight: 50)
-            }.accessibilityLabel("播放模式：\(player.mode.title)，轻点切换")
+                Image(systemName: player.mode.symbol).font(.system(size: 20)).frame(width: 44, height: 44)
+            }
+            .frame(maxWidth: .infinity)
+            .accessibilityLabel("播放模式，轻点切换").accessibilityValue(player.mode.title)
             Menu {
                 ForEach([0.75, 1.0, 1.25, 1.5, 2.0], id: \.self) { rate in
-                    Button { player.setRate(rate) } label: { HStack { Text(rate == 1 ? "正常速度" : "\(rate.formatted()) 倍速"); if player.playbackRate == rate { Image(systemName: "checkmark") } } }
+                    Button { player.setRate(rate) } label: {
+                        HStack {
+                            Text(rate == 1 ? "正常速度" : "\(rate.formatted()) 倍速")
+                            if player.playbackRate == rate { Image(systemName: "checkmark") }
+                        }
+                    }
                 }
-            } label: { VStack(spacing: 7) { Text("\(player.playbackRate.formatted())×").font(.system(size: 18, weight: .semibold, design: .rounded)); Text("播放速度").font(.caption2) }.frame(maxWidth: .infinity, minHeight: 50) }.accessibilityLabel("播放速度，\(player.playbackRate.formatted()) 倍")
+            } label: {
+                Image(systemName: "speedometer").font(.system(size: 20)).frame(width: 44, height: 44)
+            }
+            .frame(maxWidth: .infinity)
+            .foregroundStyle(player.playbackRate == 1 ? AppPalette.textSecondary : AppPalette.accent)
+            .accessibilityLabel("播放速度").accessibilityValue("\(player.playbackRate.formatted()) 倍")
             Menu {
-                ForEach([15, 30, 45, 60], id: \.self) { minutes in Button("\(minutes) 分钟后暂停") { player.setSleepTimer(minutes: minutes) } }
-                if player.sleepTimerDeadline != nil { Button("关闭定时", role: .destructive) { player.setSleepTimer(minutes: nil) } }
-            } label: { VStack(spacing: 7) { Image(systemName: player.sleepTimerDeadline == nil ? "moon" : "moon.zzz.fill").font(.system(size: 20)); Text("睡眠定时").font(.caption2) }.frame(maxWidth: .infinity, minHeight: 50) }.accessibilityLabel("睡眠定时")
+                ForEach([15, 30, 45, 60], id: \.self) { minutes in
+                    Button("\(minutes) 分钟后暂停") { player.setSleepTimer(minutes: minutes) }
+                }
+                if player.sleepTimerDeadline != nil {
+                    Button("关闭定时", role: .destructive) { player.setSleepTimer(minutes: nil) }
+                }
+            } label: {
+                Image(systemName: player.sleepTimerDeadline == nil ? "moon" : "moon.zzz.fill")
+                    .font(.system(size: 20)).frame(width: 44, height: 44)
+            }
+            .frame(maxWidth: .infinity)
+            .foregroundStyle(player.sleepTimerDeadline == nil ? AppPalette.textSecondary : AppPalette.accent)
+            .accessibilityLabel("睡眠定时")
+            .accessibilityValue(player.sleepTimerDeadline == nil ? "未开启" : "已开启")
             AudioRoutePicker()
-                .frame(width: 44, height: 44)
-                .frame(maxWidth: .infinity, minHeight: 50)
+                .frame(width: 44, height: 44).frame(maxWidth: .infinity)
                 .accessibilityLabel("选择音频输出设备")
-        }.buttonStyle(.plain).foregroundStyle(AppPalette.textSecondary).padding(.top, 2)
+        }
+        .buttonStyle(.plain).foregroundStyle(AppPalette.textSecondary).padding(.top, 2)
     }
 
     private var volumeControl: some View {
