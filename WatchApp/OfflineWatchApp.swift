@@ -356,13 +356,23 @@ private struct WatchLibraryInfoView: View {
 /// rounded card and curved-screen margins rather than relying on list styling.
 private extension View {
     func watchCardRow() -> some View {
-        listRowBackground(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(AppPalette.surface)
-                .padding(.horizontal, 4)
-                .padding(.vertical, 3)
-        )
-        .listRowInsets(EdgeInsets(top: 8, leading: 14, bottom: 8, trailing: 14))
+        modifier(WatchCardRow())
+    }
+}
+
+private struct WatchCardRow: ViewModifier {
+    @Environment(\.watchPageInsets) private var pageInsets
+
+    func body(content: Content) -> some View {
+        content
+            .listRowBackground(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(AppPalette.surface)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 3)
+            )
+            .listRowInsets(EdgeInsets(top: 8, leading: max(14, pageInsets?.rowLeading ?? 14),
+                                     bottom: 8, trailing: max(14, pageInsets?.rowTrailing ?? 14)))
     }
 }
 

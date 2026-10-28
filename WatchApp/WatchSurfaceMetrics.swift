@@ -1,42 +1,103 @@
 import Foundation
 import CoreGraphics
 
-/// watchOS owns the physical system clock. Rotated canvases leave its strip
-/// unobstructed; native navigation owns the remaining page insets.
+/// Rotate the full physical display. The native clock occupies a corner, not
+/// a strip that should be removed from every list and page.
 struct WatchSurfaceMetrics {
     let physicalSize: CGSize
     let orientation: WatchTransferOrientation
 
-    var systemClockInset: CGFloat {
-        orientation == .portrait ? 0 : (min(physicalSize.width, physicalSize.height) < 190 ? 30 : 38)
-    }
-
-    var canvasPhysicalSize: CGSize {
-        CGSize(width: physicalSize.width, height: max(0, physicalSize.height - systemClockInset))
-    }
-
     var logicalSize: CGSize {
         orientation.isLandscape
-            ? CGSize(width: canvasPhysicalSize.height, height: canvasPhysicalSize.width)
-            : canvasPhysicalSize
+            ? CGSize(width: physicalSize.height, height: physicalSize.width) : physicalSize
     }
 
-    /// Only full-canvas content (such as the transfer view) needs this inset.
-    /// Native navigation destinations must use their own local geometry instead.
-    var fullCanvasTopInset: CGFloat {
-        orientation == .portrait ? (min(physicalSize.width, physicalSize.height) < 190 ? 28 : 34) : 0
+    var physicalClockFrame: CGRect {
+        let width: CGFloat = physicalSize.width < 190 ? 90 : 98
+        let height: CGFloat = physicalSize.width < 190 ? 32 : 36
+        return CGRect(x: max(0, physicalSize.width - width), y: 0,
+                      width: min(width, physicalSize.width), height: height)
     }
-    var contentSize: CGSize {
-        CGSize(width: logicalSize.width, height: max(0, logicalSize.height - fullCanvasTopInset))
+
+    var clockFrame: CGRect {
+        let clock = physicalClockFrame
+        switch orientation {
+        case .portrait: return clock
+        case .landscapeRight:
+            return CGRect(x: clock.minY, y: physicalSize.width - clock.maxX,
+                          width: clock.height, height: clock.width)
+        case .landscapeLeft:
+            return CGRect(x: physicalSize.height - clock.maxY, y: clock.minX,
+                          width: clock.height, height: clock.width)
+        case .upsideDown:
+            return CGRect(x: physicalSize.width - clock.maxX, y: physicalSize.height - clock.maxY,
+                          width: clock.width, height: clock.height)
+        }
     }
 
     func physicalCanvasCenter(in bounds: CGRect) -> CGPoint {
-        CGPoint(x: bounds.midX, y: bounds.minY + systemClockInset + canvasPhysicalSize.height / 2)
+        CGPoint(x: bounds.midX, y: bounds.midY)
     }
 
-    /// This center is relative to the page. A navigation transition's global
-    /// translation must never feed back into a destination's local position.
-    static func localContentCenter(size: CGSize, topInset: CGFloat) -> CGPoint {
-        CGPoint(x: size.width / 2, y: (size.height + topInset) / 2)
+    func pageInsets(hasAction: Bool, hasTitle: Bool) -> WatchPageInsets {
+        let header: CGFloat
+        if hasAction && !hasTitle {
+            // Landscape playback shares its first row with a compact Back
+            // control instead of spending a whole row on navigation.
+            header = orientation == .portrait ? 46 : 0
+        } else if orientation == .portrait {
+            header = clockFrame.maxY + (hasAction ? 20 : 28)
+        } else { header = hasAction ? 46 : 32 }
+
+        let buttonX: CGFloat = orientation == .landscapeRight
+            ? logicalSize.width - 56 : 12
+        let button = hasAction ? CGRect(x: buttonX, y: 2, width: 44, height: 44) : .null
+        return WatchPageInsets(size: logicalSize, headerHeight: header,
+                               clockFrame: clockFrame, backFrame: button)
+    }
+}
+
+/// Insets constrain text and hit targets only. Backgrounds and scrolling rows
+/// can still paint through the curved display edges and behind the small header.
+struct WatchPageInsets {
+    let headerHeight: CGFloat
+    let bodyClockFrame: CGRect
+    let backFrame: CGRect
+    let metadataLeading: CGFloat
+    let metadataTrailing: CGFloat
+    let bottomControlLeading: CGFloat
+    let bottomControlTrailing: CGFloat
+    let bottomControlBottom: CGFloat
+    let scrollTop: CGFloat
+    let scrollBottom: CGFloat
+    let rowLeading: CGFloat
+    let rowTrailing: CGFloat
+
+    init(size: CGSize, headerHeight: CGFloat, clockFrame: CGRect, backFrame: CGRect) {
+        self.headerHeight = headerHeight
+        self.backFrame = backFrame
+        bodyClockFrame = clockFrame.offsetBy(dx: 0, dy: -headerHeight)
+        let height = max(0, size.height - headerHeight)
+        let metadataBand = CGRect(x: 0, y: 0, width: size.width, height: min(70, height))
+        let bottomBand = CGRect(x: 0, y: max(0, height - 72), width: size.width, height: min(72, height))
+        func sides(avoiding regions: [CGRect], in band: CGRect) -> (CGFloat, CGFloat) {
+            var leading: CGFloat = 12
+            var trailing: CGFloat = 12
+            for region in regions where !region.isNull && region.intersects(band) {
+                if region.midX < size.width / 2 { leading = max(leading, region.maxX + 6) }
+                else { trailing = max(trailing, size.width - region.minX + 6) }
+            }
+            return (leading, trailing)
+        }
+        let bodyBack = headerHeight == 0 ? backFrame : .null
+        (metadataLeading, metadataTrailing) = sides(avoiding: [bodyClockFrame, bodyBack], in: metadataBand)
+        let isBottomClock = bodyClockFrame.width > size.width * 0.4 && bodyClockFrame.intersects(bottomBand)
+        (bottomControlLeading, bottomControlTrailing) = sides(
+            avoiding: isBottomClock ? [] : [bodyClockFrame], in: bottomBand)
+        bottomControlBottom = isBottomClock ? bodyClockFrame.height + 8 : 12
+        scrollTop = 2
+        scrollBottom = isBottomClock ? bodyClockFrame.height + 12 : 14
+        let listBand = CGRect(x: 0, y: 0, width: size.width, height: height)
+        (rowLeading, rowTrailing) = sides(avoiding: isBottomClock ? [] : [bodyClockFrame], in: listBand)
     }
 }

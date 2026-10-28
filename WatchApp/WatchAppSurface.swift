@@ -3,15 +3,16 @@ import SwiftUI
 struct WatchContentViewport {
     let size: CGSize
     let orientation: WatchTransferOrientation
-    let topInset: CGFloat
-
-    func center(in geometry: GeometryProxy) -> CGPoint {
-        WatchSurfaceMetrics.localContentCenter(size: geometry.size, topInset: topInset)
-    }
+    let clockFrame: CGRect
+    let metrics: WatchSurfaceMetrics
 }
 
 private struct WatchContentViewportKey: EnvironmentKey {
     static let defaultValue: WatchContentViewport? = nil
+}
+
+private struct WatchPageInsetsKey: EnvironmentKey {
+    static let defaultValue: WatchPageInsets? = nil
 }
 
 extension EnvironmentValues {
@@ -19,10 +20,14 @@ extension EnvironmentValues {
         get { self[WatchContentViewportKey.self] }
         set { self[WatchContentViewportKey.self] = newValue }
     }
+    var watchPageInsets: WatchPageInsets? {
+        get { self[WatchPageInsetsKey.self] }
+        set { self[WatchPageInsetsKey.self] = newValue }
+    }
 }
 
-/// The navigation stack owns its page layout and transition coordinates. Only
-/// this outer canvas rotates; watchOS keeps ownership of the system clock.
+/// Navigation owns each page's local coordinates. Only the outer full-size
+/// canvas rotates, without a rectangular clock strip or ancestor scroll mask.
 struct WatchAppSurface<Content: View>: View {
     @EnvironmentObject private var display: WatchAppDisplay
     @Environment(\.isLuminanceReduced) private var reducedLuminance
@@ -33,13 +38,11 @@ struct WatchAppSurface<Content: View>: View {
     var body: some View {
         GeometryReader { geometry in
             let metrics = WatchSurfaceMetrics(physicalSize: geometry.size, orientation: display.orientation)
-            let viewport = WatchContentViewport(size: metrics.contentSize,
-                orientation: display.orientation, topInset: metrics.fullCanvasTopInset)
             content
-                .environment(\.watchContentViewport, viewport)
+                .environment(\.watchContentViewport, WatchContentViewport(size: metrics.logicalSize,
+                    orientation: display.orientation, clockFrame: metrics.clockFrame, metrics: metrics))
                 .frame(width: metrics.logicalSize.width, height: metrics.logicalSize.height)
                 .background(AppPalette.background)
-                .clipped()
                 .rotationEffect(.degrees(Double(display.orientation.rawValue)))
                 .position(metrics.physicalCanvasCenter(in: CGRect(origin: .zero, size: geometry.size)))
                 .animation(reducedLuminance ? nil : .easeInOut(duration: 0.2), value: display.orientation)
@@ -49,5 +52,4 @@ struct WatchAppSurface<Content: View>: View {
         .background(AppPalette.background)
         .persistentSystemOverlays(.visible)
     }
-
 }

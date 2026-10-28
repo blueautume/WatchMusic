@@ -1,10 +1,11 @@
 import SwiftUI
 import WatchKit
 
-/// The system navigation bar owns Back. Playback content stays in the local
-/// navigation proposal so push/pop transitions never fight page positioning.
+/// Playback and navigation share the full local canvas; the page header owns
+/// Back and the system-clock clearance without a second native toolbar inset.
 struct NowPlayingView: View {
     @EnvironmentObject private var player: WatchPlayer
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @State private var activeDialog: PlaybackDialog?
     @State private var choosingOutput = false
@@ -18,23 +19,18 @@ struct NowPlayingView: View {
     }
 
     var body: some View {
-        GeometryReader { geometry in
-            let layout = WatchPlaybackLayout(size: geometry.size)
-            VStack(spacing: layout.spacing) {
-                metadata(layout: layout)
-                    .frame(height: layout.metadataHeight)
-                playbackOptions(height: layout.optionsHeight)
-                mainControls(height: layout.transportHeight)
+        WatchPlaybackPageContent(
+            choosingOutput: choosingOutput,
+            acceptsPrimaryGesture: activeDialog == nil && !choosingOutput,
+            chooseSpeed: { activeDialog = .speed },
+            chooseSleep: { activeDialog = .sleep },
+            chooseOutput: {
+                choosingOutput = true
+                player.requestAudioOutput { choosingOutput = false }
             }
-            .padding(.horizontal, layout.horizontalInset)
-            .padding(.bottom, layout.bottomInset)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        }
+        )
         .background(AppPalette.background)
-        .clipped()
-        .navigationTitle("")
-        .navigationBarBackButtonHidden(false)
-        .toolbar(.visible, for: .navigationBar)
+        .watchPage(title: "", action: { dismiss() }, symbol: "chevron.left")
         .digitalCrownAccessory {
             WatchCrownVolumeControl(isFocused: acceptsCrownInput, isPlaying: player.isPlaying)
                 .frame(width: 28, height: 64)
@@ -59,6 +55,73 @@ struct NowPlayingView: View {
             isOnScreen = false
             activeDialog = nil
         }
+    }
+
+    private var dialogPresented: Binding<Bool> {
+        Binding(get: { activeDialog != nil }, set: { if !$0 { activeDialog = nil } })
+    }
+
+    @ViewBuilder private var dialogActions: some View {
+        switch activeDialog {
+        case .speed:
+            ForEach([0.75, 1.0, 1.25, 1.5, 2.0], id: \.self) { rate in
+                Button {
+                    player.setRate(rate)
+                    activeDialog = nil
+                } label: {
+                    if player.playbackRate == rate { Label(String(format: "%g×", rate), systemImage: "checkmark") }
+                    else { Text(String(format: "%g×", rate)) }
+                }
+            }
+        case .sleep:
+            ForEach([15, 30, 45, 60], id: \.self) { minutes in
+                Button("\(minutes) 分钟") {
+                    player.setSleepTimer(minutes: minutes)
+                    activeDialog = nil
+                }
+            }
+            if player.sleepTimerDeadline != nil {
+                Button("关闭定时", role: .destructive) {
+                    player.setSleepTimer(minutes: nil)
+                    activeDialog = nil
+                }
+            }
+        case nil:
+            EmptyView()
+        }
+        Button("取消", role: .cancel) { activeDialog = nil }
+    }
+}
+
+/// This child receives the local clock-clearance values injected by watchPage.
+private struct WatchPlaybackPageContent: View {
+    @EnvironmentObject private var player: WatchPlayer
+    @Environment(\.watchPageInsets) private var pageInsets
+    let choosingOutput: Bool
+    let acceptsPrimaryGesture: Bool
+    let chooseSpeed: @MainActor () -> Void
+    let chooseSleep: @MainActor () -> Void
+    let chooseOutput: @MainActor () -> Void
+
+    var body: some View {
+        GeometryReader { geometry in
+            let layout = WatchPlaybackLayout(size: geometry.size,
+                minimumBottom: pageInsets?.bottomControlBottom ?? 0)
+            VStack(spacing: layout.spacing) {
+                metadata(layout: layout)
+                    .padding(.leading, max(0, (pageInsets?.metadataLeading ?? 0) - layout.horizontalInset))
+                    .padding(.trailing, max(0, (pageInsets?.metadataTrailing ?? 0) - layout.horizontalInset))
+                    .frame(height: layout.metadataHeight)
+                playbackOptions(height: layout.optionsHeight)
+                mainControls(height: layout.transportHeight)
+                    .padding(.leading, max(0, (pageInsets?.bottomControlLeading ?? 0) - layout.horizontalInset))
+                    .padding(.trailing, max(0, (pageInsets?.bottomControlTrailing ?? 0) - layout.horizontalInset))
+            }
+            .padding(.horizontal, layout.horizontalInset)
+            .padding(.bottom, layout.bottomInset)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+        .background(AppPalette.background)
     }
 
     private func metadata(layout: WatchPlaybackLayout) -> some View {
@@ -86,13 +149,10 @@ struct NowPlayingView: View {
             option(symbol: player.mode.symbol, active: player.mode != .sequential, height: height,
                    label: "播放模式：\(player.mode.title)，轻点切换", action: player.cycleMode)
             option(symbol: "speedometer", active: player.playbackRate != 1, height: height,
-                   label: "播放速度，\(player.playbackRate.formatted()) 倍") { activeDialog = .speed }
+                   label: "播放速度，\(player.playbackRate.formatted()) 倍", action: chooseSpeed)
             option(symbol: player.sleepTimerDeadline == nil ? "moon" : "moon.zzz.fill",
-                   active: player.sleepTimerDeadline != nil, height: height, label: "睡眠定时") { activeDialog = .sleep }
-            option(symbol: "airplayaudio", active: true, height: height, label: "选择音频输出") {
-                choosingOutput = true
-                player.requestAudioOutput { choosingOutput = false }
-            }
+                   active: player.sleepTimerDeadline != nil, height: height, label: "睡眠定时", action: chooseSleep)
+            option(symbol: "airplayaudio", active: true, height: height, label: "选择音频输出", action: chooseOutput)
             .disabled(player.isPreparing || choosingOutput)
         }
         .buttonStyle(.plain)
@@ -156,44 +216,10 @@ struct NowPlayingView: View {
             .accessibilityLabel("下一首")
         if #available(watchOS 11.0, *) {
             control.handGestureShortcut(.primaryAction,
-                isEnabled: player.currentURL != nil && activeDialog == nil && !choosingOutput)
+                isEnabled: player.currentURL != nil && acceptsPrimaryGesture)
         } else { control }
     }
 
-    private var dialogPresented: Binding<Bool> {
-        Binding(get: { activeDialog != nil }, set: { if !$0 { activeDialog = nil } })
-    }
-
-    @ViewBuilder private var dialogActions: some View {
-        switch activeDialog {
-        case .speed:
-            ForEach([0.75, 1.0, 1.25, 1.5, 2.0], id: \.self) { rate in
-                Button {
-                    player.setRate(rate)
-                    activeDialog = nil
-                } label: {
-                    if player.playbackRate == rate { Label(String(format: "%g×", rate), systemImage: "checkmark") }
-                    else { Text(String(format: "%g×", rate)) }
-                }
-            }
-        case .sleep:
-            ForEach([15, 30, 45, 60], id: \.self) { minutes in
-                Button("\(minutes) 分钟") {
-                    player.setSleepTimer(minutes: minutes)
-                    activeDialog = nil
-                }
-            }
-            if player.sleepTimerDeadline != nil {
-                Button("关闭定时", role: .destructive) {
-                    player.setSleepTimer(minutes: nil)
-                    activeDialog = nil
-                }
-            }
-        case nil:
-            EmptyView()
-        }
-        Button("取消", role: .cancel) { activeDialog = nil }
-    }
 }
 
 private enum PlaybackDialog: Equatable {
@@ -212,17 +238,23 @@ private struct WatchPlaybackLayout {
     let bottomInset: CGFloat
     let spacing: CGFloat
 
-    init(size: CGSize) {
-        compact = size.width < 180 || size.height < 165
-        tight = size.height < 145
-        let veryTight = size.height < 118
-        metadataHeight = veryTight ? 28 : (tight ? 34 : (compact ? 48 : 62))
-        optionsHeight = veryTight ? 30 : (tight ? 34 : (compact ? 40 : 44))
-        transportHeight = veryTight ? 38 : (tight ? 42 : (compact ? 48 : 60))
-        artworkSize = tight ? metadataHeight : (compact ? 40 : 52)
-        horizontalInset = size.width < 170 ? 10 : 12
-        bottomInset = veryTight ? 4 : (tight ? 6 : 10)
-        spacing = max(0, min(12, (size.height - metadataHeight - optionsHeight - transportHeight - bottomInset) / 2))
+    init(size: CGSize, minimumBottom: CGFloat = 0) {
+        let profiles: [(metadata: CGFloat, options: CGFloat, transport: CGFloat, bottom: CGFloat)] =
+            size.width < 180
+            ? [(46, 40, 50, 12), (34, 34, 44, 10), (28, 30, 40, 8)]
+            : [(64, 44, 64, 14), (46, 40, 50, 12), (34, 34, 44, 10), (28, 30, 40, 8)]
+        let profile = profiles.first {
+            $0.metadata + $0.options + $0.transport + max($0.bottom, minimumBottom) <= size.height
+        } ?? (metadata: 28, options: 30, transport: 40, bottom: 8)
+        metadataHeight = profile.metadata
+        optionsHeight = profile.options
+        transportHeight = profile.transport
+        compact = metadataHeight < 60 || size.width < 180
+        tight = metadataHeight <= 34
+        artworkSize = tight ? metadataHeight : (compact ? 40 : 54)
+        horizontalInset = size.width < 180 ? 12 : 14
+        bottomInset = max(minimumBottom, profile.bottom)
+        spacing = max(0, (size.height - metadataHeight - optionsHeight - transportHeight - bottomInset) / 2)
     }
 }
 

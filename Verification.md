@@ -238,3 +238,20 @@ Watch 重力采样另外改为 Core Motion 原生串行队列回调，移除 0.2
 导航录屏逐帧复核：最终40mm真实 NavigationStack push 的播放器首帧出现后，24个采样的封面顶边均为106px，23个完整播放按钮采样的顶/底均为260/342px，未再出现导航栏后补引起的垂直跳位；只保留正常横向入场。供复核：[1.25秒过渡短片](Artifacts/Previews/PinnedPlayer/watch-40-navigation.mp4)、[关键帧对照](Artifacts/Previews/PinnedPlayer/watch-40-navigation-frames.png)。播放器测试及截图使用生成的MP3/FLAC夹具，没有发送用户音乐。
 
 最终代码补齐：音频会话尚未激活时首次表冠 focus 可能无效，因此真实播放从暂停转为开始时，以一次状态事件重新请求系统焦点；弹层期间仍不抢焦点，无轮询。手机尾部空白独立成 section，保留目录卡片最后一行的原生圆角。
+
+
+## Watch 完整画布与边缘滚动（2026-10-29）
+
+用户真机图显示原生返回栏和底部黑条压缩了可见面积。本轮确认三个叠加原因：转屏前扣掉30/38pt的整条物理区域；所有目的页保留原生导航栏占位，根页另有自绘标题；Surface/Page/List祖先多层矩形裁切阻止卡片在安全区边缘继续绘制。
+
+- WatchSurfaceMetrics 的逻辑画布面积现在始终等于完整物理屏，只交换横屏宽高，绕物理中心旋转；不再减去整条时钟区域或移动画布中心。
+- 根页、导航目的页和模态页统一隐藏原生导航栏，采用32pt视觉、44pt点击范围的自定义返回/关闭。播放器横屏将返回叠在歌曲信息行的空位，避免再占一整行。
+- 通过物理时钟角落的四向逆映射，只对元数据、标题、行内文字、底部按钮等真正相交的区域避让；画布和卡片背景不因这些边距缩小或遮盖。系统仍拥有唯一时钟。
+- 去除Surface/Page总画布clip；List明确plain样式、隐藏系统背景、允许滚动内容越过自身clip，末项通过scroll content margin滚回可操作范围。保留卡片/封面自身圆角、曲面侧边距和本地导航坐标。
+- 播放器与接收页继续三段或对应接收布局，局部适配时钟；表冠系统音量focus和真实播放后的重新请求逻辑未改。
+
+验证：Debug与Release完整通用模拟器构建（含Phone宿主和Watch target）通过；1224项完整画布/时钟映射/44pt操作避让/本地导航断言、145项方向规则断言通过。40/49mm分别检查竖屏、左右充电横屏、音乐库长列表和横屏传输。截图已确认卡片或下一行能露到物理屏幕边缘，不再在屏幕内提前矩形截断。真实NavigationStack的Debug延迟push录屏未见原生栏后补或全局坐标抵消引起的跳位；没有给生产路由加延时。
+
+最新截图：[49mm竖屏播放器](Artifacts/Previews/ImmersiveWatch/49-player-portrait.png)、[49mm横屏播放器](Artifacts/Previews/ImmersiveWatch/49-player-landscape-right.png)、[49mm横屏列表](Artifacts/Previews/ImmersiveWatch/49-library-landscape-right.png)、[40mm横屏列表](Artifacts/Previews/ImmersiveWatch/40-library-right.png)、[40mm反向横屏](Artifacts/Previews/ImmersiveWatch/40-player-left.png)、[横屏接收](Artifacts/Previews/ImmersiveWatch/49-transfer-landscape-left.png)。所有截图为模拟器夹具，测试不播放用户音乐。临时空目录按当前沙盒路径清理，未操作任何真机。
+
+[本轮自定义返回与全画布导航过渡短片](Artifacts/Previews/ImmersiveWatch/40-navigation.mp4)。40mm的8个临时空目录与49mm的8个唯一测试目录均已按当前沙盒路径清理。
