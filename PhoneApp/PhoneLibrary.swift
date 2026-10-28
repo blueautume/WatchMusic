@@ -54,8 +54,16 @@ final class PhoneLibrary: NSObject, ObservableObject {
     @Published private(set) var lanStatus = ""
     @Published private(set) var folders: [PhoneFolder] = []
     @Published private(set) var transfers: [TransferRecord] = []
-    @Published private(set) var progress: [String: Double] = [:]
-    @Published private(set) var transferMetrics: [String: TransferMetrics] = [:]
+    let transferProgress = PhoneTransferProgress()
+    private(set) var progress: [String: Double] {
+        get { transferProgress.values }
+        set { transferProgress.replaceValues(newValue) }
+    }
+    private(set) var transferMetrics: [String: TransferMetrics] {
+        get { transferProgress.metrics }
+        set { transferProgress.replaceMetrics(newValue) }
+    }
+    var transferRemainingEstimate: String? { transferProgress.remainingEstimate }
     @Published private(set) var connectionDescription = "正在连接 Apple Watch…"
     @Published private(set) var canSend = false
     @Published private(set) var isImporting = false
@@ -69,7 +77,13 @@ final class PhoneLibrary: NSObject, ObservableObject {
     private let transferIndex: URL
     private let queueIndex: URL
     private var currentLANOrder: [String] = []
-    private var timer: AnyCancellable?
+    private var nativeProgressObservations: [String: NativeTransferProgressObservation] = [:]
+    private var nativeProgressRefreshTask: Task<Void, Never>?
+    private var progressExpiryTask: Task<Void, Never>?
+    private var progressExpiryDeadline: TimeInterval?
+    private var progressExpiryGeneration = UUID()
+    private var lastProgressAdvance: [String: TimeInterval] = [:]
+    private var queueEstimate = TransferQueueEstimate()
     private var durationCache: [String: Double] = [:]
     private var durationTask: Task<Void, Never>?
     private var progressSamplers: [String: TransferProgressSampler] = [:]
@@ -167,7 +181,6 @@ final class PhoneLibrary: NSObject, ObservableObject {
         #endif
         do {
             try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
-            try fileManager.createDirectory(at: root.appendingPathComponent("默认目录", isDirectory: true), withIntermediateDirectories: true)
             if let data = try? Data(contentsOf: transferIndex) {
                 transfers = (try? JSONDecoder().decode([TransferRecord].self, from: data)) ?? []
             }
@@ -178,7 +191,6 @@ final class PhoneLibrary: NSObject, ObservableObject {
         if WCSession.isSupported() {
             WCSession.default.delegate = self
             WCSession.default.activate()
-            timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect().sink { [weak self] _ in self?.refreshProgress() }
         } else { connectionDescription = "此设备不支持 Apple Watch 连接" }
     }
 
@@ -257,7 +269,6 @@ final class PhoneLibrary: NSObject, ObservableObject {
         do {
             try fileManager.removeItem(at: root.appendingPathComponent(folder.name))
             refreshFolders()
-            if folders.isEmpty { _ = createFolder("默认目录") }
             return true
         } catch { errorMessage = "删除目录失败：\(error.localizedDescription)"; return false }
     }
@@ -717,6 +728,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
         #if DEBUG && targetEnvironment(simulator)
         if isTransferListPreview, queueProbeRequest == nil {
             for record in targets { updateTransfer(id: record.id, state: .paused, message: "已暂停") }
+            refreshProgress()
             return
         }
         #endif
@@ -738,6 +750,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
         #if DEBUG && targetEnvironment(simulator)
         if isTransferListPreview, queueProbeRequest == nil {
             for record in targets { updateTransfer(id: record.id, state: .queued, message: "等待传输") }
+            refreshProgress()
             return
         }
         #endif
@@ -992,41 +1005,122 @@ final class PhoneLibrary: NSObject, ObservableObject {
         saveTransfers()
     }
 
+    /// LAN callbacks and native Progress observations are the only measurement
+    /// sources. A single cancellable deadline expires a stalled measurement.
     private func refreshProgress() {
+        let now = ProcessInfo.processInfo.systemUptime
         #if DEBUG && targetEnvironment(simulator)
-        if isTransferListPreview { return }
+        if isTransferListPreview && queueProbeRequest == nil {
+            refreshQueueEstimate(at: now)
+            return
+        }
         #endif
         let records = Dictionary(uniqueKeysWithValues: transfers.filter { $0.state == .queued || $0.state == .paused }.map { ($0.id, $0) })
+        let previousMetrics = transferMetrics
         var values: [String: Double] = [:]
         var metrics: [String: TransferMetrics] = [:]
-        let now = ProcessInfo.processInfo.systemUptime
         for record in records.values where record.method == .localNetwork && lanRecordIDs.contains(record.id) {
             let completed = min(record.totalBytes, max(0, lanCompletedBytes[record.id] ?? 0))
             values[record.id] = record.totalBytes > 0 ? Double(completed) / Double(record.totalBytes) : 0
+            let canAdvance = record.state == .queued && lanHandshakeAccepted
+            if canAdvance && completed > (previousMetrics[record.id]?.completedBytes ?? 0) {
+                lastProgressAdvance[record.id] = now
+            }
             var sampler = progressSamplers[record.id] ?? TransferProgressSampler()
             metrics[record.id] = sampler.sample(completedBytes: completed, totalBytes: record.totalBytes,
-                                                isTransferring: record.state == .queued && lanHandshakeAccepted, at: now)
+                                                isTransferring: canAdvance, at: now)
             progressSamplers[record.id] = sampler
         }
+        var nativeTransfers: [WCSessionFileTransfer] = []
         if WCSession.isSupported(), WCSession.default.activationState == .activated {
-            for transfer in WCSession.default.outstandingFileTransfers {
-                guard let id = transfer.file.metadata?["transferID"] as? String,
-                      let record = records[id], record.method == .system else { continue }
+            nativeTransfers = WCSession.default.outstandingFileTransfers.filter {
+                guard let id = $0.file.metadata?["transferID"] as? String else { return false }
+                return records[id]?.method == .system
+            }
+            for transfer in nativeTransfers {
+                guard let id = transfer.file.metadata?["transferID"] as? String, let record = records[id] else { continue }
                 let nativeProgress = transfer.progress
                 let totalBytes = max(0, record.totalBytes)
                 let fraction = nativeProgress.totalUnitCount > 0 && nativeProgress.fractionCompleted.isFinite
                     ? min(1, max(0, nativeProgress.fractionCompleted)) : 0
-                let completedBytes = Int64((Double(totalBytes) * fraction).rounded(.down))
+                let measuredBytes = (Double(totalBytes) * fraction).rounded(.down)
+                let completedBytes = measuredBytes >= Double(Int64.max) ? Int64.max : Int64(measuredBytes)
                 values[id] = fraction
+                let canAdvance = record.state == .queued && transfer.isTransferring
+                if canAdvance && completedBytes > (previousMetrics[id]?.completedBytes ?? 0) { lastProgressAdvance[id] = now }
                 var sampler = progressSamplers[id] ?? TransferProgressSampler()
                 metrics[id] = sampler.sample(completedBytes: completedBytes, totalBytes: totalBytes,
-                                             isTransferring: transfer.isTransferring, at: now)
+                                             isTransferring: canAdvance, at: now)
                 progressSamplers[id] = sampler
             }
         }
+        observeNativeProgress(nativeTransfers)
         progressSamplers = progressSamplers.filter { metrics[$0.key] != nil }
-        progress = values
-        transferMetrics = metrics
+        lastProgressAdvance = lastProgressAdvance.filter {
+            records[$0.key]?.state == .queued && metrics[$0.key] != nil
+        }
+        let estimate = queueRemainingEstimate(metrics: metrics, at: now)
+        transferProgress.update(values: values, metrics: metrics, remainingEstimate: estimate)
+        scheduleProgressExpiry(at: now)
+    }
+
+    private func queueRemainingEstimate(metrics: [String: TransferMetrics], at time: TimeInterval) -> String? {
+        let items = transfers.map { record in
+            TransferQueueEstimate.Item(id: record.id, state: record.state, totalBytes: record.totalBytes,
+                completedBytes: max(lanCompletedBytes[record.id] ?? 0, metrics[record.id]?.completedBytes ?? 0))
+        }
+        let advancing = metrics.values.contains { $0.isTransferring } || lastProgressAdvance.values.contains { time - $0 < 4 }
+        return queueEstimate.update(items: items, metrics: metrics, isAdvancing: advancing,
+                                    hasUnpreparedWork: !sendSubmissions.isEmpty, at: time)
+    }
+
+    private func refreshQueueEstimate(at time: TimeInterval) {
+        transferProgress.update(values: progress, metrics: transferMetrics,
+                                remainingEstimate: queueRemainingEstimate(metrics: transferMetrics, at: time))
+    }
+
+    private func scheduleProgressExpiry(at time: TimeInterval) {
+        let next = lastProgressAdvance.values.map { $0 + 4.05 }.filter { $0 > time }.min()
+        guard next != progressExpiryDeadline else { return }
+        progressExpiryTask?.cancel()
+        progressExpiryDeadline = next
+        progressExpiryGeneration = UUID()
+        guard let next else { progressExpiryTask = nil; return }
+        let generation = progressExpiryGeneration
+        let delay = UInt64(max(0.01, next - time) * 1_000_000_000)
+        progressExpiryTask = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: delay) }
+            catch { return }
+            guard let self, self.progressExpiryGeneration == generation else { return }
+            self.progressExpiryTask = nil
+            self.progressExpiryDeadline = nil
+            self.refreshProgress()
+        }
+    }
+
+    private func observeNativeProgress(_ transfers: [WCSessionFileTransfer]) {
+        let ids = Set(transfers.compactMap { $0.file.metadata?["transferID"] as? String })
+        nativeProgressObservations = nativeProgressObservations.filter { ids.contains($0.key) }
+        for transfer in transfers {
+            guard let id = transfer.file.metadata?["transferID"] as? String else { continue }
+            if nativeProgressObservations[id]?.transfer === transfer { continue }
+            let callback: () -> Void = { [weak self] in
+                DispatchQueue.main.async { self?.enqueueNativeProgressRefresh() }
+            }
+            let fraction = transfer.progress.observe(\.fractionCompleted, options: [.new]) { _, _ in callback() }
+            let activity = transfer.observe(\.isTransferring, options: [.new]) { _, _ in callback() }
+            nativeProgressObservations[id] = NativeTransferProgressObservation(transfer: transfer, tokens: [fraction, activity])
+        }
+    }
+
+    private func enqueueNativeProgressRefresh() {
+        guard nativeProgressRefreshTask == nil else { return }
+        nativeProgressRefreshTask = Task { [weak self] in
+            await Task.yield()
+            guard let self, !Task.isCancelled else { return }
+            self.nativeProgressRefreshTask = nil
+            self.refreshProgress()
+        }
     }
 
     func sceneDidBecomeActive() {
@@ -1123,8 +1217,6 @@ final class PhoneLibrary: NSObject, ObservableObject {
     func prepareTransferListPreviewIfRequested() {
         guard isTransferListPreview, !didPrepareTransferListPreview else { return }
         didPrepareTransferListPreview = true
-        timer?.cancel()
-        timer = nil
         let now = Date()
         func record(_ id: String, _ name: String, state: TransferRecord.State,
                     age: TimeInterval, bytes: Int64 = 18_000_000,
@@ -1160,6 +1252,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
                                                           bytesPerSecond: nil, estimatedTimeRemaining: nil, isTransferring: false)
         }
         connectionDescription = "Apple Watch 已连接"
+        refreshQueueEstimate(at: ProcessInfo.processInfo.systemUptime)
     }
     #endif
 
@@ -1426,9 +1519,9 @@ final class PhoneLibrary: NSObject, ObservableObject {
         guard belongsToActiveSession, record.state.isPending else { return }
         switch event.kind {
         case .progress:
-            guard record.state == .queued, event.completedBytes >= (lanCompletedBytes[event.fileID] ?? 0) else { return }
+            guard record.state == .queued, event.completedBytes > (lanCompletedBytes[event.fileID] ?? -1) else { return }
             lanCompletedBytes[event.fileID] = event.completedBytes
-            lanStatus = "局域网传输中"
+            if lanStatus != "局域网传输中" { lanStatus = "局域网传输中" }
             if event.completedBytes == event.totalBytes {
                 updateTransfer(id: event.fileID, state: .awaitingReceipt, message: "手表正在校验和保存", onlyIfPending: true)
             }
@@ -1485,7 +1578,8 @@ final class PhoneLibrary: NSObject, ObservableObject {
         #endif
         guard WCSession.isSupported() else { return }
         let session = WCSession.default
-        canSend = session.activationState == .activated && session.isPaired && session.isWatchAppInstalled
+        let available = session.activationState == .activated && session.isPaired && session.isWatchAppInstalled
+        if canSend != available { canSend = available }
         #if DEBUG
         let connectionLog = "connection-\(session.activationState.rawValue)-\(session.isPaired)-\(session.isWatchAppInstalled)-\(session.isReachable)"
         if lastPhoneConnectionLog != connectionLog {
@@ -1493,10 +1587,12 @@ final class PhoneLibrary: NSObject, ObservableObject {
             recordPhoneLifecycle(connectionLog)
         }
         #endif
-        if session.activationState != .activated { connectionDescription = "正在连接 Apple Watch…" }
-        else if !session.isPaired { connectionDescription = "尚未配对 Apple Watch" }
-        else if !session.isWatchAppInstalled { connectionDescription = "请在手表上安装 App" }
-        else { connectionDescription = session.isReachable ? "Apple Watch 已连接" : "Apple Watch 已配对 · 等待打开手表 App" }
+        let description: String
+        if session.activationState != .activated { description = "正在连接 Apple Watch…" }
+        else if !session.isPaired { description = "尚未配对 Apple Watch" }
+        else if !session.isWatchAppInstalled { description = "请在手表上安装 App" }
+        else { description = session.isReachable ? "Apple Watch 已连接" : "Apple Watch 已配对 · 等待打开手表 App" }
+        if connectionDescription != description { connectionDescription = description }
         refreshProgress()
     }
 
@@ -1611,4 +1707,16 @@ private struct LANSendSubmission {
     let id: UUID
     let tracks: [PhoneTrack]
     let completion: LANEnqueueCompletion
+}
+
+/// Keeping the native object alongside its tokens also distinguishes a restored
+/// system transfer that happens to reuse an application transfer identifier.
+private final class NativeTransferProgressObservation {
+    let transfer: WCSessionFileTransfer
+    let tokens: [NSKeyValueObservation]
+
+    init(transfer: WCSessionFileTransfer, tokens: [NSKeyValueObservation]) {
+        self.transfer = transfer
+        self.tokens = tokens
+    }
 }

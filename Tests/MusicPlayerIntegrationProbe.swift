@@ -1,5 +1,7 @@
 import Foundation
 import ImageIO
+import Combine
+import AVFoundation
 
 /// Standalone simulator integration test. It restores local files without
 /// activating playback or an audio output route, and restores preferences after
@@ -93,6 +95,35 @@ struct MusicPlayerIntegrationProbe {
         try check(abs((engine.sleepRemaining ?? 0) - 900) < 1, "sleep timer schedules while paused")
         engine.setSleepTimer(minutes: nil)
         try check(engine.sleepRemaining == nil, "sleep timer cancellation")
+        // A visible countdown reads the deadline locally; it must never invalidate
+        // every player observer (including open SwiftUI menus) on a clock tick.
+        try await Task.sleep(for: .milliseconds(700))
+        var changes = 0
+        let observation = engine.objectWillChange.sink { changes += 1 }
+        let countdownDeadline = Date().addingTimeInterval(2)
+        engine.setSleepTimer(until: countdownDeadline)
+        let beforeCountdown = engine.sleepRemaining ?? 0
+        changes = 0
+        try await Task.sleep(for: .milliseconds(350))
+        try check(changes == 0, "audio clock and countdown never publish periodic object changes")
+        try check((engine.sleepRemaining ?? beforeCountdown) < beforeCountdown - 0.2, "countdown getter follows its deadline without publishing")
+        engine.setSleepTimer(until: Date().addingTimeInterval(0.05))
+        let replacementDeadline = Date().addingTimeInterval(1)
+        engine.setSleepTimer(until: replacementDeadline)
+        try await Task.sleep(for: .milliseconds(150))
+        try check(engine.sleepTimerDeadline == replacementDeadline, "replacing timer cancels the old deadline task")
+        engine.setSleepTimer(minutes: nil)
+        changes = 0
+        try await Task.sleep(for: .milliseconds(150))
+        try check(changes == 0 && engine.sleepRemaining == nil, "cancelled timer leaves no periodic work")
+        engine.setSleepTimer(until: Date().addingTimeInterval(0.05))
+        try await waitUntil("sleep deadline pauses and clears itself", timeout: 1) {
+            engine.sleepTimerDeadline == nil && !engine.isPlaying
+        }
+        observation.cancel()
+        engine.savePlaybackPosition()
+        let savedAfterLifecycle = defaults.data(forKey: "player.session").flatMap { try? JSONDecoder().decode(Session.self, from: $0) }
+        try check(abs((savedAfterLifecycle?.elapsed ?? 0) - engine.elapsed) < 0.15, "lifecycle save persists the decoder position")
         engine.moveQueueItems(from: IndexSet(integer: 2), to: 0)
         try check(engine.queue == [c, a, b] && engine.currentURL == a, "queue reorder preserves current track")
         engine.removeQueueItem(at: 2)
@@ -112,6 +143,71 @@ struct MusicPlayerIntegrationProbe {
         engine.stop()
         player = nil
         print("CORE_PLAYER_PASS: \(assertions) restore/seek/queue assertions")
+
+        // Drive the real delegate/state flow while holding route activation. The
+        // decoder reads a real local file but never opens or plays an audio output.
+        defaults.set(try JSONEncoder().encode(snapshot), forKey: "player.session")
+        var completionDecoder: SilentCompletionDecoder?
+        var activations: [@MainActor (Bool, String?) -> Void] = []
+        player = MusicPlayer(makeAudioPlayer: { url in
+            let decoder = try SilentCompletionDecoder(contentsOf: url)
+            completionDecoder = decoder
+            return decoder
+        }, activateAudioSession: { activations.append($0) })
+        guard let completionEngine = player, let decoder = completionDecoder else {
+            throw ProbeError.failure("completion transition player")
+        }
+        completionEngine.resume()
+        try check(activations.count == 1 && completionEngine.isPreparing, "resume waits for route activation")
+        activations.removeFirst()(true, nil)
+        try check(completionEngine.isPlaying, "successful activation marks decoder playing")
+        completionEngine.play(b, in: [a, b, c])
+        try check(activations.count == 1 && completionEngine.isPreparing, "requested next track waits for its route")
+        decoder.stop()
+        completionEngine.audioPlayerDidFinishPlaying(decoder, successfully: true)
+        try await waitUntil("finishing old track publishes stopped state during pending activation", timeout: 1) {
+            !completionEngine.isPlaying
+        }
+        try check(completionEngine.isPreparing && completionEngine.currentURL == a, "completion preserves pending user track request")
+        try check(abs(completionEngine.elapsed - completionEngine.duration) < 0.15, "completion preserves the ended position")
+        activations.removeFirst()(false, "模拟路由不可用")
+        try check(!completionEngine.isPlaying && !completionEngine.isPreparing, "failed pending route cannot leave playback running")
+        let completedSnapshot = defaults.data(forKey: "player.session").flatMap { try? JSONDecoder().decode(Session.self, from: $0) }
+        try check(abs((completedSnapshot?.elapsed ?? 0) - completionEngine.duration) < 0.15, "completed position is saved before a pending route can fail")
+        completionEngine.resume()
+        activations.removeFirst()(true, nil)
+        try check(completionEngine.isPlaying && completionEngine.elapsed < 0.15, "resuming an ended track starts from its beginning")
+        decoder.stop()
+        completionEngine.audioPlayerDidFinishPlaying(decoder, successfully: true)
+        try await waitUntil("natural completion marks stopped while advancing the queue", timeout: 1) {
+            !completionEngine.isPlaying && completionEngine.isPreparing
+        }
+        try check(activations.count == 1, "natural completion requests only one next route")
+        activations.removeFirst()(false, "模拟续播路由不可用")
+        try check(!completionEngine.isPlaying && !completionEngine.isPreparing, "failed automatic next route remains stopped")
+        completionEngine.resume()
+        activations.removeFirst()(true, nil)
+        completionEngine.play(b, in: [a, b, c])
+        decoder.stop()
+        activations.removeFirst()(false, "模拟旧输出停止")
+        try check(!completionEngine.isPlaying, "activation failure samples a stopped output even without a finish callback")
+        completionEngine.resume()
+        activations.removeFirst()(true, nil)
+        completionEngine.seek(to: 6)
+        completionEngine.play(b, in: [a, b, c])
+        NotificationCenter.default.post(name: AVAudioSession.mediaServicesWereResetNotification, object: nil)
+        try await waitUntil("audio service reset clears a pending route activation", timeout: 1) {
+            !completionEngine.isPreparing && !completionEngine.isPlaying
+        }
+        activations.removeFirst()(true, nil)
+        try check(completionDecoder === decoder && !completionEngine.isPlaying, "stale activation cannot start a new decoder after audio services reset")
+        completionEngine.resume()
+        try check(activations.count == 1 && abs(completionEngine.elapsed - 6) < 0.15, "service recovery recreates the paused decoder at its saved position")
+        activations.removeFirst()(true, nil)
+        try check(completionEngine.isPlaying && abs(completionEngine.elapsed - 6) < 0.15, "service recovery resumes from the saved position")
+        completionEngine.stop()
+        player = nil
+        print("COMPLETION_STATE_PASS")
 
         // Optional real fixtures verify bounded embedded artwork on both platforms.
         for argument in arguments.dropFirst() {
@@ -142,4 +238,14 @@ struct MusicPlayerIntegrationProbe {
         case failure(String)
         var errorDescription: String? { if case .failure(let message) = self { return message }; return nil }
     }
+}
+
+/// Deterministic delegate fixture: real duration/seeking, no audio-device use.
+private final class SilentCompletionDecoder: AVAudioPlayer, @unchecked Sendable {
+    private var playbackActive = false
+    override var isPlaying: Bool { playbackActive }
+    override func prepareToPlay() -> Bool { true }
+    override func play() -> Bool { playbackActive = true; return true }
+    override func pause() { playbackActive = false }
+    override func stop() { playbackActive = false }
 }

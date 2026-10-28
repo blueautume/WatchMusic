@@ -17,7 +17,7 @@ struct OfflineWatchApp: App {
         WindowGroup {
             WatchAppSurface { rootView }
                 .environmentObject(library).environmentObject(player).environmentObject(display)
-                .tint(AppPalette.accent).preferredColorScheme(.dark)
+                .tint(AppPalette.accent)
                 .onAppear {
                     display.start(foreground: scenePhase == .active)
                     library.updateLANForeground(scenePhase == .active)
@@ -26,6 +26,7 @@ struct OfflineWatchApp: App {
                     #endif
                 }
                 .onChange(of: scenePhase) { _, phase in
+                    if phase != .active { player.savePlaybackPosition() }
                     library.updateLANForeground(phase == .active)
                     display.setForeground(phase == .active)
                     #if DEBUG
@@ -214,6 +215,7 @@ struct NowPlayingView: View {
         GeometryReader { geometry in
             let size = viewport?.size ?? geometry.size
             let compact = size.width < 180 || size.height < 185
+            let landscape = viewport?.orientation.isLandscape ?? (size.width > size.height)
             let controlSize: CGFloat = compact ? 44 : 56
             VStack(spacing: compact ? 5 : 9) {
                 HStack(spacing: 0) {
@@ -221,31 +223,32 @@ struct NowPlayingView: View {
                         Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold))
                             .frame(width: 44, height: 44).contentShape(Rectangle())
                     }.accessibilityLabel("返回音乐库")
-                    Spacer(minLength: 0)
-                    Button { showingQueue = true } label: {
-                        Image(systemName: "list.bullet").font(.system(size: 17, weight: .medium))
-                            .frame(width: 44, height: 44).contentShape(Rectangle())
-                    }.accessibilityLabel("播放队列")
+                    if landscape {
+                        trackTitle(compact: true)
+                    } else {
+                        Spacer(minLength: 0)
+                        Button { showingQueue = true } label: {
+                            Image(systemName: "list.bullet").font(.system(size: 17, weight: .medium))
+                                .frame(width: 44, height: 44).contentShape(Rectangle())
+                        }.accessibilityLabel("播放队列")
+                    }
                     Button { showingSettings = true } label: {
                         Image(systemName: "ellipsis").font(.system(size: 18, weight: .semibold))
                             .frame(width: 44, height: 44).contentShape(Rectangle())
                     }.accessibilityLabel("播放设置")
                 }.foregroundStyle(.secondary)
 
-                HStack(spacing: 9) {
-                    MusicArtwork(title: player.title, data: player.artworkData)
-                        .frame(width: compact ? 34 : 44, height: compact ? 34 : 44)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                        .accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(player.isPreparing ? "正在准备…" : player.title)
-                            .font(.system(size: compact ? 13 : 15, weight: .semibold))
-                            .lineLimit(2).minimumScaleFactor(0.85)
-                        if !compact, !player.artist.isEmpty {
-                            Text(player.artist).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
-                        }
-                    }.frame(maxWidth: .infinity, alignment: .leading)
-                }.frame(maxHeight: .infinity)
+                if landscape {
+                    Spacer(minLength: 0)
+                } else {
+                    HStack(spacing: 9) {
+                        MusicArtwork(title: player.title, data: player.artworkData)
+                            .frame(width: compact ? 34 : 44, height: compact ? 34 : 44)
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                            .accessibilityHidden(true)
+                        trackTitle(compact: compact)
+                    }.frame(maxHeight: .infinity)
+                }
 
                 HStack(spacing: compact ? 3 : 8) {
                     Button { player.previous(); WKInterfaceDevice.current().play(.click) } label: {
@@ -254,9 +257,9 @@ struct NowPlayingView: View {
                     }.accessibilityLabel("上一首")
                     Button(action: player.togglePlayback) {
                         Group {
-                            if player.isPreparing { ProgressView().tint(.black) }
+                            if player.isPreparing { ProgressView().tint(AppPalette.controlForeground) }
                             else { Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.system(size: compact ? 21 : 25, weight: .semibold)) }
-                        }.foregroundStyle(.black).frame(width: controlSize, height: controlSize)
+                        }.foregroundStyle(AppPalette.controlForeground).frame(width: controlSize, height: controlSize)
                             .background(AppPalette.accent, in: Circle()).contentShape(Circle())
                     }.accessibilityLabel(player.isPlaying ? "暂停" : "播放")
                     nextButton(size: controlSize, compact: compact)
@@ -284,6 +287,18 @@ struct NowPlayingView: View {
         #endif
     }
 
+    private func trackTitle(compact: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(player.isPreparing ? "正在准备…" : player.title)
+                .font(.system(size: compact ? 13 : 15, weight: .semibold))
+                .foregroundStyle(AppPalette.textPrimary)
+                .lineLimit(2).minimumScaleFactor(0.85)
+            if !compact, !player.artist.isEmpty {
+                Text(player.artist).font(.system(size: 11)).foregroundStyle(AppPalette.textSecondary).lineLimit(1)
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     @ViewBuilder private func nextButton(size: CGFloat, compact: Bool) -> some View {
         if #available(watchOS 11.0, *) {
             nextControl(size: size, compact: compact)
@@ -309,7 +324,7 @@ private struct WatchQueueDetailView: View {
                     HStack {
                         Button { player.playQueueItem(at: index); dismiss() } label: {
                             Text(url.deletingPathExtension().lastPathComponent).lineLimit(2)
-                                .foregroundStyle(player.currentURL == url ? AppPalette.accent : .white)
+                                .foregroundStyle(player.currentURL == url ? AppPalette.accent : AppPalette.textPrimary)
                         }.buttonStyle(.plain).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                         Button { selectedIndex = index } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44).contentShape(Rectangle()) }
                             .buttonStyle(.plain).accessibilityLabel("调整队列")
@@ -346,8 +361,8 @@ private struct WatchPlaybackSettingsView: View {
                     WatchSystemVolume().frame(height: 44).accessibilityLabel("手表系统音量")
                 }
                 Section("睡眠定时") {
-                    if let remaining = player.sleepRemaining {
-                        Text("将在 \(watchTime(remaining)) 后暂停").foregroundStyle(AppPalette.accent)
+                    if let deadline = player.sleepTimerDeadline {
+                        WatchSleepCountdown(deadline: deadline)
                         Button("取消定时", role: .destructive) { player.setSleepTimer(minutes: nil) }
                     }
                     ForEach([15, 30, 45, 60], id: \.self) { minutes in Button("\(minutes) 分钟后暂停") { player.setSleepTimer(minutes: minutes) } }
@@ -360,6 +375,17 @@ private struct WatchPlaybackSettingsView: View {
                 #if DEBUG && targetEnvironment(simulator)
                 .onAppear { if ProcessInfo.processInfo.arguments.contains("-preview-playback-rate") { previewRate = true } }
                 #endif
+        }
+    }
+}
+
+private struct WatchSleepCountdown: View {
+    let deadline: Date
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            Text("将在 \(watchTime(deadline.timeIntervalSince(context.date))) 后暂停")
+                .monospacedDigit().foregroundStyle(AppPalette.accent)
         }
     }
 }

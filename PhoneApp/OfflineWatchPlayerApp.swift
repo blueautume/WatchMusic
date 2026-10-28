@@ -16,7 +16,7 @@ struct OfflineWatchPlayerApp: App {
             LibraryView()
                 .environmentObject(library)
                 .environmentObject(player)
-                .preferredColorScheme(.dark)
+                .environment(\.phonePlayer, player)
                 .tint(AppPalette.accent)
         }
     }

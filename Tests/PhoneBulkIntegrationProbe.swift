@@ -60,6 +60,9 @@ struct PhoneBulkIntegrationProbe {
             library = PhoneLibrary()
             guard let library else { throw ProbeError.failure("PhoneLibrary initialization") }
             try check(library.errorMessage == nil, "real PhoneLibrary opens the simulator music root")
+            let originalFolders = library.folders
+            try check(manager.fileExists(atPath: defaultFolder.path) == defaultExisted,
+                      "Opening a library preserves existing directories without creating a default directory")
             try manager.createDirectory(at: source, withIntermediateDirectories: false)
             try manager.createDirectory(at: target, withIntermediateDirectories: false)
             let a = source.appendingPathComponent("A.mp3")
@@ -120,6 +123,10 @@ struct PhoneBulkIntegrationProbe {
             try check(!manager.fileExists(atPath: targetB.path), "the selected target B is actually deleted")
             try check(library.errorMessage == nil, "fully successful delete clears previous aggregate errors")
             try check(try Data(contentsOf: targetA) == existingTarget, "all operations preserve the colliding unselected target A")
+            try check(library.deleteFolder(sourceFolder) && library.deleteFolder(targetFolder),
+                      "User-created fixture directories can both be deleted")
+            try check(library.folders == originalFolders,
+                      "Deleting the final fixture directory does not silently replace it with a default directory")
         }
 
         // No async main-actor task has run during the synchronous mutation block.

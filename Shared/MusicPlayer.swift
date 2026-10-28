@@ -6,11 +6,15 @@ import UIKit
 /// Local audio engine. File URLs stay on-device; playback never depends on the phone.
 @MainActor
 final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
+    typealias SessionActivation = (@escaping @MainActor (Bool, String?) -> Void) -> Void
+
     @Published private(set) var currentURL: URL?
     @Published private(set) var queue: [URL] = []
     @Published private(set) var isPlaying = false
     @Published private(set) var isPreparing = false
-    @Published private(set) var elapsed: TimeInterval = 0
+    // AVAudioPlayer owns the running audio clock. Only discontinuous position
+    // changes publish; views that display its clock redraw locally with TimelineView.
+    @Published private var playbackPosition: TimeInterval = 0
     @Published private(set) var duration: TimeInterval = 0
     @Published private(set) var title = "未选择歌曲"
     @Published private(set) var artist = "本地音乐"
@@ -19,7 +23,7 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
     @Published private(set) var routeDescription = "选择音频输出"
     @Published private(set) var playbackRate: Double = 1
     @Published private(set) var mode: PlaybackMode = .sequential
-    @Published private(set) var sleepRemaining: TimeInterval?
+    @Published private(set) var sleepTimerDeadline: Date?
     @Published var errorMessage: String?
     @Published var volume: Float = 1 {
         didSet {
@@ -32,21 +36,36 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         currentURL.flatMap { AudioFileFormat.format(for: $0) }?.displayName ?? "音频"
     }
 
+    var elapsed: TimeInterval {
+        reachedEnd ? duration : (audioPlayer?.currentTime ?? playbackPosition)
+    }
+
+    var sleepRemaining: TimeInterval? {
+        sleepTimerDeadline.map { max(0, $0.timeIntervalSinceNow) }
+    }
 
     private var audioPlayer: AVAudioPlayer?
-    private var timer: AnyCancellable?
     private var activationID = UUID()
     private var observers: [NSObjectProtocol] = []
     private var commandTargets: [(MPRemoteCommand, Any)] = []
     private var resumeAfterInterruption = false
-    private var sleepDeadline: Date?
+    private var sleepTimerTask: Task<Void, Never>?
     private var history: [URL] = []
     private var reachedEnd = false
-    private var lastSavedSecond = -1
     private var metadataTask: Task<Void, Never>?
+    private let makeAudioPlayer: (URL) throws -> AVAudioPlayer
+    private let activateAudioSession: SessionActivation?
     private let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
 
-    override init() {
+    override convenience init() {
+        self.init(makeAudioPlayer: { try AVAudioPlayer(contentsOf: $0) })
+    }
+
+    /// Dependencies keep session activation and completion transitions testable
+    /// without starting a simulator audio output or waiting for a physical route.
+    init(makeAudioPlayer: @escaping (URL) throws -> AVAudioPlayer, activateAudioSession: SessionActivation? = nil) {
+        self.makeAudioPlayer = makeAudioPlayer
+        self.activateAudioSession = activateAudioSession
         super.init()
         let defaults = UserDefaults.standard
         mode = PlaybackMode(rawValue: defaults.string(forKey: "player.mode") ?? "") ?? .sequential
@@ -69,14 +88,18 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         })
         observers.append(center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.audioPlayer = nil
-                self?.isPlaying = false
-                self?.errorMessage = "音频服务已重启，请重新选择歌曲播放。"
+                guard let self else { return }
+                self.activationID = UUID()
+                self.isPreparing = false
+                self.resumeAfterInterruption = false
+                self.playbackPosition = self.elapsed
+                self.audioPlayer = nil
+                self.isPlaying = false
+                self.savePlayback()
+                self.updateNowPlaying()
+                self.errorMessage = "音频服务已重启，请重新选择歌曲播放。"
             }
         })
-        timer = Timer.publish(every: 0.25, on: .main, in: .common).autoconnect().sink { [weak self] _ in
-            self?.tick()
-        }
         configureRemoteCommands()
         restorePlayback()
         updateRoute()
@@ -84,6 +107,7 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
     deinit {
         metadataTask?.cancel()
+        sleepTimerTask?.cancel()
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         commandTargets.forEach { $0.0.removeTarget($0.1) }
     }
@@ -106,6 +130,7 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
             self.isPreparing = false
             guard success else {
                 self.errorMessage = message ?? "无法连接音频输出，请连接耳机后重试。"
+                self.capturePlaybackState()
                 self.updateRoute()
                 return
             }
@@ -118,7 +143,7 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 self.audioPlayer = nextPlayer
                 self.queue = validTracks
                 self.currentURL = url
-                self.elapsed = 0
+                self.playbackPosition = 0
                 self.reachedEnd = false
                 self.duration = nextPlayer.duration
                 self.isPlaying = true
@@ -132,7 +157,7 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 self.savePlayback()
             } catch {
                 self.errorMessage = "无法播放此文件：\(error.localizedDescription)"
-                self.isPlaying = self.audioPlayer?.isPlaying ?? false
+                self.capturePlaybackState()
             }
         }
     }
@@ -149,27 +174,39 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         isPreparing = false
         audioPlayer?.pause()
         isPlaying = false
+        playbackPosition = elapsed
         savePlayback()
         updateNowPlaying()
     }
 
     func resume() {
         guard let url = currentURL else { return }
-        guard let audioPlayer else { play(url, in: queue); return }
+        guard let audioPlayer else {
+            if loadPaused(url, in: queue, position: elapsed) { resume() }
+            else { errorMessage = "无法恢复此文件，请重新选择歌曲。" }
+            return
+        }
         let requestID = UUID()
         activationID = requestID
         isPreparing = true
         activateSession { [weak self] success, message in
             guard let self, self.activationID == requestID else { return }
             self.isPreparing = false
-            guard success else { self.errorMessage = message ?? "恢复播放失败，请检查耳机连接。"; return }
+            guard success else {
+                self.errorMessage = message ?? "恢复播放失败，请检查耳机连接。"
+                self.capturePlaybackState()
+                self.updateRoute()
+                return
+            }
             if self.reachedEnd || audioPlayer.currentTime >= audioPlayer.duration - 0.1 { audioPlayer.currentTime = 0 }
             self.reachedEnd = false
             audioPlayer.rate = Float(self.playbackRate)
             self.isPlaying = audioPlayer.prepareToPlay() && audioPlayer.play()
             if !self.isPlaying { self.errorMessage = "恢复播放失败，请重新选择歌曲。" }
+            self.playbackPosition = audioPlayer.currentTime
             self.updateRoute()
             self.updateNowPlaying()
+            self.savePlayback()
         }
     }
 
@@ -190,7 +227,7 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
               let next = PlaybackQueueLogic.nextIndex(current: index, count: queue.count, mode: mode, completed: completed) else {
             isPlaying = false
             reachedEnd = true
-            elapsed = duration
+            playbackPosition = duration
             updateNowPlaying()
             savePlayback()
             return
@@ -202,7 +239,7 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         guard value.isFinite, let audioPlayer else { return }
         reachedEnd = false
         audioPlayer.currentTime = min(max(value, 0), duration)
-        elapsed = audioPlayer.currentTime
+        playbackPosition = audioPlayer.currentTime
         updateNowPlaying()
         savePlayback()
     }
@@ -225,13 +262,33 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
     }
 
     func setSleepTimer(minutes: Int?) {
-        if let minutes, minutes > 0 {
-            sleepDeadline = Date().addingTimeInterval(Double(minutes) * 60)
-            sleepRemaining = Double(minutes) * 60
-        } else {
-            sleepDeadline = nil
-            sleepRemaining = nil
+        setSleepTimer(until: minutes.flatMap { $0 > 0 ? Date().addingTimeInterval(Double($0) * 60) : nil })
+    }
+
+    /// A single cancellable deadline drives the action; countdown text has its own local UI clock.
+    func setSleepTimer(until deadline: Date?) {
+        sleepTimerTask?.cancel()
+        sleepTimerTask = nil
+        sleepTimerDeadline = deadline
+        guard let deadline else { return }
+        sleepTimerTask = Task { [weak self] in
+            do {
+                // Re-evaluate after waking so a wall-clock adjustment cannot fire early.
+                while deadline > Date() {
+                    try await Task.sleep(for: .seconds(deadline.timeIntervalSinceNow))
+                }
+                try Task.checkCancellation()
+            } catch { return }
+            guard let self, self.sleepTimerDeadline == deadline else { return }
+            self.pause()
+            self.setSleepTimer(until: nil)
         }
+    }
+
+    /// Call on a scene lifecycle transition; never pause local background audio here.
+    func savePlaybackPosition() {
+        savePlayback()
+        updateNowPlaying()
     }
 
     func stop() {
@@ -242,15 +299,14 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         queue = []
         history.removeAll()
         reachedEnd = false
-        elapsed = 0
+        playbackPosition = 0
         duration = 0
         title = "未选择歌曲"
         artist = "本地音乐"
         album = ""
         artworkData = nil
         metadataTask?.cancel()
-        sleepDeadline = nil
-        sleepRemaining = nil
+        setSleepTimer(minutes: nil)
         UserDefaults.standard.removeObject(forKey: "player.session")
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
@@ -319,7 +375,7 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
     #endif
 
     private func makePlayer(_ url: URL, prepare: Bool = true) throws -> AVAudioPlayer {
-        let player = try AVAudioPlayer(contentsOf: url)
+        let player = try makeAudioPlayer(url)
         guard player.duration.isFinite, player.duration > 0 else { throw PlayerError.invalidAudio }
         player.delegate = self
         player.enableRate = true
@@ -330,6 +386,10 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
     }
 
     private func activateSession(completion: @escaping @MainActor (Bool, String?) -> Void) {
+        if let activateAudioSession {
+            activateAudioSession(completion)
+            return
+        }
         do {
             let session = AVAudioSession.sharedInstance()
             #if os(watchOS)
@@ -346,22 +406,19 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         } catch { completion(false, error.localizedDescription) }
     }
 
-    private func tick() {
-        if let player = audioPlayer {
-            elapsed = reachedEnd ? duration : player.currentTime
-            isPlaying = player.isPlaying
-            let second = Int(elapsed)
-            if isPlaying, second % 5 == 0, second != lastSavedSecond { lastSavedSecond = second; savePlayback() }
-        }
-        if let deadline = sleepDeadline {
-            sleepRemaining = max(0, deadline.timeIntervalSinceNow)
-            if deadline <= Date() { pause(); setSleepTimer(minutes: nil) }
-        }
-    }
-
     private func updateRoute() {
         let outputs = AVAudioSession.sharedInstance().currentRoute.outputs
-        routeDescription = outputs.isEmpty ? "请连接 AirPods 或蓝牙耳机" : outputs.map(\.portName).joined(separator: "、")
+        let description = outputs.isEmpty ? "请连接 AirPods 或蓝牙耳机" : outputs.map(\.portName).joined(separator: "、")
+        if description != routeDescription { routeDescription = description }
+    }
+
+    /// Activation can stop an old output without a completion delegate event.
+    /// Sample once at that event instead of relying on a recurring polling clock.
+    private func capturePlaybackState() {
+        isPlaying = audioPlayer?.isPlaying ?? false
+        playbackPosition = elapsed
+        savePlayback()
+        updateNowPlaying()
     }
 
     private func handleInterruption(type rawType: UInt?, options rawOptions: UInt) {
@@ -382,10 +439,21 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         Task { @MainActor [weak self] in
             guard let self, player === self.audioPlayer else { return }
             if flag {
+                self.isPlaying = false
+                self.reachedEnd = true
+                self.playbackPosition = self.duration
+                self.savePlayback()
+                self.updateNowPlaying()
                 // A user-initiated change may already be waiting for a route.
                 if !self.isPreparing { self.advance(completed: true) }
             }
-            else { self.isPlaying = false; self.errorMessage = "播放意外中断，请重新选择歌曲。" }
+            else {
+                self.isPlaying = false
+                self.playbackPosition = player.currentTime
+                self.savePlayback()
+                self.updateNowPlaying()
+                self.errorMessage = "播放意外中断，请重新选择歌曲。"
+            }
         }
     }
     nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
@@ -393,8 +461,10 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         Task { @MainActor [weak self] in
             guard let self, player === self.audioPlayer else { return }
             self.isPlaying = false
+            self.playbackPosition = player.currentTime
             self.errorMessage = "音频解码失败：\(message)"
             self.updateNowPlaying()
+            self.savePlayback()
         }
     }
 
@@ -517,8 +587,8 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         audioPlayer = player
         duration = player.duration
         player.currentTime = max(0, min(position.isFinite ? position : 0, duration))
-        elapsed = player.currentTime
-        reachedEnd = duration > 0 && elapsed >= duration - 0.1
+        playbackPosition = player.currentTime
+        reachedEnd = duration > 0 && player.currentTime >= duration - 0.1
         title = url.deletingPathExtension().lastPathComponent
         artist = "本地音乐"
         album = url.deletingLastPathComponent().lastPathComponent

@@ -19,69 +19,57 @@ private struct WatchContentViewportKey: EnvironmentKey {
     static let defaultValue: WatchContentViewport? = nil
 }
 
-private struct WatchStatusRowHeightKey: EnvironmentKey {
-    static let defaultValue: CGFloat? = nil
-}
-
 extension EnvironmentValues {
-    var watchStatusRowHeight: CGFloat? {
-        get { self[WatchStatusRowHeightKey.self] }
-        set { self[WatchStatusRowHeightKey.self] = newValue }
-    }
     var watchContentViewport: WatchContentViewport? {
         get { self[WatchContentViewportKey.self] }
         set { self[WatchContentViewportKey.self] = newValue }
     }
 }
 
-/// App content turns below the physical system clock; battery stays alongside
-/// that clock. Each presented sheet owns a surface, navigation destinations do not.
+/// Pages and battery share one logical canvas. A separate physical inset keeps
+/// watchOS's fixed system clock clear. Sheets own their own surface.
 struct WatchAppSurface<Content: View>: View {
     @EnvironmentObject private var display: WatchAppDisplay
     @Environment(\.isLuminanceReduced) private var reducedLuminance
-    @Environment(\.watchStatusRowHeight) private var inheritedStatusRowHeight
     private let content: Content
 
     init(@ViewBuilder content: () -> Content) { self.content = content() }
 
     var body: some View {
-        GeometryReader { safeGeometry in
-            surface(topInset: safeGeometry.safeAreaInsets.top)
-        }
-        .background(AppPalette.background)
-        .persistentSystemOverlays(.visible)
-    }
-
-    private func surface(topInset: CGFloat) -> some View {
         GeometryReader { geometry in
-            // Sheet navigation adds its own insets. Reuse the physical status
-            // row from the window so battery never moves between app pages.
-            let header = inheritedStatusRowHeight ?? (topInset < 50 ? 30 : topInset)
-            let available = CGSize(width: geometry.size.width, height: max(0, geometry.size.height - header))
-            let size = display.orientation.isLandscape
-                ? CGSize(width: available.height, height: available.width) : available
-            let bounds = geometry.frame(in: .global)
-            let viewport = WatchContentViewport(size: size,
-                physicalCenter: CGPoint(x: bounds.midX, y: bounds.minY + header + available.height / 2),
+            let metrics = WatchSurfaceMetrics(physicalSize: geometry.size, orientation: display.orientation)
+            let viewport = WatchContentViewport(size: metrics.contentSize,
+                physicalCenter: metrics.physicalContentCenter(in: geometry.frame(in: .global)),
                 orientation: display.orientation)
             ZStack(alignment: .topLeading) {
                 content
                     .environment(\.watchContentViewport, viewport)
-                    .environment(\.watchStatusRowHeight, header)
-                    .frame(width: size.width, height: size.height)
-                    .rotationEffect(.degrees(Double(display.orientation.rawValue)))
-                    .position(x: geometry.size.width / 2, y: header + available.height / 2)
-                    .animation(reducedLuminance ? nil : .easeInOut(duration: 0.2), value: display.orientation)
-                    .zIndex(0)
-                battery
-                    .frame(height: header)
-                    .padding(.leading, 14)
+                    .frame(width: metrics.contentSize.width, height: metrics.contentSize.height)
+                    .position(x: metrics.logicalSize.width / 2,
+                              y: metrics.statusHeight + metrics.contentSize.height / 2)
+                statusRow
+                    .padding(.horizontal, metrics.statusInset)
+                    .padding(.top, display.orientation == .portrait ? 3 : 0)
+                    .frame(width: metrics.logicalSize.width, height: metrics.statusHeight)
                     .allowsHitTesting(false)
                     .zIndex(1)
             }
-            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
+            .frame(width: metrics.logicalSize.width, height: metrics.logicalSize.height)
+            .rotationEffect(.degrees(Double(display.orientation.rawValue)))
+            .position(metrics.physicalCanvasCenter(in: CGRect(origin: .zero, size: geometry.size)))
+            .animation(reducedLuminance ? nil : .easeInOut(duration: 0.2), value: display.orientation)
         }
         .ignoresSafeArea()
+        .foregroundStyle(AppPalette.textPrimary)
+        .background(AppPalette.background)
+        .persistentSystemOverlays(.visible)
+    }
+
+    private var statusRow: some View {
+        HStack {
+            battery
+            Spacer(minLength: 8)
+        }
     }
 
     private var battery: some View {
@@ -90,7 +78,7 @@ struct WatchAppSurface<Content: View>: View {
             Text(display.batteryPercentage.map { "\($0)%" } ?? "—%")
                 .font(.system(size: 12, weight: .medium, design: .rounded)).monospacedDigit()
         }
-        .foregroundStyle(display.isCharging ? Color.green : .secondary)
+        .foregroundStyle(display.isCharging ? Color.green : AppPalette.textSecondary)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(display.batteryPercentage.map { "电量百分之\($0)" } ?? "电量暂不可用")
         .accessibilityValue(display.isCharging ? "正在充电" : "未充电")

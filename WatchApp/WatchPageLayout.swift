@@ -6,8 +6,8 @@ extension View {
     }
 }
 
-/// Keeps app navigation below the physical clock/battery strip. Native watch
-/// navigation bars reserve window insets even when their content is rotated.
+/// Native watch navigation keeps physical window insets during a rotation;
+/// position each destination in the logical area below the app's status row.
 private struct WatchPageLayout: ViewModifier {
     @Environment(\.watchContentViewport) private var viewport
     let title: String
@@ -23,6 +23,7 @@ private struct WatchPageLayout: ViewModifier {
                     if symbol == "chevron.left", let action { navigationButton(action: action) }
                     Text(title)
                         .font(.system(size: compact ? 14 : 16, weight: .semibold))
+                        .foregroundStyle(AppPalette.textPrimary)
                         .lineLimit(1).minimumScaleFactor(0.8)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     if symbol != "chevron.left", let action { navigationButton(action: action) }

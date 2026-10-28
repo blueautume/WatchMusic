@@ -1,8 +1,18 @@
 {
   "images": [
     {
-      "filename": "BrandMark.png",
+      "filename": "BrandMark-light.png",
       "idiom": "universal"
+    },
+    {
+      "filename": "BrandMark.png",
+      "idiom": "universal",
+      "appearances": [
+        {
+          "appearance": "luminosity",
+          "value": "dark"
+        }
+      ]
     }
   ],
   "info": {

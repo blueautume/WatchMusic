@@ -186,3 +186,31 @@
 - 用户自己修改的 Watch Scheme（Release、关闭调试器）保持原样，不纳入本次代码提交。源码中无持续后台任务、显示活动、4 MiB缓存、源端发送进度或播放互控引用；音频后台能力只用于本地真实播放。
 
 手动验收：在Xcode依次Run更新两端，发送未传输的歌曲；手机返回主屏幕/锁屏，或手表息屏/按表冠，应自动暂停且保留队列。再次打开两端App应自动重试，已保存歌曲跳过；未完成单曲可能从头重传。最后验证手动暂停后退出再回来仍保持暂停。
+
+
+## 悬浮播放器、目录操作与局部状态更新（2026-10-28）
+
+先将用户已有的 Watch Release/不附加调试器 Scheme 配置作为 `0ee0df5` 单独提交并推送，再进行本轮调整；原工程与主分支未修改。
+
+- 手机音乐库根页仅目录；新安装及删除末目录不再自动创建默认目录，已有目录保留。导入仅在目录内；原生模拟器已实际长按进入多选并确认右上“操作/完成”顺序和发送、移动、删除菜单，没有底部批量栏。
+- 播放器使用覆盖层悬浮窗，不占用 TabView 或列表布局；模拟器已检查收起、展开和拖动。播放页保留一行模式、倍速、睡眠和系统音频路由图标；移除原输出说明面板。
+- 播放位置直接读取 AVAudioPlayer 时钟，TimelineView 只更新局部进度；睡眠定时采用可取消的单次截止任务。播放器不再每 0.25 秒发布整个模型；更多菜单使用曲目与播放信息快照，播放结束和库扫描仍能正确更新。另修复音频激活失败/服务重置时的迟到回调与假播放状态。
+- 手机传输不再每秒轮询并发布整个音乐库；真实 LAN 字节事件及旧 WC 原生 Progress KVO 更新独立 PhoneTransferProgress。重复值不发布，停滞由一次可取消的失效任务清除过期速度。列表排序在局部进度观察内完成，正在传输仍优先置顶。
+- 总剩余时间聚合串行队列的剩余大小，以实测速率平滑，文案至少间隔 15 秒才调整；暂停、未知文件大小、尚在准备或停滞时隐藏，不伪造保存耗时。传输两个标签均移除多选和更多菜单，以一个原生清扫图标清除当前标签；SF Symbols 在验证 runtime 无 broom 名称，使用 paintbrush。
+- 图标通过内置 image_gen 参考编辑生成，使用蓝色手表与音符，iPhone 浅/深两种外观，Watch 深色圆形裁切；全部 AppIcon 为无 Alpha 的 1024×1024 PNG。iPhone 使用系统动态颜色资产，Watch 保持系统深色高对比。
+
+测试结果：串行总 ETA 20 项、独立观察发布 5 项；真实 iPhone 模型 controls 22、send 85、foreground 87、bulk 35 项，均通过。原生播放器 iOS/watchOS 各 54 项，覆盖无定时全局发布、睡眠截止替换/取消、播放位置保存、音频激活/结束竞态及重置回调失效。Watch 布局 72 项、方向 145 项均通过。既有播放队列 46,760、音频格式 186、内嵌元数据 277、封面 40、列表 42、LAN 协议 89、保存回执 36、库存 25、文件版本 23 项及速度估算测试通过。
+
+界面检查使用 iOS/watchOS 26.5 模拟器，传输截图为模拟布局夹具，不是无线链路速度证据：
+
+- [目录内长按多选](Artifacts/Previews/Redesign/phone-folder-selection-light.png)、[批量操作菜单](Artifacts/Previews/Redesign/phone-selection-menu-light.png)、[拖动后的收起浮窗](Artifacts/Previews/Redesign/phone-floating-collapsed-light.png)。
+- [深色播放器菜单](Artifacts/Previews/Redesign/phone-player-menu-dark.png)、[进行中与总 ETA](Artifacts/Previews/Redesign/phone-transfers-dark.png)、[浅色已传输页](Artifacts/Previews/Redesign/phone-transfers-completed-light.png)。
+- [40mm 横屏接收页](Artifacts/Previews/Redesign/watch-40-transfer-landscape-right.png)、[49mm 竖屏接收页](Artifacts/Previews/Redesign/watch-49-transfer-portrait.png)、[40mm 横屏播放器](Artifacts/Previews/Redesign/watch-40-player-landscape-right.png)、[49mm 横屏设置](Artifacts/Previews/Redesign/watch-49-settings-landscape-right.png)。
+
+手表时间限制：在 watchOS 26.5 的 40/49mm 模拟器，View 与 Scene 的公开 persistentSystemOverlays(.hidden) 组合未能可靠隐藏固定系统时钟。最终移除自绘时钟与无效隐藏尝试，保留单个系统时间并为它预留物理顶部空间；电量与应用内容随充电方向旋转，按键保留 44pt 触控及曲面边距。系统时间方向仍由 watchOS 控制，本轮未实现让系统时间自动跟随充电摆放旋转，未使用私有 API。Apple 论坛亦有 watchOS 26 时钟不再自动避让的报告：[官方论坛讨论](https://developer.apple.com/forums/thread/796142)。最低 watchOS 10 保持不变。
+
+本轮仅模拟器验证，没有安装、启动或操作真机；真实重力、充电状态、无线传输速度及最终菜单体验由用户手动验收。
+
+最终构建：完整 Debug 与 Release 通用 iOS Simulator 构建均成功（含嵌入的 Watch target）；Watch 独立 Debug 构建与最低 watchOS 10 检查通过。仅有工具链 AppIntents 未使用及已签名嵌入二进制不重复 strip 的标准提示，没有源码编译警告。最终 Watch 模拟器实际 HTTP 前台生命周期回归 2 场景通过，覆盖下载中 inactive 取消、保存前 inactive 保留缓存、回 active 新清单重试及最终 SHA 一致。
+
+Watch 重力采样另外改为 Core Motion 原生串行队列回调，移除 0.25 秒手动取样 Timer；停止和重启用 generation 排除迟到回调。相关 Watch 源码通过 Swift 6 严格并发类型检查。电量因 WatchKit 未提供变更通知，保留仅前台的受限采样，值未变时不发布界面更新。
