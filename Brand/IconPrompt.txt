@@ -1,5 +1,14 @@
-Tool: built-in ImageGen
+Tool: built-in image_gen, edit mode (no CLI/API fallback).
+Input: Brand/AppIcon-source.png from commit 92a21cc (the original orange icon).
 
-Use case: logo-brand. Asset type: one final production app icon, same identity used on an iPhone and Apple Watch offline MP3 music player named 随身音乐. Create a premium, distinctive, minimal symbol: a sculptural warm orange continuous ribbon that forms a forward play triangle and a subtle circular sound groove. Central bold silhouette that stays legible at 40 pixels, elegant slightly dimensional soft material, intentional geometry, centered in a solid deep graphite almost-black square. Restrained amber highlights and very subtle depth, not photorealistic. Full bleed opaque square, no rounded outer corners (OS supplies mask), no framing, no margin or device mockup. No text, no letters, no numbers, no Apple branding, no headphones or watch illustration, no watermark. 1024x1024 composition with icon silhouette occupying central 65 percent; safe for the circular watchOS icon crop. Deliver a single clean app icon.
+Final prompt:
+Use case: precise-object-edit. Asset type: production app icon color variant for the experimental iPhone and Apple Watch music player.
+Input image: the local source image is the edit target, not merely a style reference.
+Primary request: change ONLY the orange/gold ribbon symbol to a vivid blue palette so this experimental app is clearly distinguishable from the original orange app. Preserve the original symbol's exact shape, play-triangle opening, loops, proportions, positioning, scale, silhouette, overlapping folds, shading and material texture. Keep the same deep graphite almost-black background and lighting. Use saturated azure/cobalt blue as the main ribbon color, light cyan/ice-blue highlights, and deeper blue shadow folds. No orange, gold, yellow or warm hues in the ribbon. Do not redesign, simplify or add anything. No letters, labels, text, badges, border, rounded external corners, watermark, UI mockup or device. Full-bleed opaque square icon; clean blue recoloring of the same recognizable icon, safe for the existing circular watchOS crop. Output one final square image.
 
-Original output: AppIcon-source.png. Export: RGB 1024px via deterministic resize for each platform appiconset; RGB 256px BrandMark in shared assets.
+Saved project assets (all opaque RGB PNG):
+- Brand/AppIcon-source.png: generated master, 1254 x 1254.
+- PhoneApp/Assets.xcassets/AppIcon.appiconset/AppIcon.png: 1024 x 1024.
+- WatchApp/Assets.xcassets/AppIcon.appiconset/AppIcon.png: identical 1024 x 1024 export.
+- Shared/Assets.xcassets/BrandMark.imageset/BrandMark.png: 256 x 256.
+Exports use deterministic sips resizing of the generated master. The original app's assets and the Lab in-app palette are unchanged.

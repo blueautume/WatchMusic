@@ -1,0 +1,80 @@
+{
+  "date": "2026-10-28",
+  "baselineCommit": "0211c4a",
+  "physicalException": {
+    "source": "Live Xcode debugger and user screenshot",
+    "message": "EXC_RESOURCE (RESOURCE_TYPE_MEMORY: high watermark memory limit exceeded) (limit=3072 MB)",
+    "location": "LANHTTPServerCore.digest / FileHandle.read",
+    "independentCrashReportAvailable": false
+  },
+  "workload": {
+    "fileCount": 3,
+    "bytesPerFile": 536870912,
+    "sparse": true,
+    "validAudio": false,
+    "purpose": "Production LANHTTPServer.start preparation, hashing, and active cancellation; no playback"
+  },
+  "sampling": {
+    "intervalMilliseconds": 5,
+    "safetyGuardGrowthBytes": 167772160,
+    "maximumAllowedGrowthBytes": 67108864,
+    "mac": "native macOS CLI",
+    "ios": "native iOS 26.5 simulator CLI"
+  },
+  "results": {
+    "baseline": {
+      "mac": {
+        "totalBytesReadTarget": 1610612736,
+        "peakFootprintDeltaBytes": 170229904,
+        "peakRSSDeltaBytes": 170131456,
+        "sampleCount": 25,
+        "guardTriggered": true,
+        "activeReadOffsetAtGuardBytes": 169082880
+      },
+      "ios": {
+        "totalBytesReadTarget": 1610612736,
+        "peakFootprintDeltaBytes": 174440568,
+        "peakRSSDeltaBytes": 174768128,
+        "sampleCount": 27,
+        "guardTriggered": true,
+        "activeReadOffsetAtGuardBytes": 173670400
+      }
+    },
+    "fixed": {
+      "mac": {
+        "totalBytesReadTarget": 1610612736,
+        "peakFootprintDeltaBytes": 311320,
+        "peakRSSDeltaBytes": 229376,
+        "sampleCount": 217,
+        "guardTriggered": false,
+        "activeCancellation": {
+          "readOffsetBytes": 4718592,
+          "peakFootprintDeltaBytes": 32768,
+          "peakRSSDeltaBytes": 81920,
+          "noActiveListener": true,
+          "completedUnderOneSecond": true
+        },
+        "assertionsPassed": 10
+      },
+      "ios": {
+        "totalBytesReadTarget": 1610612736,
+        "peakFootprintDeltaBytes": 327680,
+        "peakRSSDeltaBytes": 131072,
+        "sampleCount": 246,
+        "guardTriggered": false,
+        "activeCancellation": {
+          "readOffsetBytes": 4390912,
+          "peakFootprintDeltaBytes": 16384,
+          "peakRSSDeltaBytes": 147456,
+          "noActiveListener": true,
+          "completedUnderOneSecond": true
+        },
+        "assertionsPassed": 10
+      }
+    }
+  },
+  "limitations": [
+    "Relative process-memory growth after framework warmup, not total physical iPhone or Watch App memory.",
+    "The interrupted user batch was not automatically retransferred."
+  ]
+}
