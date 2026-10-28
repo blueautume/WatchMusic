@@ -74,9 +74,18 @@ Tests/run-transfer-tests.sh
 Tests/run-transfer-list-tests.sh
 Tests/run-lan-protocol-tests.sh
 Tests/run-lan-http-server-probe.sh
+Tests/run-lan-memory-probe.sh
 Tests/run-lan-receipt-tests.sh
 Tests/run-watch-orientation-tests.sh
 ```
+
+大文件摘要内存探针通过真实生产准备路径读取 3×512 MiB 稀疏文件，并与独立 SHA-256 参考比较，同时采样进程内存与检查活跃读取中的取消。也可在已启动的 iPhone 模拟器运行：
+
+```sh
+Tests/run-lan-memory-probe.sh IPHONE_SIMULATOR_UDID
+```
+
+探针不会解码或播放这些稀疏文件；内存增长超过 160 MiB 时主动取消，避免测试本身耗尽内存。
 
 播放器集成探针可在已启动的模拟器运行，不会播放声音：
 

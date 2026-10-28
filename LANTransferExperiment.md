@@ -70,6 +70,7 @@
 ```sh
 Tests/run-lan-protocol-tests.sh
 Tests/run-lan-http-server-probe.sh
+Tests/run-lan-memory-probe.sh
 Tests/run-lan-receipt-tests.sh
 Tests/run-lan-background-tests.sh
 Tests/run-transfer-tests.sh
@@ -86,6 +87,14 @@ python3 Tests/run-watch-lan-probe.py WATCH_SIMULATOR_UDID \
 ```
 
 探针启动本机 HTTP 服务，通过仅 Debug 可用的 `-lan-offer-file` 启动参数传入真实清单，检查 MP3/FLAC 下载保存、同大小损坏、HTTP 失败、重定向后最终 URL 不符、超出大小及取消后不落盘。它不模拟网络进度，也不替代配对真机的 WatchConnectivity 握手验证。仅测试模式接受 loopback，正式接收清单拒绝 loopback。
+
+大文件准备内存探针也可运行在 iPhone 模拟器：
+
+```sh
+Tests/run-lan-memory-probe.sh IPHONE_SIMULATOR_UDID
+```
+
+它通过生产 `start → prepare → digest` 处理 3×512 MiB 稀疏文件，检查独立 SHA-256、实际进程内存和活跃读取中的取消。摘要和发送每 64 KiB 及时释放 Foundation 临时读取对象；两端摘要共用同一实现，取消检查仍逐块执行。探针仅验证准备路径，不解码或播放稀疏文件，也不代表完整 App 或真机的总内存。
 
 仅运行后台和进程恢复场景：
 

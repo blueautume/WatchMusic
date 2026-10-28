@@ -1,5 +1,4 @@
 import AVFoundation
-import CryptoKit
 import Foundation
 import WatchConnectivity
 import WatchKit
@@ -442,14 +441,7 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
         guard values.isRegularFile == true, values.isSymbolicLink != true, size > 0 else { throw libraryError("接收的文件为空或不可读取") }
         if let expected {
             guard size == expected.byteCount else { throw libraryError("接收的歌曲大小不符，请重新发送") }
-            let handle = try FileHandle(forReadingFrom: temporary)
-            defer { try? handle.close() }
-            var digest = SHA256()
-            while let bytes = try handle.read(upToCount: 65_536), !bytes.isEmpty {
-                try permission?.check()
-                digest.update(data: bytes)
-            }
-            let hash = digest.finalize().map { String(format: "%02x", $0) }.joined()
+            let hash = try LANFileDigest.sha256(of: temporary) { try permission?.check() }
             guard hash == expected.sha256.lowercased() else { throw libraryError("歌曲完整性校验失败，请重新发送") }
         }
         let free = freeSpace()

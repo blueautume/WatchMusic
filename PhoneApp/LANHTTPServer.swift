@@ -1,4 +1,3 @@
-import CryptoKit
 import Darwin
 import Foundation
 import Network
@@ -172,16 +171,9 @@ private final class LANHTTPServerCore: @unchecked Sendable {
     }
 
     private static func digest(_ url: URL, cancellation: LANPreparationCancellation) throws -> String {
-        // Check cancellation between bounded reads, including large FLAC files.
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        var digest = SHA256()
-        while true {
+        try LANFileDigest.sha256(of: url) {
             guard !cancellation.isCancelled else { throw CancellationError() }
-            guard let data = try handle.read(upToCount: 65_536), !data.isEmpty else { break }
-            digest.update(data: data)
         }
-        return digest.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     static func wifiAddresses() -> [String] {
@@ -384,21 +376,26 @@ private final class LANHTTPClient {
             return
         }
         do {
-            guard let handle, let data = try handle.read(upToCount: Int(min(65_536, remaining))), !data.isEmpty else { close(); return }
-            remaining -= Int64(data.count)
-            armTimeout()
-            connection.send(content: data, completion: .contentProcessed { [weak self] error in
-                guard let self, !self.isClosed else { return }
-                if error != nil { self.close(); return }
-                #if DEBUG
-                if let text = ProcessInfo.processInfo.environment["LAN_PROBE_THROTTLE_BYTES_PER_SECOND"],
-                   let bytesPerSecond = Double(text), bytesPerSecond.isFinite, bytesPerSecond >= 32_768 {
-                    self.queue.asyncAfter(deadline: .now() + Double(data.count) / bytesPerSecond) { [weak self] in self?.sendNextChunk() }
-                    return
-                }
-                #endif
-                self.sendNextChunk()
-            })
+            try autoreleasepool {
+                guard let handle, let data = try handle.read(upToCount: Int(min(65_536, remaining))), !data.isEmpty else { close(); return }
+                let byteCount = data.count
+                remaining -= Int64(byteCount)
+                armTimeout()
+                // Network retains this single chunk until processed. Only its
+                // count is captured by the callback, not the file buffer.
+                connection.send(content: data, completion: .contentProcessed { [weak self] error in
+                    guard let self, !self.isClosed else { return }
+                    if error != nil { self.close(); return }
+                    #if DEBUG
+                    if let text = ProcessInfo.processInfo.environment["LAN_PROBE_THROTTLE_BYTES_PER_SECOND"],
+                       let bytesPerSecond = Double(text), bytesPerSecond.isFinite, bytesPerSecond >= 32_768 {
+                        self.queue.asyncAfter(deadline: .now() + Double(byteCount) / bytesPerSecond) { [weak self] in self?.sendNextChunk() }
+                        return
+                    }
+                    #endif
+                    self.sendNextChunk()
+                })
+            }
         } catch { close() }
     }
 

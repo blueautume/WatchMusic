@@ -109,6 +109,26 @@ struct LANTransferProtocolTests {
         defer { try? FileManager.default.removeItem(at: temp) }
         try Data("abc".utf8).write(to: temp)
         try expect(LANFileDigest.sha256(of: temp) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "known SHA-256 vector")
+        let chunkedVector = Data((0..<131_073).map { UInt8($0 % 251) })
+        try chunkedVector.write(to: temp)
+        try expect(LANFileDigest.sha256(of: temp) == "dd84db969f4ff2abb79c8c2fbc06e8d8e02c46d6481c958e057f7ad7a24c58a7",
+                   "SHA-256 remains correct across two complete chunks and a final byte")
+        var cancelledBeforeRead = false
+        do { _ = try LANFileDigest.sha256(of: temp) { throw CancellationError() } }
+        catch is CancellationError { cancelledBeforeRead = true }
+        try expect(cancelledBeforeRead, "cancellation before reading never returns a digest")
+        var checks = 0
+        var cancelledBetweenChunks = false
+        do {
+            _ = try LANFileDigest.sha256(of: temp) {
+                checks += 1
+                if checks == 2 { throw CancellationError() }
+            }
+        } catch is CancellationError { cancelledBetweenChunks = true }
+        try expect(cancelledBetweenChunks && checks == 2, "in-progress hashing stops at the next bounded-read cancellation check")
+        try Data().write(to: temp)
+        try expect(LANFileDigest.sha256(of: temp) == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                   "empty input has the standard SHA-256 digest")
         print("PASS: \(assertions) LAN protocol assertions")
     }
 }

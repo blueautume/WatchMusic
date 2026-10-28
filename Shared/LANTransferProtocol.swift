@@ -147,11 +147,22 @@ enum LANTransferValidation {
 }
 
 enum LANFileDigest {
-    static func sha256(of url: URL) throws -> String {
+    static func sha256(of url: URL, checkCancellation: () throws -> Void = {}) throws -> String {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var digest = SHA256()
-        while let bytes = try handle.read(upToCount: 65_536), !bytes.isEmpty { digest.update(data: bytes) }
+        while true {
+            try checkCancellation()
+            // Foundation may autorelease each NSData backing a FileHandle read.
+            // A task can hash many gigabytes before its outer pool drains, so
+            // consume each chunk here and never return the bytes from the pool.
+            let consumed = try autoreleasepool { () throws -> Bool in
+                guard let bytes = try handle.read(upToCount: 65_536), !bytes.isEmpty else { return false }
+                digest.update(data: bytes)
+                return true
+            }
+            if !consumed { break }
+        }
         return digest.finalize().map { String(format: "%02x", $0) }.joined()
     }
 }
