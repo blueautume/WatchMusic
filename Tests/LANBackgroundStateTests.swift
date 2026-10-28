@@ -239,39 +239,38 @@ struct LANBackgroundStateTests {
         try expect(serial.recordDownloaded(fileID: fileA.id, stagingName: UUID().uuidString + ".download"), "legacy first file can also await save")
         try expect(serial.nextRunnableFileID() == fileA.id, "multiple restored caches save in manifest order")
         try expect(serial.nextRunnableFileID(keeping: UUID().uuidString) == fileA.id, "unknown active identity cannot steal or block the lane")
-        var chunks = initial()
-        chunks.items[fileA.id]?.phase = .downloading
-        chunks.items[fileA.id]?.taskIdentifier = 90
-        chunks.items[fileA.id]?.committedBytes = 0
-        chunks.items[fileA.id]?.requestedOffset = 0
-        chunks.items[fileA.id]?.requestedLength = 40
-        try expect(!rejected(chunks), "bounded HTTP request metadata restores")
-        try expect(chunks.recordProgress(fileID: fileA.id, bytes: 40), "current range reports cumulative bytes")
-        try expect(chunks.recordChunk(fileID: fileA.id, committedBytes: 40), "complete range commits a resumable boundary")
-        try expect(chunks.items[fileA.id]?.taskIdentifier == nil && chunks.items[fileA.id]?.requestedLength == nil,
-                   "committing a range detaches the completed native request")
-        try expect(chunks.nextRunnableFileID(keeping: fileA.id) == fileA.id, "next chunk retains the song's serial lane")
-        try expect(!chunks.recordChunk(fileID: fileA.id, committedBytes: 40), "a duplicate range cannot advance the checkpoint")
-        try expect(!chunks.recordChunk(fileID: fileA.id, committedBytes: 100), "full content must enter validation instead of a partial phase")
-        chunks.items[fileA.id]?.requestedOffset = 40
-        chunks.items[fileA.id]?.requestedLength = 60
-        chunks = try roundTrip(chunks)
-        try expect(!rejected(chunks), "committed prefix and remaining request survive process restoration")
-        malformed = chunks
-        malformed.items[fileA.id]?.requestedOffset = 39
-        try expect(rejected(malformed), "request cannot overlap committed bytes")
-        malformed = chunks
-        malformed.items[fileA.id]?.requestedLength = 61
-        try expect(rejected(malformed), "request cannot extend past full content")
-        malformed = chunks
-        malformed.items[fileA.id]?.requestedLength = nil
-        try expect(rejected(malformed), "incomplete request metadata is rejected")
-        malformed = chunks
-        malformed.items[fileA.id]?.receivedBytes = 39
-        try expect(rejected(malformed), "received progress cannot precede committed bytes")
-        try expect(chunks.recordDownloaded(fileID: fileA.id, stagingName: UUID().uuidString + ".download"), "last range enters complete validation")
-        try expect(chunks.items[fileA.id]?.committedBytes == nil && chunks.items[fileA.id]?.requestedOffset == nil,
-                   "full validation detaches resumable prefix bookkeeping")
-        print("PASS: \(assertions) LAN background state assertions")
+        var lifecycle = initial()
+        try expect(lifecycle.setPaused(fileID: fileB.id, paused: true, revision: 1), "manual pause precedes lifecycle interruption")
+        lifecycle.items[fileA.id]?.phase = .downloading
+        try expect(lifecycle.setLifecyclePaused(fileID: fileA.id, paused: true), "inactive pauses running intent automatically")
+        try expect(!lifecycle.setLifecyclePaused(fileID: fileB.id, paused: true), "inactive cannot overwrite a manual pause")
+        try expect(lifecycle.items[fileB.id]?.lifecyclePaused != true, "manual pause has no automatic recovery marker")
+        lifecycle = try roundTrip(lifecycle)
+        try lifecycle.validateForRestoration(allowLoopback: false)
+        try expect(lifecycle.items[fileA.id]?.lifecyclePaused == true && lifecycle.items[fileB.id]?.lifecyclePaused != true,
+                   "restart retains automatic and manual pause distinction")
+        try expect(lifecycle.setLifecyclePaused(fileID: fileA.id, paused: false), "only lifecycle pause can be released automatically")
+        try expect(!lifecycle.setLifecyclePaused(fileID: fileB.id, paused: false), "foreground never resumes a manually paused item")
+        try expect(lifecycle.items[fileA.id]?.phase == .queued && lifecycle.items[fileB.id]?.phase == .paused,
+                   "automatic recovery leaves manual pause untouched")
+        try expect(lifecycle.setLifecyclePaused(fileID: fileA.id, paused: true), "intent can pause on another inactive transition")
+        try expect(lifecycle.setPaused(fileID: fileA.id, paused: true, revision: 2), "user can turn automatic wait into a manual pause")
+        try expect(lifecycle.items[fileA.id]?.lifecyclePaused != true, "explicit pause removes automatic recovery permission")
+        try expect(!lifecycle.setLifecyclePaused(fileID: fileA.id, paused: false), "later foreground respects explicit pause")
+        malformed = lifecycle
+        malformed.items[fileA.id]?.phase = .queued
+        malformed.items[fileA.id]?.lifecyclePaused = true
+        try expect(rejected(malformed), "automatic wait marker cannot accompany running persisted state")
+        var saving = initial()
+        let saveName = UUID().uuidString + ".download"
+        try expect(saving.recordDownloaded(fileID: fileA.id, stagingName: saveName), "fully received file enters validation")
+        try expect(saving.setLifecyclePaused(fileID: fileA.id, paused: true), "inactive defers uncommitted validation")
+        saving = try roundTrip(saving)
+        try saving.validateForRestoration(allowLoopback: false)
+        try expect(saving.items[fileA.id]?.stagingName == saveName && saving.items[fileA.id]?.phase == .paused,
+                   "complete uncommitted file remains a paused cache")
+        try expect(saving.recordTerminal(fileID: fileA.id, kind: .cancelled), "explicit clear can discard a lifecycle-paused cache")
+        try expect(saving.items[fileA.id]?.lifecyclePaused == nil, "terminal cancellation clears automatic recovery marker")
+        print("PASS: \(assertions) LAN foreground state assertions")
     }
 }

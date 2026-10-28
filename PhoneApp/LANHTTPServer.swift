@@ -7,14 +7,10 @@ import Network
 @MainActor
 final class LANHTTPServer {
     var onStopped: ((String) -> Void)?
-    /// Bytes successfully processed by the network stack, expressed as an
-    /// absolute file end offset. This is not a Watch save acknowledgment.
-    var onProgress: ((String, String, Int64) -> Void)?
     private(set) var activeSessionID: String?
     private var core: LANHTTPServerCore?
     private var generation = UUID()
     private var preparation: LANPreparationCancellation?
-    private var revokedFileIDs = Set<String>()
     private let allowLoopbackForTesting: Bool
     private let lifetime: TimeInterval
 
@@ -27,7 +23,6 @@ final class LANHTTPServer {
         guard preparation == nil, core == nil else { throw lanServerError("已有局域网传输，请先完成或停止。") }
         let requestID = UUID()
         generation = requestID
-        revokedFileIDs.removeAll()
         let cancellation = LANPreparationCancellation()
         preparation = cancellation
         let testing = allowLoopbackForTesting
@@ -46,16 +41,6 @@ final class LANHTTPServer {
                 let expiration = Date().addingTimeInterval(lifetime)
                 let newCore = try LANHTTPServerCore(files: prepared, token: token, expiration: expiration, testing: testing)
                 core = newCore
-                // The core throttles on its serial queue before crossing to
-                // the main actor; never enqueue a Task for every 64 KiB read.
-                newCore.onProgress = { [weak self] fileID, endOffset in
-                    Task { @MainActor [weak self] in
-                        guard let self, self.generation == requestID,
-                              self.activeSessionID == sessionID,
-                              !self.revokedFileIDs.contains(fileID) else { return }
-                        self.onProgress?(sessionID, fileID, endOffset)
-                    }
-                }
                 newCore.onStopped = { [weak self] reason in
                     Task { @MainActor [weak self] in
                         guard let self, self.generation == requestID else { return }
@@ -98,17 +83,11 @@ final class LANHTTPServer {
         preparation?.cancel()
         preparation = nil
         activeSessionID = nil
-        revokedFileIDs.removeAll()
         core?.stop()
         core = nil
     }
 
-    func cancel(fileID: String) {
-        // Revoke queued main-actor progress synchronously as well as closing
-        // the native request on the source's serial queue.
-        revokedFileIDs.insert(fileID)
-        core?.cancel(fileID: fileID)
-    }
+    func cancel(fileID: String) { core?.cancel(fileID: fileID) }
 }
 
 private func lanServerError(_ text: String) -> NSError {
@@ -144,7 +123,6 @@ private struct LANPreparedFile {
 
 private final class LANHTTPServerCore: @unchecked Sendable {
     var onStopped: ((String) -> Void)?
-    var onProgress: ((String, Int64) -> Void)?
     private let queue = DispatchQueue(label: "WatchMusic.LANHTTPServer", qos: .utility)
     private let listener: NWListener
     private var files: [String: LANPreparedFile]
@@ -156,7 +134,6 @@ private final class LANHTTPServerCore: @unchecked Sendable {
     private var stopped = false
     private var startupTimeout: DispatchWorkItem?
     private var expirationTimer: DispatchWorkItem?
-    private var lastProgressTimes: [String: TimeInterval] = [:]
 
     init(files: [LANPreparedFile], token: String, expiration: Date, testing: Bool) throws {
         self.files = Dictionary(uniqueKeysWithValues: files.map { ($0.metadata.id, $0) })
@@ -238,7 +215,6 @@ private final class LANHTTPServerCore: @unchecked Sendable {
     func cancel(fileID: String) {
         queue.async { [self] in
             files.removeValue(forKey: fileID)
-            lastProgressTimes.removeValue(forKey: fileID)
             Array(clients.values).filter { $0.fileID == fileID }.forEach { $0.close() }
         }
     }
@@ -268,20 +244,9 @@ private final class LANHTTPServerCore: @unchecked Sendable {
         let id = UUID()
         let client = LANHTTPClient(connection: connection, queue: queue, token: token, expiration: expiration,
                                    lookup: { [weak self] id in self?.files[id] },
-                                   progressed: { [weak self] fileID, endOffset, responseFinished in
-                                       self?.reportProgress(fileID: fileID, endOffset: endOffset, responseFinished: responseFinished)
-                                   },
                                    closed: { [weak self] in self?.clients.removeValue(forKey: id) })
         clients[id] = client
         client.start()
-    }
-
-    private func reportProgress(fileID: String, endOffset: Int64, responseFinished: Bool) {
-        guard !stopped, let file = files[fileID], endOffset > 0, endOffset <= file.metadata.byteCount else { return }
-        let now = ProcessInfo.processInfo.systemUptime
-        guard responseFinished || now - (lastProgressTimes[fileID] ?? -.infinity) >= 1 else { return }
-        lastProgressTimes[fileID] = now
-        onProgress?(fileID, endOffset)
     }
 
     private func stopOnQueue(reason: String?) {
@@ -295,7 +260,6 @@ private final class LANHTTPServerCore: @unchecked Sendable {
         Array(clients.values).forEach { $0.close() }
         clients.removeAll()
         files.removeAll()
-        lastProgressTimes.removeAll()
         token = ""
         let pending = continuation
         continuation = nil
@@ -311,26 +275,21 @@ private final class LANHTTPClient {
     private var token: String
     private let expiration: Date
     private let lookup: (String) -> LANPreparedFile?
-    private let progressed: (String, Int64, Bool) -> Void
     private let closed: () -> Void
     private var header = Data()
     private var timeout: DispatchWorkItem?
     private var handle: FileHandle?
     private var remaining: Int64 = 0
-    private var processedEndOffset: Int64 = 0
-    private var responseEndOffset: Int64 = 0
     private var isClosed = false
     private(set) var fileID: String?
 
     init(connection: NWConnection, queue: DispatchQueue, token: String, expiration: Date,
-         lookup: @escaping (String) -> LANPreparedFile?,
-         progressed: @escaping (String, Int64, Bool) -> Void, closed: @escaping () -> Void) {
+         lookup: @escaping (String) -> LANPreparedFile?, closed: @escaping () -> Void) {
         self.connection = connection
         self.queue = queue
         self.token = token
         self.expiration = expiration
         self.lookup = lookup
-        self.progressed = progressed
         self.closed = closed
     }
 
@@ -396,8 +355,6 @@ private final class LANHTTPClient {
             handle = input
             try input.seek(toOffset: UInt64(range.offset))
             remaining = range.length
-            processedEndOffset = range.offset
-            responseEndOffset = range.offset + range.length
             var response = "HTTP/1.1 \(range.isPartial ? "206 Partial Content" : "200 OK")\r\n"
             response += "Content-Length: \(range.length)\r\nContent-Type: \(file.metadata.fileName.lowercased().hasSuffix(".mp3") ? "audio/mpeg" : "audio/flac")\r\n"
             response += "Accept-Ranges: bytes\r\nETag: \"\(file.metadata.sha256)\"\r\nCache-Control: no-store\r\nConnection: close\r\n"
@@ -429,10 +386,6 @@ private final class LANHTTPClient {
                 connection.send(content: data, completion: .contentProcessed { [weak self] error in
                     guard let self, !self.isClosed else { return }
                     if error != nil { self.close(); return }
-                    self.processedEndOffset += Int64(byteCount)
-                    if let fileID = self.fileID {
-                        self.progressed(fileID, self.processedEndOffset, self.processedEndOffset == self.responseEndOffset)
-                    }
                     #if DEBUG
                     if let text = ProcessInfo.processInfo.environment["LAN_PROBE_THROTTLE_BYTES_PER_SECOND"],
                        let bytesPerSecond = Double(text), bytesPerSecond.isFinite, bytesPerSecond >= 32_768 {

@@ -11,12 +11,6 @@ enum LANSendPreparation {
         let task = Task.detached(priority: .utility) {
             try tracks.map { track in
                 try Task.checkCancellation()
-                // Existing imports may predate background transfer support.
-                // Set protection before capturing the source's ctime/version.
-                let protection = FileProtectionType.completeUntilFirstUserAuthentication
-                if (try FileManager.default.attributesOfItem(atPath: track.url.path)[.protectionKey] as? String) != protection.rawValue {
-                    try FileManager.default.setAttributes([.protectionKey: protection], ofItemAtPath: track.url.path)
-                }
                 let before = try TransferSourceVersion.read(track.url)
                 guard before.byteCount > 0, before.byteCount <= 8 * 1_024 * 1_024 * 1_024 else {
                     throw CocoaError(.fileReadTooLarge)

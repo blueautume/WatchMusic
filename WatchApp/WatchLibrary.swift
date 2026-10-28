@@ -325,7 +325,7 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
     func updateLANForeground(_ foreground: Bool) {
         lanAppForeground = foreground
         lanReceiver.setForeground(foreground)
-        // Screen sleep/backgrounding must not cancel the system's downloads.
+        // Inactive/blank-screen states pause LAN work until a fresh phone offer.
     }
 
     func cancelLANTransfer() { lanReceiver.stop() }
@@ -426,11 +426,11 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
         #endif
         guard let message = try? LANTransferWire.message(event, type: LANTransferWire.eventType),
               let session, session.activationState == .activated else { return }
-        if event.kind.isTerminal {
+        if event.kind.isTerminal || event.automaticPause == true {
             session.transferUserInfo(message)
             // The OS now owns a durable copy. Before activation the receiver
             // keeps its protected outbox and replays it on the next wake.
-            lanReceiver.acknowledgeTerminalEvent(sessionID: event.sessionID, fileID: event.fileID)
+            if event.kind.isTerminal { lanReceiver.acknowledgeTerminalEvent(sessionID: event.sessionID, fileID: event.fileID) }
         }
         if session.isReachable { session.sendMessage(message, replyHandler: nil, errorHandler: nil) }
     }
@@ -439,6 +439,12 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
     /// destination changes, and the final move is guarded against cancellation.
     private func storeAudio(at temporary: URL, folder: String, fileName: String,
                             expected: LANTransferFile? = nil, permission: LANStoragePermission? = nil) throws {
+        #if DEBUG && targetEnvironment(simulator)
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("-lan-offer-file"), let flag = arguments.firstIndex(of: "-lan-save-delay"),
+           arguments.indices.contains(flag + 1), let seconds = Double(arguments[flag + 1]),
+           seconds.isFinite, (0.1...10).contains(seconds) { Thread.sleep(forTimeInterval: seconds) }
+        #endif
         try permission?.check()
         guard LANTransferValidation.isSafeComponent(folder), LANTransferValidation.isSafeComponent(fileName),
               AudioFileFormat.supports(URL(fileURLWithPath: fileName)) else { throw libraryError("不支持的歌曲文件或目录名称") }
@@ -548,6 +554,31 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
                     if let data = try? JSONSerialization.data(withJSONObject: ["enteredBackground": true, "simulated": true, "sessionID": offer.sessionID]) {
                         try? data.write(to: marker, options: .atomic)
                     }
+                }
+            }
+            if let flag = arguments.firstIndex(of: "-lan-foreground-after"), arguments.indices.contains(flag + 1),
+               let seconds = Double(arguments[flag + 1]), seconds.isFinite, (0.1...60).contains(seconds) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
+                    self?.updateLANForeground(true)
+                }
+            }
+            if let flag = arguments.firstIndex(of: "-lan-replacement-after"), arguments.indices.contains(flag + 1),
+               let seconds = Double(arguments[flag + 1]), seconds.isFinite, (0.1...60).contains(seconds),
+               let nextFlag = arguments.firstIndex(of: "-lan-next-offer-file"), arguments.indices.contains(nextFlag + 1),
+               let nextName = safeComponent(arguments[nextFlag + 1]) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
+                    guard let self, self.lanAppForeground else { return }
+                    do {
+                        let replacement = try JSONDecoder().decode(LANTransferOffer.self, from: Data(contentsOf: documents.appendingPathComponent(nextName)))
+                        self.lanReceiver.handle(LANTransferCommand(sessionID: offer.sessionID, kind: .stop, fileID: nil)) { [weak self] _ in
+                            guard let self else { return }
+                            // Keep both sessions in the probe log to audit the
+                            // pause/ready boundary and the fresh-session save.
+                            self.debugLANSessionID = replacement.sessionID
+                            do { try self.receiveLANOffer(replacement, allowLoopbackForTesting: true) }
+                            catch { self.errorMessage = error.localizedDescription }
+                        }
+                    } catch { self.errorMessage = error.localizedDescription }
                 }
             }
             if let flag = arguments.firstIndex(of: "-lan-cancel-after"), arguments.indices.contains(flag + 1),
