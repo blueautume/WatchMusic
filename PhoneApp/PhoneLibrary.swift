@@ -86,6 +86,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
     private var lanHandshakeAccepted = false
     private var lanRecordIDs = Set<String>()
     private var lanCompletedBytes: [String: Int64] = [:]
+    private var lanSourceSentBytes: [String: Int64] = [:]
     private var savedIdleTimerDisabled: Bool?
     private var isAppForeground = true
     @Published private(set) var isUpdatingTransferControls = false
@@ -111,6 +112,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
     private var observedPhonePhase = "launching"
     private var lastPhoneProgressLog: TimeInterval = 0
     private var lastPhoneConnectionLog: String?
+    private var lastSourceProgressLog: TimeInterval = 0
     #endif
     #if DEBUG && targetEnvironment(simulator)
     private let isTransferListPreview = ProcessInfo.processInfo.arguments.contains("-preview-transfers-in-progress") ||
@@ -119,11 +121,18 @@ final class PhoneLibrary: NSObject, ObservableObject {
     #endif
     private lazy var lanServer: LANHTTPServer = {
         let server = LANHTTPServer()
+        configureLANServerCallbacks(server)
+        return server
+    }()
+
+    private func configureLANServerCallbacks(_ server: LANHTTPServer) {
         server.onStopped = { [weak self] message in
             self?.parkLANQueue(message: message, resumeOnForeground: true)
         }
-        return server
-    }()
+        server.onProgress = { [weak self] sessionID, fileID, offset in
+            self?.handleLANSourceProgress(sessionID: sessionID, fileID: fileID, offset: offset)
+        }
+    }
 
     func isCurrentLANTransfer(_ id: String) -> Bool { lanRecordIDs.contains(id) }
 
@@ -474,7 +483,8 @@ final class PhoneLibrary: NSObject, ObservableObject {
         let records = transfers.filter { backgroundTrackedIDs.contains($0.id) && $0.state != .cancelled }
         let completedFiles = records.filter { $0.state == .stored }.count
         let completedBytes = records.reduce(Int64(0)) { value, record in
-            value + (record.state == .stored ? record.totalBytes : min(record.totalBytes, max(0, lanCompletedBytes[record.id] ?? 0)))
+            value + (record.state == .stored ? record.totalBytes : min(record.totalBytes,
+                max(0, max(lanCompletedBytes[record.id] ?? 0, lanSourceSentBytes[record.id] ?? 0))))
         }
         continuedProcessing.update(completedBytes: completedBytes, totalBytes: records.reduce(0) { $0 + $1.totalBytes },
             completedFiles: completedFiles, totalFiles: records.count,
@@ -768,6 +778,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
             transferMetrics.removeValue(forKey: id)
             progress.removeValue(forKey: id)
             lanCompletedBytes.removeValue(forKey: id)
+            lanSourceSentBytes.removeValue(forKey: id)
             expectedControlRevisions.removeValue(forKey: id)
         }
         if lanRecordIDs.isEmpty, isLANActive { closeLANSession() }
@@ -1108,9 +1119,14 @@ final class PhoneLibrary: NSObject, ObservableObject {
         waitingLANIDs = []; queuedLANSources = [:]
         currentLANOrder.removeAll(); backgroundTrackedIDs.removeAll()
         lanServer = LANHTTPServer(allowLoopbackForTesting: true)
+        configureLANServerCallbacks(lanServer)
     }
 
     func receiveTransferQueueProbeEvent(_ event: LANTransferEvent) { handleLANEvent(event) }
+
+    func receiveTransferQueueProbeSourceProgress(sessionID: String, fileID: String, offset: Int64) {
+        handleLANSourceProgress(sessionID: sessionID, fileID: fileID, offset: offset)
+    }
 
     func restoreTransferQueueForProbe() throws {
         transfers = try JSONDecoder().decode([TransferRecord].self, from: Data(contentsOf: persistedTransferIndex))
@@ -1183,6 +1199,11 @@ final class PhoneLibrary: NSObject, ObservableObject {
                    WCSession.default.isPaired, WCSession.default.isWatchAppInstalled {
                     let currentTracks = self.tracks(in: folder)
                     guard !currentTracks.isEmpty, !Task.isCancelled, self.isAppForeground else { return }
+                    let paused = self.transfers.filter { $0.folder == name && $0.state == .paused }
+                    if !paused.isEmpty {
+                        self.resumeTransfers(ids: Set(paused.map(\.id)))
+                        return
+                    }
                     self.send(currentTracks)
                     return
                 }
@@ -1329,6 +1350,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
         lanRecordIDs.removeAll()
         currentLANOrder.removeAll()
         lanCompletedBytes.removeAll()
+        lanSourceSentBytes.removeAll()
         updateSourceIdleTimer()
     }
 
@@ -1353,6 +1375,25 @@ final class PhoneLibrary: NSObject, ObservableObject {
         if WCSession.default.isReachable { WCSession.default.sendMessage(message, replyHandler: nil, errorHandler: nil) }
         // Idempotent commands also reach the watch after a temporary interruption.
         WCSession.default.transferUserInfo(message)
+    }
+
+    private func handleLANSourceProgress(sessionID: String, fileID: String, offset: Int64) {
+        guard activeLANSessionID == sessionID, lanRecordIDs.contains(fileID),
+              let record = transfers.first(where: { $0.id == fileID && $0.lanSessionID == sessionID && $0.state.isPending }),
+              offset >= 0, offset <= record.totalBytes,
+              offset > (lanSourceSentBytes[fileID] ?? 0) else { return }
+        lanSourceSentBytes[fileID] = offset
+        // This measures source work for the system runtime, not a Watch save
+        // fact. Song-row progress and terminal state still use Watch events.
+        updateContinuedProcessingProgress()
+        #if DEBUG
+        let now = ProcessInfo.processInfo.systemUptime
+        if now - lastSourceProgressLog >= 5 || offset == record.totalBytes {
+            lastSourceProgressLog = now
+            recordPhoneLifecycle("http-source-progress", event: LANTransferEvent(sessionID: sessionID, fileID: fileID,
+                kind: .progress, completedBytes: offset, totalBytes: record.totalBytes, message: nil))
+        }
+        #endif
     }
 
     private func handleLANEvent(_ event: LANTransferEvent) {
@@ -1435,6 +1476,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
         transferMetrics.removeValue(forKey: event.fileID)
         progress.removeValue(forKey: event.fileID)
         lanCompletedBytes.removeValue(forKey: event.fileID)
+        lanSourceSentBytes.removeValue(forKey: event.fileID)
         saveTransfers()
     }
 

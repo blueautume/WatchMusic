@@ -115,6 +115,8 @@ final class LANContinuedProcessing {
         probeAutomaticallyGrants = automaticallyGrant
     }
 
+    var progressForProbe: LANContinuedProcessingProgress { currentProgress }
+
     func grantForProbe() {
         guard probeAutomaticallyGrants != nil, let identifier = state.identifier,
               state.grant(identifier: identifier) else { return }

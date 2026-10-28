@@ -126,6 +126,93 @@ struct PhoneBackgroundQueueProbe {
         try check(!LANContinuedProcessing.shared.canRunInBackground, "The grant is released when all queue work is saved")
         continued.clearAllTasks()
 
+        // Source callbacks measure native runtime work even when Watch progress
+        // is delayed. They must never fabricate Watch receipt/save information.
+        let sourcePeer = BackgroundQueuePeer()
+        let source = model(sourcePeer)
+        _ = await send([a1, a2], on: source)
+        try await ready(1, on: source, peer: sourcePeer)
+        let sourceOffer = sourcePeer.offers[0]
+        let sourceFirst = sourceOffer.files[0], sourceSecond = sourceOffer.files[1]
+        let sourceQuarter = max(1, sourceFirst.byteCount / 4)
+        let rowsBeforeSource = source.progress
+        let metricsBeforeSource = source.transferMetrics
+        let noBytes = LANContinuedProcessing.shared.progressForProbe
+        try check(noBytes.completedUnitCount == 0 && LANContinuedProcessing.shared.canRunInBackground,
+                  "Native runtime starts with a real zero-byte observation")
+        source.receiveTransferQueueProbeSourceProgress(sessionID: sourceOffer.sessionID, fileID: sourceFirst.id, offset: sourceQuarter)
+        let quarterProgress = LANContinuedProcessing.shared.progressForProbe
+        try check(quarterProgress.completedUnitCount > noBytes.completedUnitCount && source.storedTransfers.isEmpty,
+                  "Successful source byte endpoints advance native progress without Watch messages")
+        try check(source.progress == rowsBeforeSource && source.transferMetrics == metricsBeforeSource &&
+                  source.transfers.allSatisfy { $0.state == .queued },
+                  "Source observations leave exposed song metrics and Watch-controlled states unchanged")
+        source.receiveTransferQueueProbeSourceProgress(sessionID: UUID().uuidString, fileID: sourceFirst.id, offset: sourceFirst.byteCount)
+        try check(LANContinuedProcessing.shared.progressForProbe == quarterProgress,
+                  "Another source session cannot advance the current native progress")
+        source.receiveTransferQueueProbeSourceProgress(sessionID: sourceOffer.sessionID, fileID: UUID().uuidString, offset: sourceFirst.byteCount)
+        try check(LANContinuedProcessing.shared.progressForProbe == quarterProgress,
+                  "An unknown file cannot be counted as current source work")
+        source.receiveTransferQueueProbeSourceProgress(sessionID: sourceOffer.sessionID, fileID: sourceFirst.id, offset: -1)
+        try check(LANContinuedProcessing.shared.progressForProbe == quarterProgress,
+                  "Negative source offsets cannot alter reported work")
+        source.receiveTransferQueueProbeSourceProgress(sessionID: sourceOffer.sessionID, fileID: sourceFirst.id, offset: sourceFirst.byteCount + 1)
+        try check(LANContinuedProcessing.shared.progressForProbe == quarterProgress,
+                  "Source offsets beyond the offered file are rejected instead of clamped into completion")
+        source.receiveTransferQueueProbeSourceProgress(sessionID: sourceOffer.sessionID, fileID: sourceFirst.id, offset: sourceQuarter)
+        source.receiveTransferQueueProbeSourceProgress(sessionID: sourceOffer.sessionID, fileID: sourceFirst.id, offset: sourceQuarter / 2)
+        try check(LANContinuedProcessing.shared.progressForProbe == quarterProgress,
+                  "Repeated or backward Range endpoints neither add bytes nor move progress backward")
+        let watchHalf = sourceFirst.byteCount / 2
+        source.receiveTransferQueueProbeEvent(LANTransferEvent(sessionID: sourceOffer.sessionID, fileID: sourceFirst.id,
+            kind: .progress, completedBytes: watchHalf, totalBytes: sourceFirst.byteCount, message: nil))
+        let watchAhead = LANContinuedProcessing.shared.progressForProbe
+        try check(watchAhead.completedUnitCount > quarterProgress.completedUnitCount,
+                  "A newer Watch byte count can advance native progress beyond the source observation")
+        source.receiveTransferQueueProbeSourceProgress(sessionID: sourceOffer.sessionID, fileID: sourceFirst.id, offset: sourceQuarter + 1)
+        try check(LANContinuedProcessing.shared.progressForProbe == watchAhead,
+                  "Native progress takes the larger Watch/source endpoint rather than adding both observations")
+        source.receiveTransferQueueProbeSourceProgress(sessionID: sourceOffer.sessionID, fileID: sourceFirst.id,
+            offset: sourceFirst.byteCount * 3 / 4)
+        let sourceAhead = LANContinuedProcessing.shared.progressForProbe
+        try check(sourceAhead.completedUnitCount > watchAhead.completedUnitCount,
+                  "Source progress can continue beyond the latest Watch message")
+        source.sceneDidEnterBackground()
+        source.receiveTransferQueueProbeSourceProgress(sessionID: sourceOffer.sessionID, fileID: sourceFirst.id, offset: sourceFirst.byteCount)
+        let backgroundFirst = LANContinuedProcessing.shared.progressForProbe
+        source.receiveTransferQueueProbeSourceProgress(sessionID: sourceOffer.sessionID, fileID: sourceSecond.id,
+            offset: max(1, sourceSecond.byteCount / 4))
+        let backgroundSecond = LANContinuedProcessing.shared.progressForProbe
+        try check(source.isLANActive && LANContinuedProcessing.shared.canRunInBackground &&
+                  backgroundFirst.completedUnitCount > sourceAhead.completedUnitCount &&
+                  backgroundSecond.completedUnitCount > backgroundFirst.completedUnitCount,
+                  "A granted background queue continues reporting source work without a Watch callback")
+        source.receiveTransferQueueProbeSourceProgress(sessionID: sourceOffer.sessionID, fileID: sourceSecond.id, offset: sourceSecond.byteCount)
+        let sentAllBytes = LANContinuedProcessing.shared.progressForProbe
+        try check(sentAllBytes.completedUnitCount < sentAllBytes.totalUnitCount &&
+                  source.storedTransfers.isEmpty && source.pendingCount == 2 &&
+                  source.transfers.allSatisfy { $0.state == .queued },
+                  "The final source byte still leaves native progress below completion and every song unconfirmed")
+        try check(source.progress == rowsBeforeSource && source.transferMetrics == metricsBeforeSource,
+                  "Source-only completion never creates song-row receive progress or speed samples")
+        source.receiveTransferQueueProbeEvent(LANTransferEvent(sessionID: sourceOffer.sessionID, fileID: sourceFirst.id,
+            kind: .progress, completedBytes: sourceFirst.byteCount, totalBytes: sourceFirst.byteCount, message: nil))
+        try check(source.transfers.first { $0.id == sourceFirst.id }?.state == .awaitingReceipt &&
+                  source.storedTransfers.isEmpty && LANContinuedProcessing.shared.progressForProbe == sentAllBytes,
+                  "Only Watch receive completion enters validation, without inventing a save receipt")
+        sourcePeer.finish(sourceFirst, in: sourceOffer, on: source)
+        let savedOne = LANContinuedProcessing.shared.progressForProbe
+        try check(savedOne.completedUnitCount > sentAllBytes.completedUnitCount && savedOne.completedUnitCount < savedOne.totalUnitCount &&
+                  source.storedTransfers.count == 1 && LANContinuedProcessing.shared.canRunInBackground,
+                  "One actual save receipt advances the final stage while the other song still holds the job open")
+        sourcePeer.finish(sourceSecond, in: sourceOffer, on: source)
+        let savedAll = LANContinuedProcessing.shared.progressForProbe
+        try check(savedAll.completedUnitCount == savedAll.totalUnitCount && source.storedTransfers.count == 2 && source.pendingCount == 0,
+                  "Native progress reaches completion only after every Watch stored receipt")
+        try check(!source.isLANActive && !LANContinuedProcessing.shared.canRunInBackground,
+                  "Verified completion closes the source and releases the native runtime")
+        source.clearAllTasks()
+
         // Expiration/cancel preserves both the active tail and future queue,
         // and requires an explicit action even after returning to foreground.
         let parkedDirectory = try directory("parked")

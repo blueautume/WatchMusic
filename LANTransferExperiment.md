@@ -44,7 +44,7 @@ iOS 26 及以上在手机前台点“发送”或“开始”时，为整个队�
 
 返回和关闭操作位于内容页头，与顶部电量区域分开；系统键盘和系统确认弹窗沿用 watchOS 原生呈现。
 
-自动旋转和电量显示不改变系统屏幕策略。watchOS 公共接口不能保证屏幕持续全亮到传输结束，充电也没有通用的保持全亮 API。[Always On](https://developer.apple.com/documentation/watchos-apps/designing-your-app-for-the-always-on-state) 由设备能力和用户设置决定，系统仍会降低亮度和界面更新频率，并可能返回表盘。接收页适配低亮度状态，底层继续保留此前的系统后台下载及进程恢复，屏幕状态不会主动取消网络任务。
+App 仍显示时，正在接收或正在充电（含满电接电）会通过公开 `ProcessInfo.beginActivity` 持有 `.idleDisplaySleepDisabled` 请求；条件不再满足即结束，离开 App 会释放。该接口只向系统提出活动提示，Debug 的 `lan-display-activity.json` 仅能证明请求始末，不能证明实际屏幕保持亮。自动旋转和电量显示本身不改变系统屏幕策略。watchOS 公共接口不能保证屏幕持续全亮到传输结束，充电也没有通用的保持全亮 API。[Always On](https://developer.apple.com/documentation/watchos-apps/designing-your-app-for-the-always-on-state) 由设备能力和用户设置决定，系统仍会降低亮度和界面更新频率，并可能返回表盘。接收页适配低亮度状态，底层继续保留此前的系统后台下载及进程恢复，屏幕状态不会主动取消网络任务。
 
 ## 实现与范围
 
@@ -55,7 +55,7 @@ iOS 26 及以上在手机前台点“发送”或“开始”时，为整个队�
 - 服务仅允许凭会话令牌读取清单内 UUID 对应的音频；拒绝目录浏览、任意路径和无效请求。音频按 64 KB 分块发送，不整体载入内存。
 - 系统后台会话会自动跟随 HTTP 重定向，不能依赖重定向 delegate 阻止。接收器保存前严格验证最终响应 URL：协议、主机、端口和文件 UUID 路径必须匹配清单端点，且无查询、片段或用户信息；不符即拒绝保存。这只验证最终端点，不保证中间跳转未发生。
 - 手表验证完整字节数、SHA-256、系统音频解码和可用空间，原子写入成功后才回传保存成功。
-- 歌曲行进度来自手表实际接收字节，字节 100% 后仍需等待校验和保存回执；系统后台任务进度另外包含最终保存阶段，收到回执前不达到 100%。速度与剩余时间为近期采样估计，系统后台调度可能让这些采样和回执延后。
+- 歌曲行进度来自手表实际接收字节；手机系统任务另外参考 HTTP 源成功处理的发送偏移，以便手表暂不可达时仍报告真实源端工作，重复 Range 只取最大偏移、不累计，字节 100% 后仍需等待校验和保存回执；系统后台任务进度另外包含最终保存阶段，收到回执前不达到 100%。速度与剩余时间为近期采样估计，系统后台调度可能让这些采样和回执延后。
 - 取消与原子保存有明确顺序：保存已完成时，随后到达的取消请求不能撤销保存；手机以严格绑定该文件/会话的成功回执修正最终状态。
 - 为跨进程恢复下载，清单及令牌保存在手表 `Application Support/LANBackground-v2/transfer.json`，恢复目录排除备份，并使用 `completeUntilFirstUserAuthentication` 文件保护。令牌不写进正式日志或用户传输记录。实验使用本地 HTTP，未提供 TLS 加密；最终 URL 和 SHA-256 校验用于拒绝错误保存，不提供令牌传输保密性，应在可信局域网使用。
 
@@ -88,6 +88,7 @@ Tests/run-transfer-source-version-tests.sh
 Tests/run-transfer-tests.sh
 Tests/run-transfer-list-tests.sh
 Tests/run-watch-orientation-tests.sh
+Tests/run-watch-display-activity-tests.sh
 ```
 
 库存与指纹缓存测试可在 iPhone 模拟器使用真实文件系统运行：

@@ -20,6 +20,7 @@ struct OfflineWatchApp: App {
                 .tint(AppPalette.accent).preferredColorScheme(.dark)
                 .onAppear {
                     display.start(foreground: scenePhase != .background)
+                    display.setTransferActive(library.isReceiving)
                     library.updateLANForeground(scenePhase != .background)
                     #if DEBUG
                     library.recordLANScenePhase(scenePhase == .background ? "background" : (scenePhase == .active ? "active" : "inactive"))
@@ -32,6 +33,9 @@ struct OfflineWatchApp: App {
                     library.recordLANScenePhase(phase == .background ? "background" : (phase == .active ? "active" : "inactive"))
                     if phase == .active { library.startLANPreviewIfRequested() }
                     #endif
+                }
+                .onChange(of: library.isReceiving) { _, receiving in
+                    display.setTransferActive(receiving)
                 }
                 #if DEBUG
                 .task {

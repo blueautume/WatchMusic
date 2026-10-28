@@ -10,11 +10,13 @@ final class WatchAppDisplay: ObservableObject {
     @Published private(set) var batteryPercentage: Int?
 
     private let motion = CMMotionManager()
+    private let displayActivity = WatchDisplayActivity()
     private var tracker = WatchTransferOrientationTracker()
     private var batteryTimer: Timer?
     private var motionTimer: Timer?
     private var originalBatteryMonitoring: Bool?
     private var isForeground = false
+    private var isTransferActive = false
 
     func start(foreground: Bool) {
         guard originalBatteryMonitoring == nil else { setForeground(foreground); return }
@@ -34,6 +36,7 @@ final class WatchAppDisplay: ObservableObject {
         }
         originalBatteryMonitoring = nil
         isForeground = false
+        displayActivity.stop()
     }
 
     func setForeground(_ value: Bool) {
@@ -41,6 +44,15 @@ final class WatchAppDisplay: ObservableObject {
         guard originalBatteryMonitoring != nil else { return }
         refreshPower()
         updateBatteryTimer()
+    }
+
+    func setTransferActive(_ value: Bool) {
+        isTransferActive = value
+        updateDisplayActivity()
+    }
+
+    private func updateDisplayActivity() {
+        displayActivity.update(isCharging: isCharging, isReceiving: isTransferActive, isFrontmost: isForeground)
     }
 
     private func updateBatteryTimer() {
@@ -80,6 +92,7 @@ final class WatchAppDisplay: ObservableObject {
             tracker.reset()
         }
         if !charging, orientation != .portrait { orientation = .portrait }
+        updateDisplayActivity()
         updateMotion()
     }
 
