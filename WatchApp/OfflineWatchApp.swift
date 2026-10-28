@@ -11,7 +11,6 @@ struct OfflineWatchApp: App {
 
     init() {
         let engine = WatchPlayer()
-        PlaybackControlCenter.shared.configure(player: engine)
         _player = StateObject(wrappedValue: engine)
     }
     var body: some Scene {
@@ -20,7 +19,6 @@ struct OfflineWatchApp: App {
                 .environmentObject(library).environmentObject(player).environmentObject(display)
                 .tint(AppPalette.accent).preferredColorScheme(.dark)
                 .onAppear {
-                    PlaybackControlCenter.shared.configure(player: player)
                     display.start(foreground: scenePhase != .background)
                     library.updateLANForeground(scenePhase != .background)
                     #if DEBUG
@@ -30,7 +28,6 @@ struct OfflineWatchApp: App {
                 .onChange(of: scenePhase) { _, phase in
                     library.updateLANForeground(phase != .background)
                     display.setForeground(phase != .background)
-                    if phase == .active { PlaybackControlCenter.shared.connectionDidChange() }
                     #if DEBUG
                     library.recordLANScenePhase(phase == .background ? "background" : (phase == .active ? "active" : "inactive"))
                     if phase == .active { library.startLANPreviewIfRequested() }
@@ -81,16 +78,12 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate {
 struct FolderListView: View {
     @EnvironmentObject private var library: WatchLibrary
     @EnvironmentObject private var player: WatchPlayer
-    @ObservedObject private var remote = PlaybackControlCenter.shared
     @State private var newFolder = false
     @State private var libraryInfo = false
     @State private var previewTrackList = false
     var body: some View {
         NavigationStack {
             List {
-                if remote.hasRemoteItem {
-                    RemotePlaybackControlsView().listRowInsets(EdgeInsets()).listRowBackground(Color.clear)
-                }
                 if player.currentURL != nil {
                     NavigationLink(destination: NowPlayingView()) {
                         HStack(spacing: 9) {
@@ -335,15 +328,11 @@ private struct WatchQueueDetailView: View {
 
 private struct WatchPlaybackSettingsView: View {
     @EnvironmentObject private var player: WatchPlayer
-    @ObservedObject private var remote = PlaybackControlCenter.shared
     @Environment(\.dismiss) private var dismiss
     @State private var previewRate = false
     var body: some View {
         NavigationStack {
             List {
-                if remote.hasRemoteItem {
-                    RemotePlaybackControlsView().listRowInsets(EdgeInsets()).listRowBackground(Color.clear)
-                }
                 Section("播放方式") {
                     Button(action: player.cycleMode) { Label(player.mode.title, systemImage: player.mode.symbol) }
                     NavigationLink(destination: WatchPlaybackRateView()) {

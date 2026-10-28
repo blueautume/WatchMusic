@@ -16,7 +16,6 @@ struct PhoneNowPlayingView: View {
                 ScrollView {
                     let artworkSide = min(geometry.size.width - 56, max(160, min(geometry.size.height * 0.32, 330)))
                     VStack(spacing: 22) {
-                        RemotePlaybackControlsView()
                         HStack {
                             Text(player.currentURL?.deletingLastPathComponent().lastPathComponent ?? "本地音乐")
                                 .font(.caption).foregroundStyle(AppPalette.textSecondary).lineLimit(1)

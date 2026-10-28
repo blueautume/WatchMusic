@@ -15,6 +15,9 @@ struct LANBackgroundTransferState: Codable {
         var stagingName: String?
         var addressIndex = 0
         var controlRevision: Int64? = nil
+        var committedBytes: Int64? = nil
+        var requestedOffset: Int64? = nil
+        var requestedLength: Int64? = nil
     }
 
     let offer: LANTransferOffer
@@ -62,6 +65,14 @@ struct LANBackgroundTransferState: Codable {
                   item.addressIndex >= 0, item.addressIndex < offer.baseURLs.count,
                   item.taskIdentifier.map({ $0 > 0 }) ?? true,
                   item.controlRevision.map({ $0 >= 0 }) ?? true else { throw invalidState() }
+            if let committed = item.committedBytes {
+                guard committed >= 0, committed <= file.byteCount, item.receivedBytes >= committed else { throw invalidState() }
+            }
+            if let offset = item.requestedOffset, let length = item.requestedLength {
+                guard offset >= 0, length > 0, length <= file.byteCount,
+                      offset <= file.byteCount - length,
+                      offset == (item.committedBytes ?? 0) else { throw invalidState() }
+            } else if item.requestedOffset != nil || item.requestedLength != nil { throw invalidState() }
             if let name = item.stagingName {
                 guard Self.isStagingName(name), item.phase == .validating || item.phase == .paused,
                       item.taskIdentifier == nil, item.receivedBytes == file.byteCount else { throw invalidState() }
@@ -105,6 +116,23 @@ struct LANBackgroundTransferState: Codable {
         item.receivedBytes = file.byteCount
         item.taskIdentifier = nil
         item.stagingName = stagingName
+        item.committedBytes = nil
+        item.requestedOffset = nil
+        item.requestedLength = nil
+        items[fileID] = item
+        return true
+    }
+
+    @discardableResult mutating func recordChunk(fileID: String, committedBytes: Int64) -> Bool {
+        guard let file = file(for: fileID), var item = items[fileID],
+              item.phase == .queued || item.phase == .downloading || item.phase == .paused,
+              committedBytes > (item.committedBytes ?? 0), committedBytes < file.byteCount else { return false }
+        item.committedBytes = committedBytes
+        item.receivedBytes = committedBytes
+        item.taskIdentifier = nil
+        item.requestedOffset = nil
+        item.requestedLength = nil
+        if item.phase != .paused { item.phase = .downloading }
         items[fileID] = item
         return true
     }
@@ -127,6 +155,9 @@ struct LANBackgroundTransferState: Codable {
         item.receivedBytes = event.completedBytes
         item.taskIdentifier = nil
         item.stagingName = nil
+        item.committedBytes = nil
+        item.requestedOffset = nil
+        item.requestedLength = nil
         items[event.fileID] = item
         return true
     }
@@ -144,6 +175,9 @@ struct LANBackgroundTransferState: Codable {
         }
         item.taskIdentifier = nil
         item.stagingName = nil
+        item.committedBytes = nil
+        item.requestedOffset = nil
+        item.requestedLength = nil
         items[fileID] = item
         return true
     }

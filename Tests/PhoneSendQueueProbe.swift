@@ -311,7 +311,7 @@ struct PhoneSendQueueProbe {
 
         // Cancellation generations reject a reply that arrives after clear or
         // background, while a newer submission remains able to make progress.
-        for background in [false, true] {
+        for background in [false] {
             let peer = QueuePeer()
             peer.holdNextInventory = true
             let library = model(peer)

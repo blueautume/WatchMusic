@@ -58,6 +58,7 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
     private let stagingRoot: URL
     private let snapshotURL: URL
     private let outboxURL: URL
+    private let partialStore: LANPartialDownloadStore
     private var networkSession: URLSession?
     private var state: LANBackgroundTransferState?
     private var tasks: [String: URLSessionDownloadTask] = [:]
@@ -92,6 +93,7 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
         stagingRoot = root.appendingPathComponent("Incoming", isDirectory: true)
         snapshotURL = root.appendingPathComponent("transfer.json")
         outboxURL = root.appendingPathComponent("receipts.json")
+        partialStore = LANPartialDownloadStore(root: root.appendingPathComponent("Partial", isDirectory: true))
         super.init()
     }
 
@@ -200,7 +202,8 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
             defer { schedulingSuspensionCount -= 1; advanceQueue() }
             var events: [LANTransferEvent] = []
             switch command.kind {
-            case .stop: self.stopOnQueue(kind: .cancelled, message: "手机已停止局域网传输。")
+            case .stop: self.stopOnQueue(kind: .cancelled, message: "手机已停止局域网传输。",
+                                        preservePartialFiles: command.preservePartialFiles == true)
             case .cancel:
                 for id in command.fileIDs ?? command.fileID.map({ [$0] }) ?? [] { self.cancelOnQueue(fileID: id) }
             case .pause, .resume:
@@ -432,6 +435,17 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
             }
             guard !missingRestoredFiles.contains(fileID) else { return }
             do {
+                if tasks[fileID] == nil, let file = self.state?.file(for: fileID),
+                   let checkpoint = try partialStore.checkpoint(for: file), checkpoint.byteCount == file.byteCount {
+                    let name = UUID().uuidString + ".download"
+                    try FileManager.default.moveItem(at: checkpoint.url, to: stagingRoot.appendingPathComponent(name))
+                    guard self.state?.recordDownloaded(fileID: fileID, stagingName: name) == true else {
+                        throw receiverError("无法恢复完整的歌曲缓存。")
+                    }
+                    try persistState()
+                    try? partialStore.forget(file)
+                    continue
+                }
                 if tasks[fileID] == nil { try createTask(fileID: fileID, persist: true) }
                 if let task = tasks[fileID], task.state == .suspended {
                     guard self.state?.canStartRequest(at: Date()) == true else {
@@ -457,6 +471,19 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
         for fileID in missing {
             guard let item = state?.items[fileID], item.phase.isPending,
                   item.phase != .validating, item.stagingName == nil, tasks[fileID] == nil else { continue }
+            if let file = state?.file(for: fileID),
+               let checkpoint = try? partialStore.checkpoint(for: file) {
+                // A completed chunk is journaled before its native task is
+                // detached. Recover that boundary after a crash in between.
+                state?.items[fileID]?.taskIdentifier = nil
+                state?.items[fileID]?.committedBytes = checkpoint.byteCount
+                state?.items[fileID]?.receivedBytes = checkpoint.byteCount
+                state?.items[fileID]?.requestedOffset = nil
+                state?.items[fileID]?.requestedLength = nil
+                if item.phase != .paused { state?.items[fileID]?.phase = .queued }
+                try? persistState()
+                continue
+            }
             if item.phase == .paused {
                 state?.items[fileID]?.taskIdentifier = nil
                 try? persistState()
@@ -476,12 +503,20 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
         request.httpMethod = "GET"
         request.setValue("Bearer " + state.offer.token, forHTTPHeaderField: "Authorization")
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        let offset = try partialStore.checkpoint(for: file)?.byteCount ?? 0
+        let length = min(LANPartialDownloadStore.chunkSize, file.byteCount - offset)
+        guard length > 0 else { throw receiverError("歌曲断点已经完整，请重试。") }
+        request.setValue("bytes=\(offset)-\(offset + length - 1)", forHTTPHeaderField: "Range")
+        request.setValue("\"" + file.sha256.lowercased() + "\"", forHTTPHeaderField: "If-Range")
         let task = session.downloadTask(with: request)
         task.taskDescription = LANBackgroundTransferState.taskDescription(sessionID: state.offer.sessionID, fileID: fileID)
-        task.countOfBytesClientExpectsToReceive = file.byteCount
+        task.countOfBytesClientExpectsToReceive = length
         self.state?.items[fileID]?.taskIdentifier = task.taskIdentifier
         if item.phase != .paused { self.state?.items[fileID]?.phase = .downloading }
-        self.state?.items[fileID]?.receivedBytes = 0
+        self.state?.items[fileID]?.committedBytes = offset
+        self.state?.items[fileID]?.requestedOffset = offset
+        self.state?.items[fileID]?.requestedLength = length
+        self.state?.items[fileID]?.receivedBytes = offset
         tasks[fileID] = task
         if persist {
             do { try persistState() }
@@ -507,7 +542,7 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
         }
     }
 
-    private func stopOnQueue(kind: LANTransferEvent.Kind, message: String) {
+    private func stopOnQueue(kind: LANTransferEvent.Kind, message: String, preservePartialFiles: Bool = false) {
         guard let state else { return }
         schedulingSuspensionCount += 1
         defer { schedulingSuspensionCount -= 1; advanceQueue() }
@@ -516,14 +551,15 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
                 finish(fileID: file.id, kind: .stored, message: "歌曲已保存到手表")
             } else {
                 tasks[file.id]?.cancel()
-                finish(fileID: file.id, kind: kind, message: message)
+                finish(fileID: file.id, kind: kind, message: message, preservePartialFiles: preservePartialFiles)
             }
         }
     }
 
-    private func finish(fileID: String, kind: LANTransferEvent.Kind, message: String?) {
+    private func finish(fileID: String, kind: LANTransferEvent.Kind, message: String?, preservePartialFiles: Bool = false) {
         guard let state, let file = state.file(for: fileID), let item = state.items[fileID], item.phase.isPending else { return }
         let stagingName = item.stagingName
+        if kind == .stored || (kind == .cancelled && !preservePartialFiles) { try? partialStore.remove(file) }
         let event = LANTransferEvent(sessionID: state.offer.sessionID, fileID: fileID, kind: kind,
                                      completedBytes: kind == .stored ? file.byteCount : item.receivedBytes,
                                      totalBytes: file.byteCount, message: message)
@@ -670,17 +706,19 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
                     didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-        guard session === networkSession, let (file, _) = binding(downloadTask) else { return }
-        if totalBytesWritten > file.byteCount {
+        guard session === networkSession, let (file, item) = binding(downloadTask) else { return }
+        let offset = item.requestedOffset ?? 0
+        let length = item.requestedLength ?? file.byteCount
+        if totalBytesWritten > length {
             downloadTask.cancel()
             finish(fileID: file.id, kind: .failed, message: "接收大小超出歌曲清单，已停止。")
             return
         }
-        guard state?.recordProgress(fileID: file.id, bytes: max(0, totalBytesWritten)) == true else { return }
+        guard state?.recordProgress(fileID: file.id, bytes: offset + max(0, totalBytesWritten)) == true else { return }
         deliveryBarrier.beginDelivery()
         let now = ProcessInfo.processInfo.systemUptime
         if now - lastSnapshotTime >= 1 { try? persistState() }
-        if now - (lastProgressTime[file.id] ?? 0) >= 1 || totalBytesWritten == file.byteCount {
+        if now - (lastProgressTime[file.id] ?? 0) >= 1 || offset + totalBytesWritten == file.byteCount {
             lastProgressTime[file.id] = now
             emitProgress(file)
         }
@@ -688,11 +726,11 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        guard session === networkSession, let (file, _) = binding(downloadTask), let state else { return }
+        guard session === networkSession, let (file, item) = binding(downloadTask), let state else { return }
         deliveryBarrier.beginDelivery()
         guard let response = downloadTask.response as? HTTPURLResponse,
-              LANTransferValidation.isValidDownloadResponse(statusCode: response.statusCode,
-                    contentRange: response.value(forHTTPHeaderField: "Content-Range"), expectedByteCount: file.byteCount) else {
+              LANPartialDownloadStore.validResponse(response, offset: item.requestedOffset ?? 0,
+                    length: item.requestedLength ?? file.byteCount, total: file.byteCount) else {
             let status = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0
             failOrTryAnotherAddress(fileID: file.id, error: receiverError("局域网下载失败（HTTP \(status)）。"), mayRetry: status >= 500 || status == 0)
             return
@@ -707,10 +745,24 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
         }) else { finish(fileID: file.id, kind: .failed, message: "下载地址发生变化，已拒绝保存。"); return }
         do {
             let size = try location.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-            guard Int64(size) == file.byteCount else { throw receiverError("接收的歌曲大小不符，请重新发送。") }
+            let offset = item.requestedOffset ?? 0
+            let length = item.requestedLength ?? file.byteCount
+            guard Int64(size) == length else { throw receiverError("接收的歌曲大小不符，请重新发送。") }
+            let checkpoint = try partialStore.append(location, for: file, offset: offset, length: length)
+            if checkpoint.byteCount < file.byteCount {
+                guard self.state?.recordChunk(fileID: file.id, committedBytes: checkpoint.byteCount) == true else {
+                    throw receiverError("无法保存歌曲断点。")
+                }
+                tasks.removeValue(forKey: file.id)
+                try persistState()
+                emitProgress(file)
+                publish()
+                advanceQueue()
+                return
+            }
             let name = UUID().uuidString + ".download"
             let temporary = stagingRoot.appendingPathComponent(name)
-            try FileManager.default.moveItem(at: location, to: temporary)
+            try FileManager.default.moveItem(at: checkpoint.url, to: temporary)
             protect(temporary)
             guard self.state?.recordDownloaded(fileID: file.id, stagingName: name) == true else {
                 try? FileManager.default.removeItem(at: temporary)
@@ -718,6 +770,7 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
             }
             tasks.removeValue(forKey: file.id)
             try persistState()
+            try? partialStore.forget(file)
             emitProgress(file, message: self.state?.items[file.id]?.phase == .paused ? "已暂停" : "正在校验并保存")
             publish()
             advanceQueue()

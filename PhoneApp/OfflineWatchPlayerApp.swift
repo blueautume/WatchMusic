@@ -7,7 +7,6 @@ struct OfflineWatchPlayerApp: App {
 
     init() {
         let engine = MusicPlayer()
-        PlaybackControlCenter.shared.configure(player: engine)
         _player = StateObject(wrappedValue: engine)
         _library = StateObject(wrappedValue: PhoneLibrary())
     }
@@ -19,7 +18,6 @@ struct OfflineWatchPlayerApp: App {
                 .environmentObject(player)
                 .preferredColorScheme(.dark)
                 .tint(AppPalette.accent)
-                .onAppear { PlaybackControlCenter.shared.configure(player: player) }
         }
     }
 }

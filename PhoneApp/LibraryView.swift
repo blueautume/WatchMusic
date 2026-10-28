@@ -43,6 +43,7 @@ struct LibraryView: View {
                 library.startLANProbeIfRequested()
                 #endif
             } else if phase == .background { library.sceneDidEnterBackground() }
+            else if phase == .inactive { library.sceneDidBecomeInactive() }
         }
         #if DEBUG
         .task {
@@ -69,7 +70,6 @@ struct LibraryView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 20).padding(.top, 6).padding(.bottom, 8)
             }
-            RemotePlaybackControlsView()
             localMiniPlayer
         }.background(AppPalette.background)
     }

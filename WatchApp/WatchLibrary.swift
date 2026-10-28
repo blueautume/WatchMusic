@@ -274,7 +274,6 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
     func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
         DispatchQueue.main.async {
             self.activationFinished = true; self.updateConnectionStatus()
-            PlaybackControlCenter.shared.connectionDidChange()
             if let error { self.lastTransferMessage = "手机连接暂不可用：\(error.localizedDescription)" }
             if activationState == .activated { self.lanReceiver.replayTerminalEvents() }
             self.completeBackgroundTasksIfPossible()
@@ -283,7 +282,6 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
     func sessionReachabilityDidChange(_ session: WCSession) {
         DispatchQueue.main.async {
             self.updateConnectionStatus()
-            PlaybackControlCenter.shared.connectionDidChange()
             if session.activationState == .activated { self.lanReceiver.replayTerminalEvents() }
         }
     }
@@ -369,7 +367,6 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
 
     func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
         DispatchQueue.main.async {
-            if PlaybackControlCenter.shared.handle(message, reply: replyHandler) { return }
             if let request = LANTransferWire.decode(LANInventoryRequest.self, from: message, type: LANInventoryWire.requestType) {
                 self.lanInventory.matching(request) { result in
                     switch result {
@@ -391,7 +388,6 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
 
     func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
         DispatchQueue.main.async {
-            if PlaybackControlCenter.shared.handle(message) { return }
             guard let command = LANTransferWire.decode(LANTransferCommand.self, from: message, type: LANTransferWire.commandType) else { return }
             self.lanReceiver.handle(command)
         }

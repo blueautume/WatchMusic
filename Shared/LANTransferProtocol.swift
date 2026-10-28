@@ -47,6 +47,7 @@ struct LANTransferCommand: Codable {
     let fileID: String?
     var fileIDs: [String]? = nil
     var controlRevision: Int64? = nil
+    var preservePartialFiles: Bool? = nil
 }
 
 struct LANTransferControlReply: Codable {

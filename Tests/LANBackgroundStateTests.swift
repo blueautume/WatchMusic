@@ -239,6 +239,39 @@ struct LANBackgroundStateTests {
         try expect(serial.recordDownloaded(fileID: fileA.id, stagingName: UUID().uuidString + ".download"), "legacy first file can also await save")
         try expect(serial.nextRunnableFileID() == fileA.id, "multiple restored caches save in manifest order")
         try expect(serial.nextRunnableFileID(keeping: UUID().uuidString) == fileA.id, "unknown active identity cannot steal or block the lane")
+        var chunks = initial()
+        chunks.items[fileA.id]?.phase = .downloading
+        chunks.items[fileA.id]?.taskIdentifier = 90
+        chunks.items[fileA.id]?.committedBytes = 0
+        chunks.items[fileA.id]?.requestedOffset = 0
+        chunks.items[fileA.id]?.requestedLength = 40
+        try expect(!rejected(chunks), "bounded HTTP request metadata restores")
+        try expect(chunks.recordProgress(fileID: fileA.id, bytes: 40), "current range reports cumulative bytes")
+        try expect(chunks.recordChunk(fileID: fileA.id, committedBytes: 40), "complete range commits a resumable boundary")
+        try expect(chunks.items[fileA.id]?.taskIdentifier == nil && chunks.items[fileA.id]?.requestedLength == nil,
+                   "committing a range detaches the completed native request")
+        try expect(chunks.nextRunnableFileID(keeping: fileA.id) == fileA.id, "next chunk retains the song's serial lane")
+        try expect(!chunks.recordChunk(fileID: fileA.id, committedBytes: 40), "a duplicate range cannot advance the checkpoint")
+        try expect(!chunks.recordChunk(fileID: fileA.id, committedBytes: 100), "full content must enter validation instead of a partial phase")
+        chunks.items[fileA.id]?.requestedOffset = 40
+        chunks.items[fileA.id]?.requestedLength = 60
+        chunks = try roundTrip(chunks)
+        try expect(!rejected(chunks), "committed prefix and remaining request survive process restoration")
+        malformed = chunks
+        malformed.items[fileA.id]?.requestedOffset = 39
+        try expect(rejected(malformed), "request cannot overlap committed bytes")
+        malformed = chunks
+        malformed.items[fileA.id]?.requestedLength = 61
+        try expect(rejected(malformed), "request cannot extend past full content")
+        malformed = chunks
+        malformed.items[fileA.id]?.requestedLength = nil
+        try expect(rejected(malformed), "incomplete request metadata is rejected")
+        malformed = chunks
+        malformed.items[fileA.id]?.receivedBytes = 39
+        try expect(rejected(malformed), "received progress cannot precede committed bytes")
+        try expect(chunks.recordDownloaded(fileID: fileA.id, stagingName: UUID().uuidString + ".download"), "last range enters complete validation")
+        try expect(chunks.items[fileA.id]?.committedBytes == nil && chunks.items[fileA.id]?.requestedOffset == nil,
+                   "full validation detaches resumable prefix bookkeeping")
         print("PASS: \(assertions) LAN background state assertions")
     }
 }

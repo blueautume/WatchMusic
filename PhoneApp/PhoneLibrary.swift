@@ -40,6 +40,7 @@ struct TransferRecord: Identifiable, Codable, TransferListRecord {
     var lanSessionID: String? = nil
     var sourceVersion: TransferSourceVersion? = nil
     var sourceSHA256: String? = nil
+    var resumesWhenForeground: Bool? = nil
     var method: TransferMethod { transport ?? .system }
     var audioFileName: String { fileName }
     var songTitle: String { (fileName as NSString).deletingPathExtension }
@@ -66,6 +67,14 @@ final class PhoneLibrary: NSObject, ObservableObject {
 
     private let root: URL
     private let transferIndex: URL
+    private let queueIndex: URL
+    private let continuedProcessing = LANContinuedProcessing.shared
+    private var currentLANOrder: [String] = []
+    private var backgroundTrackedIDs = Set<String>()
+    private var backgroundRuntimeGranted = false
+    private var backgroundTransition = false
+    private var backgroundTransitionLease: UIBackgroundTaskIdentifier = .invalid
+    private var backgroundTransitionTask: Task<Void, Never>?
     private var timer: AnyCancellable?
     private var durationCache: [String: Double] = [:]
     private var durationTask: Task<Void, Never>?
@@ -94,10 +103,14 @@ final class PhoneLibrary: NSObject, ObservableObject {
     private var queuePaused = false
     #if DEBUG && targetEnvironment(simulator)
     private var queueProbeRequest: (([String: Any]) async throws -> [String: Any])?
+    private var queueProbePersistenceDirectory: URL?
     #endif
     #if DEBUG
     private var hasRunLANProbe = false
     private var lanProbeWaitTask: Task<Void, Never>?
+    private var observedPhonePhase = "launching"
+    private var lastPhoneProgressLog: TimeInterval = 0
+    private var lastPhoneConnectionLog: String?
     #endif
     #if DEBUG && targetEnvironment(simulator)
     private let isTransferListPreview = ProcessInfo.processInfo.arguments.contains("-preview-transfers-in-progress") ||
@@ -107,12 +120,16 @@ final class PhoneLibrary: NSObject, ObservableObject {
     private lazy var lanServer: LANHTTPServer = {
         let server = LANHTTPServer()
         server.onStopped = { [weak self] message in
-            self?.stopLANTransfers(message: message, state: .failed, notifyWatch: false)
+            self?.parkLANQueue(message: message, resumeOnForeground: true)
         }
         return server
     }()
 
     func isCurrentLANTransfer(_ id: String) -> Bool { lanRecordIDs.contains(id) }
+
+    private var canProcessLAN: Bool {
+        isAppForeground || continuedProcessing.canRunInBackground || backgroundTransition
+    }
 
     private var watchIsReachable: Bool {
         #if DEBUG && targetEnvironment(simulator)
@@ -138,23 +155,23 @@ final class PhoneLibrary: NSObject, ObservableObject {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         root = documents.appendingPathComponent("Music", isDirectory: true)
         transferIndex = documents.appendingPathComponent("transfers.json")
+        queueIndex = documents.appendingPathComponent("lan-phone-queue.json")
         super.init()
         #if DEBUG && targetEnvironment(simulator)
         if isTransferListPreview { return }
         #endif
+        configureContinuedProcessing()
+        continuedProcessing.register()
+        recordPhoneLifecycle("runtime-registration")
         do {
             try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
             try fileManager.createDirectory(at: root.appendingPathComponent("默认目录", isDirectory: true), withIntermediateDirectories: true)
             if let data = try? Data(contentsOf: transferIndex) {
                 transfers = (try? JSONDecoder().decode([TransferRecord].self, from: data)) ?? []
-                // Local HTTP sessions and credentials never survive process termination.
-                for index in transfers.indices where transfers[index].method == .localNetwork && transfers[index].state.isPending {
-                    transfers[index].state = .failed
-                    transfers[index].message = "局域网会话已结束，请重新发送。"
-                }
-                saveTransfers()
             }
             refreshFolders()
+            restoreLANQueue()
+            saveTransfers()
         } catch { errorMessage = "无法打开音乐目录：\(error.localizedDescription)" }
         if WCSession.isSupported() {
             WCSession.default.delegate = self
@@ -325,6 +342,8 @@ final class PhoneLibrary: NSObject, ObservableObject {
         var seen = Set<String>()
         let unique = tracks.filter { seen.insert(LANInventoryWire.pathKey(folder: $0.folder, fileName: $0.fileName)).inserted }
         sendSubmissions.append(LANSendSubmission(id: UUID(), tracks: unique, completion: LANEnqueueCompletion(completion)))
+        beginContinuedProcessingFromUserAction()
+        saveTransfers()
         processSendSubmissions()
     }
 
@@ -344,13 +363,13 @@ final class PhoneLibrary: NSObject, ObservableObject {
     }
 
     private func processSendSubmissions() {
-        guard submissionTask == nil, !sendSubmissions.isEmpty, isAppForeground else { return }
+        guard submissionTask == nil, !sendSubmissions.isEmpty, canProcessLAN else { return }
         guard watchIsReachable else { transferSummary = "等待手表连接"; return }
         let generation = submissionGeneration
         submissionTask = Task { [weak self] in
             guard let self else { return }
             while !Task.isCancelled, self.submissionGeneration == generation,
-                  self.isAppForeground, self.watchIsReachable, let submission = self.sendSubmissions.first {
+                  self.canProcessLAN, self.watchIsReachable, let submission = self.sendSubmissions.first {
                 var handled = Set<String>()
                 do {
                     let pendingPaths = Set(self.transfers.filter { $0.state.isPending }.map {
@@ -394,6 +413,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
                                 totalBytes: candidate.file.byteCount, transport: .localNetwork,
                                 sourceVersion: candidate.version, sourceSHA256: candidate.file.sha256), at: 0)
                             self.waitingLANIDs.append(candidate.file.id)
+                            self.backgroundTrackedIDs.insert(candidate.file.id)
                             self.queuedLANSources[candidate.file.id] = candidate.track
                             added += 1
                         }
@@ -407,11 +427,160 @@ final class PhoneLibrary: NSObject, ObservableObject {
                 }
                 submission.completion.finish(handled)
                 if self.sendSubmissions.first?.id == submission.id { self.sendSubmissions.removeFirst() }
+                self.saveTransfers()
             }
             if self.submissionGeneration == generation { self.submissionTask = nil }
             self.updateSourceIdleTimer()
+            self.updateContinuedProcessingProgress()
         }
         updateSourceIdleTimer()
+    }
+
+    private func configureContinuedProcessing() {
+        continuedProcessing.onGranted = { [weak self] in
+            guard let self else { return }
+            self.backgroundRuntimeGranted = true
+            self.recordPhoneLifecycle("runtime-granted")
+            self.endBackgroundTransition()
+            self.processSendSubmissions()
+            self.startNextLANBatch()
+            self.updateContinuedProcessingProgress()
+        }
+        continuedProcessing.onInterrupted = { [weak self] message in
+            guard let self else { return }
+            let hadRuntime = self.backgroundRuntimeGranted
+            self.backgroundRuntimeGranted = false
+            self.recordPhoneLifecycle("runtime-interrupted")
+            if !self.isAppForeground || hadRuntime {
+                // Expiration also represents cancellation from the system UI.
+                // Require an explicit Start so cancellation is respected.
+                self.parkLANQueue(message: message, resumeOnForeground: false)
+            } else {
+                self.transferSummary = "后台传输暂不可用"
+            }
+        }
+    }
+
+    private func beginContinuedProcessingFromUserAction() {
+        guard isAppForeground else { return }
+        if !continuedProcessing.canRunInBackground && !continuedProcessing.isRequesting {
+            backgroundTrackedIDs = Set(transfers.filter { $0.method == .localNetwork && $0.state.isPending }.map(\.id))
+        }
+        let requested = continuedProcessing.beginFromUserAction(isForeground: true)
+        recordPhoneLifecycle(requested ? "runtime-requested" : "runtime-unavailable")
+    }
+
+    private func updateContinuedProcessingProgress() {
+        let records = transfers.filter { backgroundTrackedIDs.contains($0.id) && $0.state != .cancelled }
+        let completedFiles = records.filter { $0.state == .stored }.count
+        let completedBytes = records.reduce(Int64(0)) { value, record in
+            value + (record.state == .stored ? record.totalBytes : min(record.totalBytes, max(0, lanCompletedBytes[record.id] ?? 0)))
+        }
+        continuedProcessing.update(completedBytes: completedBytes, totalBytes: records.reduce(0) { $0 + $1.totalBytes },
+            completedFiles: completedFiles, totalFiles: records.count,
+            subtitle: records.isEmpty ? "正在检查歌曲" : "已完成 \(completedFiles)/\(records.count) 首")
+        let current = transfers.filter { lanRecordIDs.contains($0.id) && $0.state.isPending }
+        let hasRunnableWork = (!queuePaused && !sendSubmissions.isEmpty) ||
+            current.contains { $0.state != .paused } ||
+            (!isLANActive && waitingLANIDs.contains { id in transfers.contains { $0.id == id && $0.state == .queued } })
+        if !hasRunnableWork, submissionTask == nil, !isUpdatingTransferControls {
+            backgroundRuntimeGranted = false
+            continuedProcessing.finish(success: records.allSatisfy { $0.state == .stored })
+        }
+    }
+
+    private var persistedTransferIndex: URL {
+        #if DEBUG && targetEnvironment(simulator)
+        if let directory = queueProbePersistenceDirectory { return directory.appendingPathComponent("transfers.json") }
+        #endif
+        return transferIndex
+    }
+
+    private var persistedQueueIndex: URL {
+        #if DEBUG && targetEnvironment(simulator)
+        if let directory = queueProbePersistenceDirectory { return directory.appendingPathComponent("lan-phone-queue.json") }
+        #endif
+        return queueIndex
+    }
+
+    private func queuedTrack(folder: String, fileName: String) -> PhoneTrack? {
+        guard LANQueuedTrackLocation(folder: folder, fileName: fileName).isValid else { return nil }
+        let url = root.appendingPathComponent(folder, isDirectory: true).appendingPathComponent(fileName)
+        return PhoneTrack(folder: folder, fileName: fileName, url: url)
+    }
+
+    private func restoreLANQueue() {
+        let snapshot = (try? Data(contentsOf: persistedQueueIndex)).flatMap { try? JSONDecoder().decode(LANPhoneQueueSnapshot.self, from: $0) }
+        queuePaused = snapshot?.globallyPaused ?? false
+        let records = transfers.filter { $0.method == .localNetwork && $0.state.isPending }
+        let byID = Dictionary(uniqueKeysWithValues: records.map { ($0.id, $0) })
+        var seen = Set<String>()
+        waitingLANIDs = ((snapshot?.orderedRecordIDs ?? []) + records.sorted { $0.createdAt < $1.createdAt }.map(\.id))
+            .filter { byID[$0] != nil && seen.insert($0).inserted }
+        for id in waitingLANIDs {
+            guard let index = transfers.firstIndex(where: { $0.id == id }),
+                  let track = queuedTrack(folder: transfers[index].folder, fileName: transfers[index].fileName),
+                  let version = transfers[index].sourceVersion, let hash = transfers[index].sourceSHA256,
+                  LANInventoryWire.validDigest(hash), (try? TransferSourceVersion.read(track.url)) == version else {
+                if let index = transfers.firstIndex(where: { $0.id == id }) {
+                    transfers[index].state = .outdated; transfers[index].message = "本地文件已变化，请重新发送"
+                }
+                continue
+            }
+            queuedLANSources[id] = track
+            if transfers[index].state != .paused {
+                transfers[index].resumesWhenForeground = true
+                transfers[index].state = .paused
+                transfers[index].message = "等待恢复"
+            }
+        }
+        waitingLANIDs.removeAll { queuedLANSources[$0] == nil }
+        for locations in snapshot?.submissions ?? [] {
+            let tracks = locations.filter(\.isValid).compactMap { queuedTrack(folder: $0.folder, fileName: $0.fileName) }
+            if !tracks.isEmpty { sendSubmissions.append(LANSendSubmission(id: UUID(), tracks: tracks, completion: LANEnqueueCompletion(nil))) }
+        }
+    }
+
+    /// Stop the volatile HTTP session, retaining queue order, source identities,
+    /// user pauses and Watch's validated partial files for a fresh session.
+    private func parkLANQueue(message: String, resumeOnForeground: Bool) {
+        queueMutationDepth += 1
+        if !resumeOnForeground { queuePaused = true }
+        let order = currentLANOrder + waitingLANIDs
+        let sources = queuedLANSources
+        let sessionID = activeLANSessionID
+        submissionGeneration = UUID()
+        submissionTask?.cancel(); submissionTask = nil
+        sendSubmissions.forEach { $0.completion.finish([]) }
+        closeLANSession()
+        waitingLANIDs = order.filter { id in transfers.contains { $0.id == id && $0.state.isPending } }
+        queuedLANSources = sources.filter { waitingLANIDs.contains($0.key) }
+        for index in transfers.indices where waitingLANIDs.contains(transfers[index].id) && transfers[index].state != .paused {
+            transfers[index].state = .paused
+            transfers[index].message = message
+            transfers[index].resumesWhenForeground = resumeOnForeground
+        }
+        if let sessionID { sendLANCommand(LANTransferCommand(sessionID: sessionID, kind: .stop, fileID: nil, preservePartialFiles: true)) }
+        backgroundRuntimeGranted = false
+        continuedProcessing.finish(success: false)
+        endBackgroundTransition()
+        saveTransfers()
+        lanStatus = message
+        queueMutationDepth -= 1
+        refreshProgress()
+        updateSourceIdleTimer()
+    }
+
+    private func endBackgroundTransition() {
+        backgroundTransition = false
+        backgroundTransitionTask?.cancel(); backgroundTransitionTask = nil
+        #if DEBUG && targetEnvironment(simulator)
+        if queueProbeRequest != nil { return }
+        #endif
+        if backgroundTransitionLease != .invalid {
+            UIApplication.shared.endBackgroundTask(backgroundTransitionLease)
+            backgroundTransitionLease = .invalid
+        }
     }
 
     private func retireReplacedFailures(path: String) {
@@ -440,7 +609,9 @@ final class PhoneLibrary: NSObject, ObservableObject {
         submissionTask?.cancel(); submissionTask = nil
         sendSubmissions.forEach { $0.completion.finish([]) }
         sendSubmissions.removeAll()
+        saveTransfers()
         updateSourceIdleTimer()
+        updateContinuedProcessingProgress()
     }
 
     private func transferSessionReady() -> Bool {
@@ -568,6 +739,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
         }
         if !remote.isEmpty { sendTransferControl(paused: false, records: remote) }
         if !retry.isEmpty { restartTransfers(retry) }
+        beginContinuedProcessingFromUserAction()
         startNextLANBatch()
         refreshProgress()
         updateSourceIdleTimer()
@@ -620,7 +792,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
 
     private func sendTransferControl(paused: Bool, records: [TransferRecord]) {
         guard let sessionID = activeLANSessionID, lanHandshakeAccepted else { return }
-        guard isAppForeground, watchIsReachable else {
+        guard canProcessLAN, watchIsReachable else {
             errorMessage = "手表暂不可达，请打开手表 App 后再操作。"
             return
         }
@@ -756,15 +928,25 @@ final class PhoneLibrary: NSObject, ObservableObject {
 
     private func saveTransfers() {
         #if DEBUG && targetEnvironment(simulator)
-        if isTransferListPreview { return }
+        if isTransferListPreview, queueProbePersistenceDirectory == nil { return }
         #endif
-        do { try JSONEncoder().encode(transfers).write(to: transferIndex, options: .atomic) }
+        do {
+            let snapshot = LANPhoneQueueSnapshot(orderedRecordIDs: currentLANOrder + waitingLANIDs,
+                submissions: sendSubmissions.map { $0.tracks.map { LANQueuedTrackLocation(folder: $0.folder, fileName: $0.fileName) } },
+                globallyPaused: queuePaused)
+            try JSONEncoder().encode(transfers).write(to: persistedTransferIndex, options: .atomic)
+            try JSONEncoder().encode(snapshot).write(to: persistedQueueIndex, options: .atomic)
+            for url in [persistedTransferIndex, persistedQueueIndex] {
+                try fileManager.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: url.path)
+            }
+        }
         catch { errorMessage = "无法保存传输记录：\(error.localizedDescription)" }
     }
 
     private func updateTransfer(id: String, state: TransferRecord.State, message: String, onlyIfPending: Bool = false) {
         guard let index = transfers.firstIndex(where: { $0.id == id }), transfers[index].state != .stored, transfers[index].state != .cancelled, transfers[index].state != .outdated, !onlyIfPending || transfers[index].state.isPending else { return }
         transfers[index].state = state
+        transfers[index].resumesWhenForeground = nil
         transfers[index].message = message
         if state == .paused {
             progressSamplers.removeValue(forKey: id)
@@ -782,6 +964,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
     }
 
     private func refreshProgress() {
+        defer { updateContinuedProcessingProgress() }
         #if DEBUG && targetEnvironment(simulator)
         if isTransferListPreview { return }
         #endif
@@ -818,31 +1001,121 @@ final class PhoneLibrary: NSObject, ObservableObject {
         transferMetrics = metrics
     }
 
-    func sceneDidBecomeActive() { isAppForeground = true; processSendSubmissions(); startNextLANBatch() }
+    func sceneDidBecomeActive() {
+        isAppForeground = true
+        #if DEBUG
+        observedPhonePhase = "active"
+        #endif
+        recordPhoneLifecycle("scene")
+        endBackgroundTransition()
+        if !queuePaused {
+            for index in transfers.indices where transfers[index].state == .paused && transfers[index].resumesWhenForeground == true {
+                transfers[index].state = .queued
+                transfers[index].resumesWhenForeground = nil
+                transfers[index].message = "等待传输"
+            }
+        }
+        saveTransfers()
+        processSendSubmissions()
+        startNextLANBatch()
+        updateSourceIdleTimer()
+    }
 
     func sceneDidEnterBackground() {
         isAppForeground = false
-        queuePaused = false
-        cancelSendSubmissions()
-        invalidateTransferControl()
+        #if DEBUG
+        observedPhonePhase = "background"
+        #endif
+        recordPhoneLifecycle("scene")
         #if DEBUG
         lanProbeWaitTask?.cancel()
         lanProbeWaitTask = nil
         #endif
-        stopLANTransfers(message: "手机已进入后台，请保持手机 App 打开后重试。", state: .failed, includeWaiting: true)
+        saveTransfers()
+        updateSourceIdleTimer()
+        if continuedProcessing.canRunInBackground { return }
+        guard isLANActive || !waitingLANIDs.isEmpty || !sendSubmissions.isEmpty else { return }
+        guard continuedProcessing.isRequesting else {
+            parkLANQueue(message: "等待恢复", resumeOnForeground: true)
+            return
+        }
+        // The lease only bridges the asynchronous grant; continued processing
+        // owns the runtime for the actual transfer.
+        backgroundTransition = true
+        #if DEBUG && targetEnvironment(simulator)
+        if queueProbeRequest == nil {
+            backgroundTransitionLease = UIApplication.shared.beginBackgroundTask(withName: "LAN transfer handoff") { [weak self] in
+                Task { @MainActor in self?.parkLANQueue(message: "等待恢复", resumeOnForeground: true) }
+            }
+        }
+        #else
+        backgroundTransitionLease = UIApplication.shared.beginBackgroundTask(withName: "LAN transfer handoff") { [weak self] in
+            Task { @MainActor in self?.parkLANQueue(message: "等待恢复", resumeOnForeground: true) }
+        }
+        #endif
+        backgroundTransitionTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard !Task.isCancelled, let self, !self.isAppForeground, !self.continuedProcessing.canRunInBackground else { return }
+            self.parkLANQueue(message: "等待恢复", resumeOnForeground: true)
+        }
     }
 
     func stopLANTransfers() { queuePaused = false; cancelSendSubmissions(); stopLANTransfers(message: "已停止局域网传输", state: .cancelled, includeWaiting: true) }
 
+    func sceneDidBecomeInactive() {
+        #if DEBUG
+        observedPhonePhase = "inactive"
+        #endif
+        recordPhoneLifecycle("scene")
+    }
+
+    private func recordPhoneLifecycle(_ kind: String, event: LANTransferEvent? = nil) {
+        #if DEBUG
+        guard ProcessInfo.processInfo.arguments.contains("-lan-record-lifecycle") else { return }
+        let url = transferIndex.deletingLastPathComponent().appendingPathComponent("lan-phone-lifecycle.json")
+        var entries = ((try? Data(contentsOf: url)).flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [[String: Any]]) ?? []
+        var entry: [String: Any] = ["time": Date().timeIntervalSince1970, "kind": kind,
+            "scenePhase": observedPhonePhase, "runtimeGranted": continuedProcessing.canRunInBackground,
+            "queuedFiles": transfers.filter { $0.method == .localNetwork && $0.state.isPending }.count]
+        entry["runtimeRequestPending"] = continuedProcessing.isRequesting
+        entry["runtimeFailure"] = continuedProcessing.lastFailure
+        if WCSession.isSupported() {
+            entry["paired"] = WCSession.default.isPaired
+            entry["watchAppInstalled"] = WCSession.default.isWatchAppInstalled
+            entry["reachable"] = WCSession.default.isReachable
+        }
+        if let event {
+            entry["sessionID"] = event.sessionID; entry["fileID"] = event.fileID
+            entry["completedBytes"] = event.completedBytes; entry["totalBytes"] = event.totalBytes
+        }
+        entries.append(entry)
+        if entries.count > 2_000 { entries.removeFirst(entries.count - 2_000) }
+        if let data = try? JSONSerialization.data(withJSONObject: entries, options: [.sortedKeys]) {
+            try? data.write(to: url, options: .atomic)
+            try? fileManager.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: url.path)
+        }
+        #endif
+    }
+
     #if DEBUG && targetEnvironment(simulator)
-    func configureTransferQueueProbe(request: @escaping ([String: Any]) async throws -> [String: Any]) {
+    func configureTransferQueueProbe(request: @escaping ([String: Any]) async throws -> [String: Any],
+                                     persistenceDirectory: URL? = nil, automaticallyGrantBackground: Bool = true) {
+        continuedProcessing.configureProbe(automaticallyGrant: automaticallyGrantBackground)
+        configureContinuedProcessing()
         queueProbeRequest = request
+        queueProbePersistenceDirectory = persistenceDirectory
         transfers = []
         waitingLANIDs = []; queuedLANSources = [:]
+        currentLANOrder.removeAll(); backgroundTrackedIDs.removeAll()
         lanServer = LANHTTPServer(allowLoopbackForTesting: true)
     }
 
     func receiveTransferQueueProbeEvent(_ event: LANTransferEvent) { handleLANEvent(event) }
+
+    func restoreTransferQueueForProbe() throws {
+        transfers = try JSONDecoder().decode([TransferRecord].self, from: Data(contentsOf: persistedTransferIndex))
+        restoreLANQueue()
+    }
     #endif
 
     #if DEBUG && targetEnvironment(simulator)
@@ -903,11 +1176,11 @@ final class PhoneLibrary: NSObject, ObservableObject {
               let folder = folders.first(where: { $0.name == name }), !tracks(in: folder).isEmpty else { return }
         hasRunLANProbe = true
         lanProbeWaitTask = Task { [weak self] in
-            for _ in 0..<60 {
+            for _ in 0..<600 {
                 guard !Task.isCancelled, let self, self.isAppForeground else { return }
                 self.refreshConnection()
                 if WCSession.isSupported(), WCSession.default.activationState == .activated,
-                   WCSession.default.isReachable, WCSession.default.isPaired, WCSession.default.isWatchAppInstalled {
+                   WCSession.default.isPaired, WCSession.default.isWatchAppInstalled {
                     let currentTracks = self.tracks(in: folder)
                     guard !currentTracks.isEmpty, !Task.isCancelled, self.isAppForeground else { return }
                     self.send(currentTracks)
@@ -923,7 +1196,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
 
     private func startNextLANBatch() {
         guard queueMutationDepth == 0, !isLANActive, !isUpdatingTransferControls,
-              isAppForeground, watchIsReachable else { return }
+              canProcessLAN, watchIsReachable else { return }
         waitingLANIDs.removeAll { id in !transfers.contains(where: { $0.id == id && $0.state.isPending }) }
         var ids: [String] = []
         var manifestBytes = 6_000 // Credentials, endpoints and up to 100 paused IDs.
@@ -940,18 +1213,21 @@ final class PhoneLibrary: NSObject, ObservableObject {
         let chosen = Set(ids)
         waitingLANIDs.removeAll { chosen.contains($0) }
         lanRecordIDs = chosen
+        currentLANOrder = ids
         isPreparingLAN = true
         lanHandshakeAccepted = false
         lanStatus = "正在准备局域网传输…"
         let generation = UUID()
         lanGeneration = generation
         updateSourceIdleTimer()
+        saveTransfers()
         lanPreparationTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let snapshot = try await self.requestLANControl(LANTransferCommand(sessionID: UUID().uuidString, kind: .status, fileID: nil))
+                guard !Task.isCancelled, self.lanGeneration == generation else { return }
                 if let oldSession = snapshot.events.first?.sessionID {
-                    _ = try await self.requestLANControl(LANTransferCommand(sessionID: oldSession, kind: .stop, fileID: nil))
+                    _ = try await self.requestLANControl(LANTransferCommand(sessionID: oldSession, kind: .stop, fileID: nil, preservePartialFiles: true))
                 }
                 guard !Task.isCancelled, self.lanGeneration == generation else { return }
                 var sources: [LANTransferSource] = []
@@ -966,7 +1242,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
                 }
                 guard !sources.isEmpty else { self.finishLANIfComplete(); return }
                 let prepared = try await self.lanServer.start(sources: sources)
-                guard self.lanGeneration == generation, self.isAppForeground, !Task.isCancelled else { return }
+                guard self.lanGeneration == generation, self.canProcessLAN, !Task.isCancelled else { return }
                 var matched = Set<String>()
                 for offset in stride(from: 0, to: prepared.files.count, by: LANInventoryWire.maximumFiles) {
                     let files = Array(prepared.files[offset..<min(prepared.files.count, offset + LANInventoryWire.maximumFiles)])
@@ -1051,6 +1327,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
         lanHandshakeAccepted = false
         for id in lanRecordIDs { queuedLANSources.removeValue(forKey: id) }
         lanRecordIDs.removeAll()
+        currentLANOrder.removeAll()
         lanCompletedBytes.removeAll()
         updateSourceIdleTimer()
     }
@@ -1065,6 +1342,12 @@ final class PhoneLibrary: NSObject, ObservableObject {
     }
 
     private func sendLANCommand(_ command: LANTransferCommand) {
+        #if DEBUG && targetEnvironment(simulator)
+        if let queueProbeRequest, let message = try? LANTransferWire.message(command, type: LANTransferWire.commandType) {
+            Task { _ = try? await queueProbeRequest(message) }
+            return
+        }
+        #endif
         guard WCSession.isSupported(), WCSession.default.activationState == .activated,
               let message = try? LANTransferWire.message(command, type: LANTransferWire.commandType) else { return }
         if WCSession.default.isReachable { WCSession.default.sendMessage(message, replyHandler: nil, errorHandler: nil) }
@@ -1077,6 +1360,13 @@ final class PhoneLibrary: NSObject, ObservableObject {
               record.method == .localNetwork, record.lanSessionID == event.sessionID,
               event.totalBytes == record.totalBytes, event.totalBytes > 0,
               event.completedBytes >= 0, event.completedBytes <= event.totalBytes else { return }
+        #if DEBUG
+        let now = ProcessInfo.processInfo.systemUptime
+        if event.kind != .progress || now - lastPhoneProgressLog >= 5 {
+            lastPhoneProgressLog = now
+            recordPhoneLifecycle("transfer-" + event.kind.rawValue, event: event)
+        }
+        #endif
         let belongsToActiveSession = activeLANSessionID == event.sessionID && lanRecordIDs.contains(event.fileID)
         // A real bound event can arrive before the asynchronous offer reply.
         if LANReceiptPolicy.confirmsActiveSession(event, recordID: record.id,
@@ -1159,6 +1449,13 @@ final class PhoneLibrary: NSObject, ObservableObject {
         guard WCSession.isSupported() else { return }
         let session = WCSession.default
         canSend = session.activationState == .activated && session.isPaired && session.isWatchAppInstalled
+        #if DEBUG
+        let connectionLog = "connection-\(session.activationState.rawValue)-\(session.isPaired)-\(session.isWatchAppInstalled)-\(session.isReachable)"
+        if lastPhoneConnectionLog != connectionLog {
+            lastPhoneConnectionLog = connectionLog
+            recordPhoneLifecycle(connectionLog)
+        }
+        #endif
         if session.activationState != .activated { connectionDescription = "正在连接 Apple Watch…" }
         else if !session.isPaired { connectionDescription = "尚未配对 Apple Watch" }
         else if !session.isWatchAppInstalled { connectionDescription = "请在手表上安装 App" }
@@ -1188,24 +1485,21 @@ extension PhoneLibrary: WCSessionDelegate {
             self.refreshConnection()
             if activationState == .activated { self.reconcileTransfers(); self.refreshTransferControlState() }
             if let error { self.errorMessage = "连接手表失败：\(error.localizedDescription)" }
-            PlaybackControlCenter.shared.connectionDidChange()
         }
     }
     nonisolated func sessionDidBecomeInactive(_ session: WCSession) {
-        DispatchQueue.main.async { self.refreshConnection(); PlaybackControlCenter.shared.connectionDidChange() }
+        DispatchQueue.main.async { self.refreshConnection() }
     }
     nonisolated func sessionDidDeactivate(_ session: WCSession) {
         session.activate()
-        DispatchQueue.main.async { PlaybackControlCenter.shared.connectionDidChange() }
     }
     nonisolated func sessionWatchStateDidChange(_ session: WCSession) {
-        DispatchQueue.main.async { self.refreshConnection(); PlaybackControlCenter.shared.connectionDidChange() }
+        DispatchQueue.main.async { self.refreshConnection() }
     }
     nonisolated func sessionReachabilityDidChange(_ session: WCSession) {
         DispatchQueue.main.async {
             self.refreshConnection(); self.refreshTransferControlState()
             self.processSendSubmissions(); self.startNextLANBatch()
-            PlaybackControlCenter.shared.connectionDidChange()
         }
     }
     nonisolated func session(_ session: WCSession, didFinish fileTransfer: WCSessionFileTransfer, error: Error?) {
@@ -1219,7 +1513,6 @@ extension PhoneLibrary: WCSessionDelegate {
     }
     nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
         Task { @MainActor [weak self] in
-            if PlaybackControlCenter.shared.handle(message) { return }
             guard let event = LANTransferWire.decode(LANTransferEvent.self, from: message, type: LANTransferWire.eventType) else { return }
             self?.handleLANEvent(event)
         }
@@ -1227,7 +1520,6 @@ extension PhoneLibrary: WCSessionDelegate {
 
     nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
         Task { @MainActor [weak self] in
-            if PlaybackControlCenter.shared.handle(message, reply: replyHandler) { return }
             if let event = LANTransferWire.decode(LANTransferEvent.self, from: message, type: LANTransferWire.eventType) {
                 self?.handleLANEvent(event); replyHandler(["accepted": true])
             } else { replyHandler(["accepted": false]) }

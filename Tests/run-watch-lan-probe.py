@@ -11,6 +11,7 @@ import socket
 import subprocess
 import threading
 import time
+import tempfile
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -83,26 +84,33 @@ class Handler(BaseHTTPRequestHandler):
             body += b"unexpected extra bytes"
         full_size = len(body)
         resume_offset = None
+        range_end = full_size - 1
         disconnect_this_request = False
-        if behavior == "disconnect_resume":
-            requested_range = self.headers.get("Range")
-            if requested_range is not None:
+        requested_range = self.headers.get("Range")
+        if requested_range is not None and not behavior.startswith("range_") and behavior != "oversize":
+            assert requested_range.startswith("bytes="), "unexpected Range header"
+            bounds = requested_range[6:].split("-", 1)
+            resume_offset = int(bounds[0])
+            range_end = int(bounds[1]) if bounds[1] else full_size - 1
+            if self.server.first_range is None:
+                self.server.first_range = resume_offset
+            assert 0 <= resume_offset <= range_end < full_size, "invalid bounded range"
+            if behavior == "fail_after_first" and resume_offset >= 4 * 1024 * 1024:
+                self.send_error(503)
+                return
+            body = body[resume_offset:range_end + 1]
+            if resume_offset > 0:
                 self.server.range_requests.append(requested_range)
-                assert requested_range.startswith("bytes=") and requested_range.endswith("-"), "unexpected native Range header"
-                resume_offset = int(requested_range[6:-1])
-                assert 0 < resume_offset < full_size, "native download requested an invalid continuation"
-                body = body[resume_offset:]
-            elif self.path not in self.server.disconnected_paths:
-                self.server.disconnected_paths.add(self.path)
-                disconnect_this_request = True
+        if behavior == "disconnect_resume" and resume_offset in (None, 0) and self.path not in self.server.disconnected_paths:
+            self.server.disconnected_paths.add(self.path)
+            disconnect_this_request = True
         if behavior == "range_tail":
             body = body[full_size // 2:]
         self.send_response(206 if behavior.startswith("range_") or resume_offset is not None else 200)
-        if behavior == "disconnect_resume":
+        if requested_range is not None and not behavior.startswith("range_") and behavior != "oversize":
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("ETag", '"' + hashlib.sha256(route[0]).hexdigest() + '"')
-            if resume_offset is not None:
-                self.send_header("Content-Range", f"bytes {resume_offset}-{full_size - 1}/{full_size}")
+            self.send_header("Content-Range", f"bytes {resume_offset}-{range_end}/{full_size}")
         if behavior == "range_full":
             self.send_header("Content-Range", f"bytes 0-{full_size - 1}/{full_size}")
         elif behavior == "range_malformed":
@@ -141,8 +149,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def run_case(device, documents, title, specifications, expected_kind, capture=None, cancel=False, background=False, restart=False, pause=False,
-             pause_after=0.3, resume_after=3.5, partial=False, require_range=False, serial=False, cancel_first=False):
-    folder = "LANProbe-" + str(uuid.uuid4())
+             pause_after=0.3, resume_after=3.5, partial=False, require_range=False, serial=False, cancel_first=False,
+             folder_override=None, expected_first_offset=None):
+    folder = folder_override or "LANProbe-" + str(uuid.uuid4())
     manifest = []
     routes = {}
     token = uuid.uuid4().hex + uuid.uuid4().hex
@@ -158,6 +167,7 @@ def run_case(device, documents, title, specifications, expected_kind, capture=No
     server.daemon_threads = True
     server.routes, server.token = routes, token
     server.range_requests, server.disconnected_paths = [], set()
+    server.first_range = None
     server.request_started = threading.Event()
     server.request_lock = threading.Lock()
     server.active_requests, server.requests = {}, []
@@ -270,6 +280,9 @@ def run_case(device, documents, title, specifications, expected_kind, capture=No
         if require_range:
             assert server.range_requests, "system download did not request a Range continuation"
             print("Native continuation observed: " + ", ".join(server.range_requests), flush=True)
+        if expected_first_offset is not None:
+            assert server.first_range is not None, "new session did not use a bounded Range"
+            assert server.first_range == expected_first_offset, f"expected new session to start at {expected_first_offset}, got {server.first_range}"
         if serial:
             with server.request_lock:
                 requests = list(server.requests)
@@ -320,6 +333,52 @@ def run_serial_cases(device, documents, mp3, flac):
              [(mp3, "slow"), (flac, "normal"), (mp3, "normal")], "stored", background=True, serial=True)
 
 
+def run_checkpoint_case(device, documents, mp3):
+    folder = "LANProbe-" + str(uuid.uuid4())
+    cache_root = documents.parent / "Library/Application Support/LANBackground-v2/Partial"
+    index = cache_root / "index.json"
+    with tempfile.TemporaryDirectory(prefix="WatchMusic-checkpoint-") as temporary:
+        fixture = Path(temporary) / "multi-chunk.mp3"
+        # Concatenated complete MP3 frames remain decodable. No playback occurs.
+        fixture.write_bytes(mp3.read_bytes() * 32)
+        try:
+            run_case(device, documents, "interrupted source retains one complete 4 MiB response prefix",
+                     [(fixture, "fail_after_first")], "failed", folder_override=folder, expected_first_offset=0)
+            entries = json.loads(index.read_text())
+            matching = [entry for entry in entries.values() if entry["identity"]["path"].startswith(folder.lower() + "/")]
+            assert len(matching) == 1 and matching[0]["byteCount"] == 4 * 1024 * 1024, "first range checkpoint was not durable"
+            assert (cache_root / matching[0]["name"]).stat().st_size == 4 * 1024 * 1024, "checkpoint prefix size mismatch"
+            # run_case uses a fresh offer UUID, file UUID, bearer token, server
+            # port, and process launch. Only the destination and SHA stay equal.
+            run_case(device, documents, "new source session resumes the prefix with fresh URL/token and exact final SHA",
+                     [(fixture, "normal")], "stored", folder_override=folder, expected_first_offset=4 * 1024 * 1024)
+            remaining = json.loads(index.read_text())
+            assert not any(entry["identity"]["path"].startswith(folder.lower() + "/") for entry in remaining.values()), "stored file retained an abandoned checkpoint"
+            run_case(device, documents, "source interruption prepares a second prefix for corruption recovery",
+                     [(fixture, "fail_after_first")], "failed", folder_override=folder, expected_first_offset=0)
+            entries = json.loads(index.read_text())
+            damaged = next(entry for entry in entries.values() if entry["identity"]["path"].startswith(folder.lower() + "/"))
+            with (cache_root / damaged["name"]).open("r+b") as partial_file:
+                first = partial_file.read(1)
+                partial_file.seek(0)
+                partial_file.write(bytes([first[0] ^ 0xFF]))
+            run_case(device, documents, "final SHA rejects a damaged local prefix and discards its checkpoint",
+                     [(fixture, "normal")], "failed", folder_override=folder, expected_first_offset=4 * 1024 * 1024)
+            remaining = json.loads(index.read_text())
+            assert not any(entry["identity"]["path"].startswith(folder.lower() + "/") for entry in remaining.values()), "integrity failure retained a bad checkpoint"
+            run_case(device, documents, "retry after integrity failure starts clean and saves exact content",
+                     [(fixture, "normal")], "stored", folder_override=folder, expected_first_offset=0)
+        finally:
+            # Clean only this unique synthetic test folder's abandoned prefix.
+            if index.exists():
+                entries = json.loads(index.read_text())
+                for key, entry in list(entries.items()):
+                    if entry["identity"]["path"].startswith(folder.lower() + "/"):
+                        (cache_root / entry["name"]).unlink(missing_ok=True)
+                        del entries[key]
+                index.write_text(json.dumps(entries))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("device", help="Booted watch simulator UDID")
@@ -331,6 +390,7 @@ def main():
     parser.add_argument("--range-only", action="store_true", help="Run complete, malformed and incomplete HTTP 206 response scenarios")
     parser.add_argument("--disconnect-resume-only", action="store_true", help="Diagnose one suspended TCP disconnect and native Range continuation")
     parser.add_argument("--serial-only", action="store_true", help="Verify serial order, terminal gating, failure/cancel advance, pause and process recovery")
+    parser.add_argument("--checkpoint-only", action="store_true", help="Verify durable 4 MiB prefix recovery using a fresh session, URL, and token")
     args = parser.parse_args()
     if args.app:
         simctl("install", args.device, str(args.app.resolve()))
@@ -339,6 +399,9 @@ def main():
     documents.mkdir(exist_ok=True)
     mp3, flac = (ROOT / "Tests/Fixtures" / name for name in ["EmbeddedResources.mp3", "EmbeddedResources.flac"])
     try:
+        if args.checkpoint_only:
+            run_checkpoint_case(args.device, documents, mp3)
+            return
         if args.serial_only:
             run_serial_cases(args.device, documents, mp3, flac)
             return
