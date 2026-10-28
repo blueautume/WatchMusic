@@ -32,6 +32,7 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
     private var lanReservedPaths = Set<String>()
     private var nativeReservedPaths = Set<String>()
     private let rootURL: URL
+    private let lanInventory: LANInventory
     private var session: WCSession?
     private var activationFinished = false
     private var pendingTasks: [WKWatchConnectivityRefreshBackgroundTask] = []
@@ -52,6 +53,7 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
 
     override init() {
         rootURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("Music", isDirectory: true)
+        lanInventory = LANInventory(rootURL: rootURL)
         super.init()
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("-lan-record-lifecycle") {
@@ -368,7 +370,15 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
     func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
         DispatchQueue.main.async {
             if PlaybackControlCenter.shared.handle(message, reply: replyHandler) { return }
-            if let offer = LANTransferWire.decode(LANTransferOffer.self, from: message, type: LANTransferWire.offerType) {
+            if let request = LANTransferWire.decode(LANInventoryRequest.self, from: message, type: LANInventoryWire.requestType) {
+                self.lanInventory.matching(request) { result in
+                    switch result {
+                    case .success(let reply):
+                        replyHandler((try? LANTransferWire.message(reply, type: LANInventoryWire.replyType)) ?? ["accepted": false])
+                    case .failure: replyHandler(["accepted": false, "message": "无法检查手表已存歌曲，请重试。"])
+                    }
+                }
+            } else if let offer = LANTransferWire.decode(LANTransferOffer.self, from: message, type: LANTransferWire.offerType) {
                 do { try self.receiveLANOffer(offer); replyHandler(["accepted": true]) }
                 catch { replyHandler(["accepted": false, "message": error.localizedDescription]) }
             } else if let command = LANTransferWire.decode(LANTransferCommand.self, from: message, type: LANTransferWire.commandType) {
@@ -464,6 +474,7 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
             else { try self.fileManager.moveItem(at: staging, to: destination) }
         }
         if let permission { try permission.commit(commit) } else { try commit() }
+        if let expected { lanInventory.recordValidated(expected) }
     }
 
     private func secureDirectory(_ directory: URL, parent: URL) throws {

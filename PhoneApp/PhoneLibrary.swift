@@ -9,7 +9,7 @@ struct PhoneFolder: Identifiable, Hashable {
     var id: String { name }
 }
 
-struct PhoneTrack: Identifiable, Hashable {
+struct PhoneTrack: Identifiable, Hashable, Sendable {
     let folder: String
     let fileName: String
     let url: URL
@@ -38,6 +38,8 @@ struct TransferRecord: Identifiable, Codable, TransferListRecord {
     var totalBytes: Int64 = 0
     var transport: TransferMethod? = nil
     var lanSessionID: String? = nil
+    var sourceVersion: TransferSourceVersion? = nil
+    var sourceSHA256: String? = nil
     var method: TransferMethod { transport ?? .system }
     var audioFileName: String { fileName }
     var songTitle: String { (fileName as NSString).deletingPathExtension }
@@ -82,8 +84,17 @@ final class PhoneLibrary: NSObject, ObservableObject {
     private var expectedControlRevisions: [String: Int64] = [:]
     private var transferControlGeneration = UUID()
     private var transferControlTask: Task<Void, Never>?
-    private var restartTransferTask: Task<Void, Never>?
-    private var pendingSendCompletion: LANEnqueueCompletion?
+    @Published private(set) var transferSummary: String?
+    private var waitingLANIDs: [String] = []
+    private var queuedLANSources: [String: PhoneTrack] = [:]
+    private var sendSubmissions: [LANSendSubmission] = []
+    private var submissionTask: Task<Void, Never>?
+    private var submissionGeneration = UUID()
+    private var queueMutationDepth = 0
+    private var queuePaused = false
+    #if DEBUG && targetEnvironment(simulator)
+    private var queueProbeRequest: (([String: Any]) async throws -> [String: Any])?
+    #endif
     #if DEBUG
     private var hasRunLANProbe = false
     private var lanProbeWaitTask: Task<Void, Never>?
@@ -100,6 +111,15 @@ final class PhoneLibrary: NSObject, ObservableObject {
         }
         return server
     }()
+
+    func isCurrentLANTransfer(_ id: String) -> Bool { lanRecordIDs.contains(id) }
+
+    private var watchIsReachable: Bool {
+        #if DEBUG && targetEnvironment(simulator)
+        if queueProbeRequest != nil { return true }
+        #endif
+        return WCSession.isSupported() && WCSession.default.isReachable
+    }
 
     var isLANActive: Bool { isPreparingLAN || activeLANSessionID != nil }
     var isAwaitingLANAcceptance: Bool { activeLANSessionID != nil && !lanHandshakeAccepted }
@@ -250,7 +270,9 @@ final class PhoneLibrary: NSObject, ObservableObject {
     }
 
     private func hasOutstandingTransfer(for track: PhoneTrack) -> Bool {
-        if transfers.contains(where: { $0.method == .localNetwork && $0.folder == track.folder && $0.fileName == track.fileName && lanRecordIDs.contains($0.id) }) { return true }
+        if sendSubmissions.contains(where: { $0.tracks.contains(where: { $0.id == track.id }) }) { return true }
+        if transfers.contains(where: { $0.method == .localNetwork && $0.folder == track.folder && $0.fileName == track.fileName &&
+            (lanRecordIDs.contains($0.id) || waitingLANIDs.contains($0.id)) }) { return true }
         guard WCSession.isSupported() else { return false }
         return WCSession.default.outstandingFileTransfers.contains {
             let metadata = $0.file.metadata ?? [:]
@@ -300,11 +322,131 @@ final class PhoneLibrary: NSObject, ObservableObject {
     func send(_ tracks: [PhoneTrack], retryPending: Bool = false, completion: ((Set<String>) -> Void)? = nil) {
         guard !isImporting else { errorMessage = "导入完成后再发送。"; completion?([]); return }
         guard !tracks.isEmpty, transferSessionReady() else { completion?([]); return }
-        guard !isLANActive, !isUpdatingTransferControls else { errorMessage = "请先完成或清除当前任务。"; completion?([]); return }
-        startAfterClearingStaleSession(tracks, retryPending: retryPending, completion: completion)
+        var seen = Set<String>()
+        let unique = tracks.filter { seen.insert(LANInventoryWire.pathKey(folder: $0.folder, fileName: $0.fileName)).inserted }
+        sendSubmissions.append(LANSendSubmission(id: UUID(), tracks: unique, completion: LANEnqueueCompletion(completion)))
+        processSendSubmissions()
+    }
+
+    private func updateSourceIdleTimer() {
+        #if DEBUG && targetEnvironment(simulator)
+        if queueProbeRequest != nil { return }
+        #endif
+        let needsSource = isAppForeground && (isLANActive || submissionTask != nil ||
+            waitingLANIDs.contains { id in transfers.first(where: { $0.id == id })?.state == .queued })
+        if needsSource, savedIdleTimerDisabled == nil {
+            savedIdleTimerDisabled = UIApplication.shared.isIdleTimerDisabled
+            UIApplication.shared.isIdleTimerDisabled = true
+        } else if !needsSource, let previous = savedIdleTimerDisabled {
+            UIApplication.shared.isIdleTimerDisabled = previous
+            savedIdleTimerDisabled = nil
+        }
+    }
+
+    private func processSendSubmissions() {
+        guard submissionTask == nil, !sendSubmissions.isEmpty, isAppForeground else { return }
+        guard watchIsReachable else { transferSummary = "等待手表连接"; return }
+        let generation = submissionGeneration
+        submissionTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled, self.submissionGeneration == generation,
+                  self.isAppForeground, self.watchIsReachable, let submission = self.sendSubmissions.first {
+                var handled = Set<String>()
+                do {
+                    let pendingPaths = Set(self.transfers.filter { $0.state.isPending }.map {
+                        LANInventoryWire.pathKey(folder: $0.folder, fileName: $0.fileName)
+                    })
+                    let candidates = submission.tracks.filter { track in
+                        if pendingPaths.contains(LANInventoryWire.pathKey(folder: track.folder, fileName: track.fileName)) {
+                            handled.insert(track.id); return false
+                        }
+                        return true
+                    }
+                    self.transferSummary = candidates.isEmpty ? "已在队列中" : "正在检查 \(candidates.count) 首"
+                    let prepared = try await LANSendPreparation.prepare(candidates)
+                    var matched = Set<String>()
+                    for offset in stride(from: 0, to: prepared.count, by: LANInventoryWire.maximumFiles) {
+                        let files = Array(prepared[offset..<min(prepared.count, offset + LANInventoryWire.maximumFiles)]).map(\.file)
+                        let request = LANInventoryRequest(requestID: UUID().uuidString, files: files)
+                        let reply = try await self.requestInventory(request)
+                        matched.formUnion(reply.matchedFileIDs)
+                    }
+                    guard !Task.isCancelled, self.submissionGeneration == generation else { break }
+                    for candidate in prepared {
+                        guard candidate.version == (try TransferSourceVersion.read(candidate.track.url)) else {
+                            throw self.lanError("歌曲文件已变化，请重新发送。")
+                        }
+                    }
+                    var added = 0
+                    var skipped = handled.count
+                    for candidate in prepared {
+                        let path = LANInventoryWire.pathKey(folder: candidate.track.folder, fileName: candidate.track.fileName)
+                        if self.transfers.contains(where: { $0.state.isPending && LANInventoryWire.pathKey(folder: $0.folder, fileName: $0.fileName) == path }) {
+                            skipped += 1
+                        } else if matched.contains(candidate.file.id) {
+                            self.recordExistingWatchFile(candidate)
+                            skipped += 1
+                        } else {
+                            self.retireReplacedFailures(path: path)
+                            self.transfers.insert(TransferRecord(id: candidate.file.id, folder: candidate.file.folder,
+                                fileName: candidate.file.fileName, createdAt: Date(), state: self.queuePaused ? .paused : .queued,
+                                message: self.queuePaused ? "已暂停" : "等待传输",
+                                totalBytes: candidate.file.byteCount, transport: .localNetwork,
+                                sourceVersion: candidate.version, sourceSHA256: candidate.file.sha256), at: 0)
+                            self.waitingLANIDs.append(candidate.file.id)
+                            self.queuedLANSources[candidate.file.id] = candidate.track
+                            added += 1
+                        }
+                        handled.insert(candidate.track.id)
+                    }
+                    self.saveTransfers(); self.refreshProgress()
+                    self.transferSummary = added == 0 ? "已跳过 \(skipped) 首" : (skipped == 0 ? "已加入 \(added) 首" : "已加入 \(added) 首，跳过 \(skipped) 首")
+                    self.startNextLANBatch()
+                } catch {
+                    if !Task.isCancelled, self.submissionGeneration == generation { self.errorMessage = "检查歌曲失败：\(error.localizedDescription)" }
+                }
+                submission.completion.finish(handled)
+                if self.sendSubmissions.first?.id == submission.id { self.sendSubmissions.removeFirst() }
+            }
+            if self.submissionGeneration == generation { self.submissionTask = nil }
+            self.updateSourceIdleTimer()
+        }
+        updateSourceIdleTimer()
+    }
+
+    private func retireReplacedFailures(path: String) {
+        for index in transfers.indices where LANInventoryWire.pathKey(folder: transfers[index].folder, fileName: transfers[index].fileName) == path &&
+            (transfers[index].state == .failed || transfers[index].state == .outdated) {
+            transfers[index].state = .cancelled; transfers[index].message = "已重新加入队列"
+        }
+    }
+
+    private func recordExistingWatchFile(_ candidate: LANSendCandidate) {
+        let path = LANInventoryWire.pathKey(folder: candidate.file.folder, fileName: candidate.file.fileName)
+        retireReplacedFailures(path: path)
+        if let index = transfers.firstIndex(where: { $0.state == .stored && LANInventoryWire.pathKey(folder: $0.folder, fileName: $0.fileName) == path }) {
+            transfers[index].sourceVersion = candidate.version
+            transfers[index].sourceSHA256 = candidate.file.sha256
+            transfers[index].totalBytes = candidate.file.byteCount
+        } else {
+            transfers.insert(TransferRecord(id: candidate.file.id, folder: candidate.file.folder, fileName: candidate.file.fileName,
+                createdAt: Date(), state: .stored, message: "已在手表中", totalBytes: candidate.file.byteCount,
+                transport: .localNetwork, sourceVersion: candidate.version, sourceSHA256: candidate.file.sha256), at: 0)
+        }
+    }
+
+    private func cancelSendSubmissions() {
+        submissionGeneration = UUID()
+        submissionTask?.cancel(); submissionTask = nil
+        sendSubmissions.forEach { $0.completion.finish([]) }
+        sendSubmissions.removeAll()
+        updateSourceIdleTimer()
     }
 
     private func transferSessionReady() -> Bool {
+        #if DEBUG && targetEnvironment(simulator)
+        if queueProbeRequest != nil { return true }
+        #endif
         #if DEBUG && targetEnvironment(simulator)
         if isTransferListPreview { return false }
         #endif
@@ -316,13 +458,15 @@ final class PhoneLibrary: NSObject, ObservableObject {
 
     func cancel(_ record: TransferRecord) {
         #if DEBUG && targetEnvironment(simulator)
-        if isTransferListPreview {
+        if isTransferListPreview, queueProbeRequest == nil {
             updateTransfer(id: record.id, state: .cancelled, message: "已取消")
             return
         }
         #endif
         guard record.state.isPending, WCSession.isSupported() else { return }
         if record.method == .localNetwork {
+            waitingLANIDs.removeAll { $0 == record.id }
+            queuedLANSources.removeValue(forKey: record.id)
             lanServer.cancel(fileID: record.id)
             if let sessionID = record.lanSessionID {
                 sendLANCommand(LANTransferCommand(sessionID: sessionID, kind: .cancel, fileID: record.id))
@@ -330,6 +474,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
             updateTransfer(id: record.id, state: .cancelled, message: "已取消")
             finishLANIfComplete()
             refreshProgress()
+            updateSourceIdleTimer()
             return
         }
         guard record.state == .queued else { return }
@@ -349,25 +494,27 @@ final class PhoneLibrary: NSObject, ObservableObject {
 
     private func canPause(_ record: TransferRecord) -> Bool {
         #if DEBUG && targetEnvironment(simulator)
-        if isTransferListPreview { return record.method == .localNetwork && record.state == .queued }
+        if isTransferListPreview, queueProbeRequest == nil { return record.method == .localNetwork && record.state == .queued }
         #endif
-        return record.method == .localNetwork && record.state == .queued && lanRecordIDs.contains(record.id) &&
-            (isPreparingLAN || lanHandshakeAccepted)
+        return record.method == .localNetwork && record.state == .queued &&
+            (waitingLANIDs.contains(record.id) || (lanRecordIDs.contains(record.id) && (isPreparingLAN || lanHandshakeAccepted)))
     }
 
     private func canStart(_ record: TransferRecord) -> Bool {
         #if DEBUG && targetEnvironment(simulator)
-        if isTransferListPreview { return record.state == .paused || record.state == .failed || record.state == .outdated }
+        if isTransferListPreview, queueProbeRequest == nil { return record.state == .paused || record.state == .failed || record.state == .outdated }
         #endif
-        if isLANActive {
-            return record.method == .localNetwork && record.state == .paused && lanRecordIDs.contains(record.id) &&
-                (isPreparingLAN || lanHandshakeAccepted)
-        }
+        if waitingLANIDs.contains(record.id) { return record.state == .paused }
+        if lanRecordIDs.contains(record.id), record.state == .paused { return isPreparingLAN || lanHandshakeAccepted }
         return record.state == .paused || record.state == .failed || record.state == .outdated
     }
 
     func shouldStartTransfers(ids: Set<String>? = nil) -> Bool {
-        !controlRecords(ids: ids).contains(where: canPause)
+        if ids == nil, isLANActive {
+            let current = transfers.filter { lanRecordIDs.contains($0.id) && $0.state.isPending }
+            if current.contains(where: { $0.state == .paused }), !current.contains(where: canPause) { return true }
+        }
+        return !controlRecords(ids: ids).contains(where: canPause)
     }
 
     func canToggleTransfers(ids: Set<String>? = nil) -> Bool {
@@ -382,48 +529,56 @@ final class PhoneLibrary: NSObject, ObservableObject {
 
     func pauseTransfers(ids: Set<String>? = nil) {
         guard !isUpdatingTransferControls else { return }
+        if ids == nil { queuePaused = true }
         let targets = controlRecords(ids: ids).filter(canPause)
         guard !targets.isEmpty else { return }
         #if DEBUG && targetEnvironment(simulator)
-        if isTransferListPreview {
+        if isTransferListPreview, queueProbeRequest == nil {
             for record in targets { updateTransfer(id: record.id, state: .paused, message: "已暂停") }
             return
         }
         #endif
-        if isPreparingLAN && activeLANSessionID == nil {
-            for record in targets { updateTransfer(id: record.id, state: .paused, message: "已暂停") }
-            refreshProgress()
-            return
-        }
-        sendTransferControl(paused: true, records: targets)
+        let local = targets.filter { waitingLANIDs.contains($0.id) || (lanRecordIDs.contains($0.id) && activeLANSessionID == nil) }
+        for record in local { updateTransfer(id: record.id, state: .paused, message: "已暂停") }
+        let localIDs = Set(local.map(\.id))
+        let remote = targets.filter { !localIDs.contains($0.id) }
+        if !remote.isEmpty { sendTransferControl(paused: true, records: remote) }
+        refreshProgress()
+        updateSourceIdleTimer()
     }
 
     func resumeTransfers(ids: Set<String>? = nil) {
         guard !isImporting, !isUpdatingTransferControls else { return }
+        queuePaused = false
         let targets = controlRecords(ids: ids).filter(canStart)
         guard !targets.isEmpty else { return }
         #if DEBUG && targetEnvironment(simulator)
-        if isTransferListPreview {
+        if isTransferListPreview, queueProbeRequest == nil {
             for record in targets { updateTransfer(id: record.id, state: .queued, message: "等待传输") }
             return
         }
         #endif
-        if isPreparingLAN && activeLANSessionID == nil {
-            for record in targets { updateTransfer(id: record.id, state: .queued, message: "等待传输") }
-            refreshProgress()
-        } else if isLANActive {
-            sendTransferControl(paused: false, records: targets)
-        } else {
-            restartTransfers(targets)
+        var retry: [TransferRecord] = []
+        var remote: [TransferRecord] = []
+        for record in targets {
+            if waitingLANIDs.contains(record.id) || (lanRecordIDs.contains(record.id) && activeLANSessionID == nil && record.state == .paused) {
+                updateTransfer(id: record.id, state: .queued, message: "等待传输")
+            } else if lanRecordIDs.contains(record.id), record.state == .paused { remote.append(record) }
+            else { retry.append(record) }
         }
+        if !remote.isEmpty { sendTransferControl(paused: false, records: remote) }
+        if !retry.isEmpty { restartTransfers(retry) }
+        startNextLANBatch()
+        refreshProgress()
+        updateSourceIdleTimer()
     }
 
     /// Cancel the source/remote work before removing its record. Save receipts
     /// for removed IDs are ignored; a file committed before cancellation stays.
     func clearTransfers(ids: Set<String>) {
         guard !ids.isEmpty else { return }
-        invalidateTransferControl()
-        restartTransferTask?.cancel(); restartTransferTask = nil
+        queueMutationDepth += 1
+        defer { queueMutationDepth -= 1; startNextLANBatch() }
         let targets = transfers.filter { ids.contains($0.id) }
         for record in targets where record.state.isPending { cancel(record) }
         for record in targets where record.method == .localNetwork {
@@ -434,6 +589,8 @@ final class PhoneLibrary: NSObject, ObservableObject {
         }
         transfers.removeAll { ids.contains($0.id) }
         lanRecordIDs.subtract(ids)
+        waitingLANIDs.removeAll { ids.contains($0) }
+        ids.forEach { queuedLANSources.removeValue(forKey: $0) }
         for id in ids {
             progressSamplers.removeValue(forKey: id)
             transferMetrics.removeValue(forKey: id)
@@ -441,12 +598,17 @@ final class PhoneLibrary: NSObject, ObservableObject {
             lanCompletedBytes.removeValue(forKey: id)
             expectedControlRevisions.removeValue(forKey: id)
         }
-        finishLANIfComplete()
+        if lanRecordIDs.isEmpty, isLANActive { closeLANSession() }
+        else { finishLANIfComplete() }
         saveTransfers()
         refreshProgress()
+        updateSourceIdleTimer()
     }
 
     func clearAllTasks() {
+        queuePaused = false
+        cancelSendSubmissions()
+        transferSummary = nil
         clearTransfers(ids: Set(transfers.filter { $0.state != .stored }.map(\.id)))
     }
 
@@ -454,13 +616,11 @@ final class PhoneLibrary: NSObject, ObservableObject {
         transferControlGeneration = UUID()
         transferControlTask?.cancel(); transferControlTask = nil
         isUpdatingTransferControls = false
-        pendingSendCompletion?.finish([])
-        pendingSendCompletion = nil
     }
 
     private func sendTransferControl(paused: Bool, records: [TransferRecord]) {
         guard let sessionID = activeLANSessionID, lanHandshakeAccepted else { return }
-        guard isAppForeground, WCSession.default.isReachable else {
+        guard isAppForeground, watchIsReachable else {
             errorMessage = "手表暂不可达，请打开手表 App 后再操作。"
             return
         }
@@ -493,76 +653,55 @@ final class PhoneLibrary: NSObject, ObservableObject {
                 }
                 if needsConfirmation { self.errorMessage = "未收到手表确认：\(error.localizedDescription)" }
             }
-            if self.transferControlGeneration == operation { self.isUpdatingTransferControls = false; self.transferControlTask = nil }
+            if self.transferControlGeneration == operation {
+                self.isUpdatingTransferControls = false; self.transferControlTask = nil
+                self.startNextLANBatch()
+            }
         }
     }
 
     private func restartTransfers(_ records: [TransferRecord]) {
-        let paths = Set(records.map { $0.folder + "/" + $0.fileName })
-        let tracks = allTracks.filter { paths.contains($0.id) }
-        guard tracks.count == paths.count else { errorMessage = "部分歌曲已被移动或删除，请从音乐库重新选择。"; return }
-        guard tracks.count <= 100 else { errorMessage = "单次最多开始 100 首，请分批选择。"; return }
-        startAfterClearingStaleSession(tracks, retryPending: true)
+        let tracks = records.map { record in
+            let url = root.appendingPathComponent(record.folder, isDirectory: true).appendingPathComponent(record.fileName)
+            return PhoneTrack(folder: record.folder, fileName: record.fileName, url: url)
+        }
+        send(tracks, retryPending: true)
     }
 
-    private func startAfterClearingStaleSession(_ tracks: [PhoneTrack], retryPending: Bool,
-                                               completion: ((Set<String>) -> Void)? = nil) {
-        guard transferSessionReady(), isAppForeground, WCSession.default.isReachable else {
-            if errorMessage == nil { errorMessage = "请打开手表 App 后重新开始。" }
-            completion?([])
-            return
+    private func requestInventory(_ request: LANInventoryRequest) async throws -> LANInventoryReply {
+        try LANInventoryWire.validate(request)
+        let message = try LANTransferWire.message(request, type: LANInventoryWire.requestType)
+        let response = try await requestLiveMessage(message)
+        guard let reply = LANTransferWire.decode(LANInventoryReply.self, from: response, type: LANInventoryWire.replyType) else {
+            throw lanError("请更新手表 App 后再试。")
         }
-        let operation = UUID()
-        transferControlGeneration = operation
-        isUpdatingTransferControls = true
-        let finished = LANEnqueueCompletion(completion)
-        pendingSendCompletion = finished
-        restartTransferTask = Task { [weak self] in
-            guard let self else { finished.finish([]); return }
-            var enqueued = Set<String>()
-            defer {
-                finished.finish(enqueued)
-                if self.pendingSendCompletion === finished { self.pendingSendCompletion = nil }
-            }
-            do {
-                // The source from a previous process/session may have expired,
-                // while the watch still owns suspended work. Query read-only,
-                // cancel that exact session, then prepare fresh credentials.
-                let snapshot = try await self.requestLANControl(LANTransferCommand(sessionID: UUID().uuidString, kind: .status, fileID: nil))
-                if let oldSession = snapshot.events.first?.sessionID {
-                    _ = try await self.requestLANControl(LANTransferCommand(sessionID: oldSession, kind: .stop, fileID: nil))
-                }
-                guard !Task.isCancelled, self.transferControlGeneration == operation, !self.isLANActive else { return }
-                self.isUpdatingTransferControls = false
-                let before = Set(self.transfers.map(\.id))
-                self.startLANTransfer(tracks, retryPending: retryPending)
-                enqueued = Set(self.transfers.filter { !before.contains($0.id) }.map { $0.folder + "/" + $0.fileName })
-            } catch {
-                guard !Task.isCancelled, self.transferControlGeneration == operation else { return }
-                self.isUpdatingTransferControls = false
-                self.errorMessage = "无法重新开始传输：\(error.localizedDescription)"
-            }
-            if self.transferControlGeneration == operation { self.restartTransferTask = nil }
-        }
+        try LANInventoryWire.validate(reply, for: request)
+        return reply
     }
 
     private func requestLANControl(_ command: LANTransferCommand) async throws -> LANTransferControlReply {
-        guard WCSession.isSupported(), WCSession.default.activationState == .activated,
-              WCSession.default.isReachable else { throw lanError("手表暂不可达。") }
         let message = try LANTransferWire.message(command, type: LANTransferWire.commandType)
+        let response = try await requestLiveMessage(message)
+        guard let reply = LANTransferWire.decode(LANTransferControlReply.self, from: response, type: LANTransferWire.controlReplyType) else {
+            throw lanError("请更新手表 App 后再试。")
+        }
+        return reply
+    }
+
+    private func requestLiveMessage(_ message: [String: Any]) async throws -> [String: Any] {
+        #if DEBUG && targetEnvironment(simulator)
+        if let queueProbeRequest { return try await queueProbeRequest(message) }
+        #endif
+        guard transferSessionReady(), watchIsReachable else { throw lanError("手表暂不可达。") }
         return try await withCheckedThrowingContinuation { continuation in
-            let gate = LANControlReplyGate(continuation)
+            let gate = LANMessageReplyGate(continuation)
             gate.timeout = Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                try? await Task.sleep(nanoseconds: 25_000_000_000)
                 guard !Task.isCancelled else { return }
                 gate.finish(.failure(NSError(domain: "LANControl", code: 1, userInfo: [NSLocalizedDescriptionKey: "操作确认超时，请检查手表连接。"])))
             }
             WCSession.default.sendMessage(message, replyHandler: { reply in
-                let decoded = LANTransferWire.decode(LANTransferControlReply.self, from: reply, type: LANTransferWire.controlReplyType)
-                Task { @MainActor in
-                    if let decoded { gate.finish(.success(decoded)) }
-                    else { gate.finish(.failure(NSError(domain: "LANControl", code: 2, userInfo: [NSLocalizedDescriptionKey: "请更新手表 App 后再试。"]))) }
-                }
+                Task { @MainActor in gate.finish(.success(reply)) }
             }, errorHandler: { error in
                 let detail = error.localizedDescription
                 Task { @MainActor in gate.finish(.failure(NSError(domain: "LANControl", code: 3, userInfo: [NSLocalizedDescriptionKey: detail]))) }
@@ -605,10 +744,15 @@ final class PhoneLibrary: NSObject, ObservableObject {
     }
 
     func latestTransfer(for track: PhoneTrack) -> TransferRecord? {
-        transfers.first { $0.folder == track.folder && $0.audioFileName == track.fileName }
+        transfers.first { $0.folder == track.folder && $0.audioFileName == track.fileName && $0.state != .cancelled }
     }
 
-    func isFullyTransferred(_ track: PhoneTrack) -> Bool { latestTransfer(for: track)?.state == .stored }
+    func isFullyTransferred(_ track: PhoneTrack) -> Bool {
+        guard let record = latestTransfer(for: track), record.state == .stored,
+              let version = record.sourceVersion, let hash = record.sourceSHA256,
+              LANInventoryWire.validDigest(hash) else { return false }
+        return (try? TransferSourceVersion.read(track.url)) == version
+    }
 
     private func saveTransfers() {
         #if DEBUG && targetEnvironment(simulator)
@@ -674,20 +818,32 @@ final class PhoneLibrary: NSObject, ObservableObject {
         transferMetrics = metrics
     }
 
-    func sceneDidBecomeActive() { isAppForeground = true }
+    func sceneDidBecomeActive() { isAppForeground = true; processSendSubmissions(); startNextLANBatch() }
 
     func sceneDidEnterBackground() {
         isAppForeground = false
+        queuePaused = false
+        cancelSendSubmissions()
         invalidateTransferControl()
-        restartTransferTask?.cancel(); restartTransferTask = nil
         #if DEBUG
         lanProbeWaitTask?.cancel()
         lanProbeWaitTask = nil
         #endif
-        stopLANTransfers(message: "手机已进入后台，请保持手机 App 打开后重试。", state: .failed)
+        stopLANTransfers(message: "手机已进入后台，请保持手机 App 打开后重试。", state: .failed, includeWaiting: true)
     }
 
-    func stopLANTransfers() { stopLANTransfers(message: "已停止局域网传输", state: .cancelled) }
+    func stopLANTransfers() { queuePaused = false; cancelSendSubmissions(); stopLANTransfers(message: "已停止局域网传输", state: .cancelled, includeWaiting: true) }
+
+    #if DEBUG && targetEnvironment(simulator)
+    func configureTransferQueueProbe(request: @escaping ([String: Any]) async throws -> [String: Any]) {
+        queueProbeRequest = request
+        transfers = []
+        waitingLANIDs = []; queuedLANSources = [:]
+        lanServer = LANHTTPServer(allowLoopbackForTesting: true)
+    }
+
+    func receiveTransferQueueProbeEvent(_ event: LANTransferEvent) { handleLANEvent(event) }
+    #endif
 
     #if DEBUG && targetEnvironment(simulator)
     /// Isolated screenshot fixtures: startup skips disk access and WC activation,
@@ -765,66 +921,81 @@ final class PhoneLibrary: NSObject, ObservableObject {
     }
     #endif
 
-    private func startLANTransfer(_ tracks: [PhoneTrack], retryPending: Bool) {
-        guard isAppForeground else { errorMessage = "请在前台开始局域网传输。"; return }
-        guard !isLANActive else { errorMessage = "请先完成或停止当前局域网传输。"; return }
-        guard WCSession.default.isReachable else { errorMessage = "请先打开手表 App，再开始局域网传输。"; return }
-        var selected: [PhoneTrack] = []
-        var seen = Set<String>()
-        for track in tracks where seen.insert(track.id).inserted {
-            guard fileManager.fileExists(atPath: track.url.path) else { errorMessage = "歌曲已被移动或删除。"; return }
-            if let pending = transfers.first(where: { $0.folder == track.folder && $0.fileName == track.fileName && $0.state.isPending }) {
-                guard retryPending && !hasOutstandingTransfer(for: track) else { continue }
-                updateTransfer(id: pending.id, state: .cancelled, message: "已重新发送")
-            }
-            selected.append(track)
+    private func startNextLANBatch() {
+        guard queueMutationDepth == 0, !isLANActive, !isUpdatingTransferControls,
+              isAppForeground, watchIsReachable else { return }
+        waitingLANIDs.removeAll { id in !transfers.contains(where: { $0.id == id && $0.state.isPending }) }
+        var ids: [String] = []
+        var manifestBytes = 6_000 // Credentials, endpoints and up to 100 paused IDs.
+        for id in waitingLANIDs {
+            guard let record = transfers.first(where: { $0.id == id }), record.state == .queued,
+                  let hash = record.sourceSHA256 else { continue }
+            let file = LANTransferFile(id: id, folder: record.folder, fileName: record.fileName,
+                                       byteCount: record.totalBytes, sha256: hash)
+            let bytes = ((try? JSONEncoder().encode(file).count) ?? 1_024) + 1
+            if ids.count == 100 || manifestBytes + bytes > 50_000 { break }
+            ids.append(id); manifestBytes += bytes
         }
-        guard !selected.isEmpty else { return }
-        guard selected.count <= 100 else { errorMessage = "单次局域网传输最多 100 首，请分批发送。"; return }
-        let replacing = Set(selected.map(\.id))
-        for index in transfers.indices where replacing.contains(transfers[index].folder + "/" + transfers[index].fileName) &&
-            (transfers[index].state == .failed || transfers[index].state == .outdated) {
-            transfers[index].state = .cancelled
-            transfers[index].message = "已重新发送"
-        }
-        let generation = UUID()
-        lanGeneration = generation
+        guard !ids.isEmpty else { return }
+        let chosen = Set(ids)
+        waitingLANIDs.removeAll { chosen.contains($0) }
+        lanRecordIDs = chosen
         isPreparingLAN = true
         lanHandshakeAccepted = false
         lanStatus = "正在准备局域网传输…"
-        savedIdleTimerDisabled = UIApplication.shared.isIdleTimerDisabled
-        UIApplication.shared.isIdleTimerDisabled = true
-        let sources = selected.map { track -> LANTransferSource in
-            let id = UUID().uuidString
-            let size = Int64((try? track.url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
-            transfers.insert(TransferRecord(id: id, folder: track.folder, fileName: track.fileName,
-                                            createdAt: Date(), state: .queued, message: "正在准备局域网传输",
-                                            totalBytes: size, transport: .localNetwork), at: 0)
-            lanRecordIDs.insert(id)
-            lanCompletedBytes[id] = 0
-            return LANTransferSource(id: id, folder: track.folder, fileName: track.fileName, url: track.url)
-        }
-        saveTransfers()
-        refreshProgress()
+        let generation = UUID()
+        lanGeneration = generation
+        updateSourceIdleTimer()
         lanPreparationTask = Task { [weak self] in
             guard let self else { return }
             do {
+                let snapshot = try await self.requestLANControl(LANTransferCommand(sessionID: UUID().uuidString, kind: .status, fileID: nil))
+                if let oldSession = snapshot.events.first?.sessionID {
+                    _ = try await self.requestLANControl(LANTransferCommand(sessionID: oldSession, kind: .stop, fileID: nil))
+                }
+                guard !Task.isCancelled, self.lanGeneration == generation else { return }
+                var sources: [LANTransferSource] = []
+                for id in ids {
+                    guard let record = self.transfers.first(where: { $0.id == id }), record.state.isPending,
+                          let track = self.queuedLANSources[id] else { continue }
+                    guard (try? TransferSourceVersion.read(track.url)) == record.sourceVersion else {
+                        self.updateTransfer(id: id, state: .outdated, message: "本地文件已更新，请重新发送")
+                        continue
+                    }
+                    sources.append(LANTransferSource(id: id, folder: track.folder, fileName: track.fileName, url: track.url))
+                }
+                guard !sources.isEmpty else { self.finishLANIfComplete(); return }
                 let prepared = try await self.lanServer.start(sources: sources)
-                guard self.lanGeneration == generation, self.isAppForeground, !Task.isCancelled else {
-                    if self.lanServer.activeSessionID == prepared.sessionID { self.lanServer.stop() }
-                    return
+                guard self.lanGeneration == generation, self.isAppForeground, !Task.isCancelled else { return }
+                var matched = Set<String>()
+                for offset in stride(from: 0, to: prepared.files.count, by: LANInventoryWire.maximumFiles) {
+                    let files = Array(prepared.files[offset..<min(prepared.files.count, offset + LANInventoryWire.maximumFiles)])
+                    matched.formUnion(try await self.requestInventory(LANInventoryRequest(requestID: UUID().uuidString, files: files)).matchedFileIDs)
+                }
+                guard self.lanGeneration == generation, !Task.isCancelled else { return }
+                for file in prepared.files {
+                    guard let record = self.transfers.first(where: { $0.id == file.id }), record.state.isPending,
+                          let track = self.queuedLANSources[file.id] else { continue }
+                    if file.sha256 != record.sourceSHA256 || (try? TransferSourceVersion.read(track.url)) != record.sourceVersion {
+                        self.updateTransfer(id: file.id, state: .outdated, message: "本地文件已更新，请重新发送")
+                    } else if matched.contains(file.id) {
+                        self.updateTransfer(id: file.id, state: .stored, message: "已在手表中")
+                    }
                 }
                 let pendingIDs = Set(self.transfers.filter { self.lanRecordIDs.contains($0.id) && $0.state.isPending }.map(\.id))
                 for file in prepared.files where !pendingIDs.contains(file.id) { self.lanServer.cancel(fileID: file.id) }
+                guard !pendingIDs.isEmpty else { self.finishLANIfComplete(); return }
                 let offer = LANTransferOffer(sessionID: prepared.sessionID, token: prepared.token,
-                                             baseURLs: prepared.baseURLs, expiresAt: prepared.expiresAt,
-                                             files: prepared.files.filter { pendingIDs.contains($0.id) },
-                                             pausedFileIDs: self.transfers.filter { self.lanRecordIDs.contains($0.id) && $0.state == .paused }.map(\.id))
+                    baseURLs: prepared.baseURLs, expiresAt: prepared.expiresAt,
+                    files: prepared.files.filter { pendingIDs.contains($0.id) },
+                    pausedFileIDs: self.transfers.filter { self.lanRecordIDs.contains($0.id) && $0.state == .paused }.map(\.id))
+                #if DEBUG && targetEnvironment(simulator)
+                try LANTransferValidation.validate(offer, allowLoopback: self.queueProbeRequest != nil)
+                #else
                 try LANTransferValidation.validate(offer)
+                #endif
                 let message = try LANTransferWire.message(offer, type: LANTransferWire.offerType)
-                guard let encoded = message["payload"] as? Data, encoded.count <= 55_000 else {
-                    throw self.lanError("传输清单过长，请减少单次发送的歌曲数量。")
-                }
+                guard let encoded = message["payload"] as? Data, encoded.count <= 55_000 else { throw self.lanError("传输清单过长，请减少单次发送的歌曲数量。") }
                 self.activeLANSessionID = offer.sessionID
                 self.isPreparingLAN = false
                 self.lanStatus = "等待手表接收…"
@@ -836,51 +1007,34 @@ final class PhoneLibrary: NSObject, ObservableObject {
                     }
                 }
                 self.saveTransfers()
-                guard WCSession.default.isReachable else { throw self.lanError("手表暂不可达，请打开手表 App 后重试。") }
-                self.lanHandshakeTimeout = Task { [weak self] in
-                    try? await Task.sleep(nanoseconds: 15_000_000_000)
-                    guard !Task.isCancelled, let self, self.lanGeneration == generation,
-                          self.activeLANSessionID == offer.sessionID, !self.lanHandshakeAccepted else { return }
-                    self.stopLANTransfers(message: "手表未确认接收，请保持两端 App 打开后重试。", state: .failed)
-                }
-                WCSession.default.sendMessage(message, replyHandler: { [weak self] reply in
-                    let accepted = reply["accepted"] as? Bool == true
-                    let detail = reply["message"] as? String
-                    Task { @MainActor [weak self] in
-                        guard let self, self.lanGeneration == generation, self.activeLANSessionID == offer.sessionID else { return }
-                        if accepted {
-                            self.lanHandshakeAccepted = true
-                            self.lanHandshakeTimeout?.cancel()
-                            self.lanStatus = "局域网传输中"
-                            self.refreshProgress()
-                        } else {
-                            self.stopLANTransfers(message: detail ?? "手表未能接收局域网传输。", state: .failed)
-                        }
-                    }
-                }, errorHandler: { [weak self] error in
-                    let detail = error.localizedDescription
-                    Task { @MainActor [weak self] in
-                        guard let self, self.lanGeneration == generation,
-                              self.activeLANSessionID == offer.sessionID, !self.lanHandshakeAccepted else { return }
-                        self.stopLANTransfers(message: "无法通知手表：\(detail)", state: .failed)
-                    }
-                })
-            } catch {
+                let response = try await self.requestLiveMessage(message)
                 guard self.lanGeneration == generation else { return }
+                guard response["accepted"] as? Bool == true else { throw self.lanError(response["message"] as? String ?? "手表未能接收歌曲。") }
+                self.confirmLANHandshake()
+                self.lanStatus = "局域网传输中"
+                self.refreshProgress()
+            } catch {
+                guard self.lanGeneration == generation, !self.lanHandshakeAccepted else { return }
                 self.stopLANTransfers(message: error.localizedDescription, state: .failed)
             }
         }
     }
 
-    private func stopLANTransfers(message: String, state: TransferRecord.State, notifyWatch: Bool = true) {
-        guard isLANActive || !lanRecordIDs.isEmpty else { return }
+    private func stopLANTransfers(message: String, state: TransferRecord.State, notifyWatch: Bool = true, includeWaiting: Bool = false) {
+        guard isLANActive || !lanRecordIDs.isEmpty || (includeWaiting && !waitingLANIDs.isEmpty) else { return }
         let sessionID = activeLANSessionID
-        let ids = lanRecordIDs
+        let ids = includeWaiting ? lanRecordIDs.union(waitingLANIDs) : lanRecordIDs
         closeLANSession()
+        if includeWaiting {
+            waitingLANIDs.removeAll()
+            ids.forEach { queuedLANSources.removeValue(forKey: $0) }
+        }
         if notifyWatch, let sessionID { sendLANCommand(LANTransferCommand(sessionID: sessionID, kind: .stop, fileID: nil)) }
         for id in ids { updateTransfer(id: id, state: state, message: message, onlyIfPending: true) }
         lanStatus = message
         refreshProgress()
+        updateSourceIdleTimer()
+        if !includeWaiting { startNextLANBatch() }
     }
 
     private func closeLANSession() {
@@ -895,12 +1049,10 @@ final class PhoneLibrary: NSObject, ObservableObject {
         activeLANSessionID = nil
         isPreparingLAN = false
         lanHandshakeAccepted = false
+        for id in lanRecordIDs { queuedLANSources.removeValue(forKey: id) }
         lanRecordIDs.removeAll()
         lanCompletedBytes.removeAll()
-        if let previous = savedIdleTimerDisabled {
-            UIApplication.shared.isIdleTimerDisabled = previous
-            savedIdleTimerDisabled = nil
-        }
+        updateSourceIdleTimer()
     }
 
     private func finishLANIfComplete() {
@@ -909,6 +1061,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
         let allStored = transfers.filter { lanRecordIDs.contains($0.id) }.allSatisfy { $0.state == .stored }
         closeLANSession()
         lanStatus = allStored ? "局域网传输完成" : "局域网传输已结束"
+        startNextLANBatch()
     }
 
     private func sendLANCommand(_ command: LANTransferCommand) {
@@ -1051,6 +1204,7 @@ extension PhoneLibrary: WCSessionDelegate {
     nonisolated func sessionReachabilityDidChange(_ session: WCSession) {
         DispatchQueue.main.async {
             self.refreshConnection(); self.refreshTransferControlState()
+            self.processSendSubmissions(); self.startNextLANBatch()
             PlaybackControlCenter.shared.connectionDidChange()
         }
     }
@@ -1096,13 +1250,13 @@ extension PhoneLibrary: WCSessionDelegate {
 }
 
 @MainActor
-private final class LANControlReplyGate {
-    private var continuation: CheckedContinuation<LANTransferControlReply, Error>?
+private final class LANMessageReplyGate {
+    private var continuation: CheckedContinuation<[String: Any], Error>?
     var timeout: Task<Void, Never>?
 
-    init(_ continuation: CheckedContinuation<LANTransferControlReply, Error>) { self.continuation = continuation }
+    init(_ continuation: CheckedContinuation<[String: Any], Error>) { self.continuation = continuation }
 
-    func finish(_ result: Result<LANTransferControlReply, Error>) {
+    func finish(_ result: Result<[String: Any], Error>) {
         guard let continuation else { return }
         self.continuation = nil
         timeout?.cancel(); timeout = nil
@@ -1119,4 +1273,11 @@ private final class LANEnqueueCompletion {
         completion = nil
         callback?(ids)
     }
+}
+
+@MainActor
+private struct LANSendSubmission {
+    let id: UUID
+    let tracks: [PhoneTrack]
+    let completion: LANEnqueueCompletion
 }

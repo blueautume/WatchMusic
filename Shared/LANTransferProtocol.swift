@@ -8,7 +8,7 @@ struct LANTransferSource {
     let url: URL
 }
 
-struct LANTransferFile: Codable, Equatable {
+struct LANTransferFile: Codable, Equatable, Sendable {
     let id: String
     let folder: String
     let fileName: String

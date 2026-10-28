@@ -6,6 +6,8 @@ struct LibraryView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var showingPlayer = false
     @State private var tab = 0
+    @State private var visibleTransferSummary: String?
+    @State private var transferSummaryToken = UUID()
 
     var body: some View {
         TabView(selection: $tab) {
@@ -20,6 +22,16 @@ struct LibraryView: View {
         }
         .toolbarBackground(AppPalette.background, for: .tabBar)
         .toolbarBackground(.visible, for: .tabBar)
+        .onReceive(library.$transferSummary) { summary in
+            visibleTransferSummary = summary
+            transferSummaryToken = UUID()
+        }
+        .task(id: transferSummaryToken) {
+            guard visibleTransferSummary != nil else { return }
+            do { try await Task.sleep(nanoseconds: 4_000_000_000) }
+            catch { return }
+            visibleTransferSummary = nil
+        }
         .sheet(isPresented: $showingPlayer) { PhoneNowPlayingView().presentationDragIndicator(.visible) }
         .alert("提示", isPresented: Binding(get: { !showingPlayer && (library.errorMessage != nil || player.errorMessage != nil) }, set: { if !$0 { library.errorMessage = nil; player.errorMessage = nil } })) {
             Button("好", role: .cancel) { library.errorMessage = nil; player.errorMessage = nil }
@@ -52,6 +64,11 @@ struct LibraryView: View {
 
     @ViewBuilder private var miniPlayer: some View {
         VStack(spacing: 0) {
+            if let summary = visibleTransferSummary {
+                Text(summary).font(.caption).foregroundStyle(AppPalette.accent)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20).padding(.top, 6).padding(.bottom, 8)
+            }
             RemotePlaybackControlsView()
             localMiniPlayer
         }.background(AppPalette.background)
@@ -141,6 +158,7 @@ private struct LibraryHome: View {
                         }
                         .contextMenu {
                             Button("发送到手表", systemImage: "applewatch.and.arrow.forward") { library.send(library.tracks(in: folder)) }
+                                .disabled(library.isImporting || library.tracks(in: folder).isEmpty)
                             Button("重命名", systemImage: "pencil") { folderName = folder.name; editingFolder = folder }
                             Button("删除目录", systemImage: "trash", role: .destructive) { deletingFolder = folder }
                         }
@@ -263,6 +281,7 @@ private struct FolderDetailView: View {
                         Button { library.send(tracks) } label: {
                             Image(systemName: "applewatch.and.arrow.forward").font(.title3).frame(width: 56, height: 48)
                         }.buttonStyle(.plain).background(AppPalette.surface, in: RoundedRectangle(cornerRadius: 14))
+                            .disabled(library.isImporting)
                             .accessibilityLabel("发送这些歌曲到手表")
                     }.listRowInsets(EdgeInsets()).listRowBackground(Color.clear)
                 }
@@ -354,9 +373,11 @@ private struct TrackBatchActions: View {
                     }.frame(maxWidth: .infinity, minHeight: 44)
                 }
                 Button { moving = true } label: { Label("移动", systemImage: "folder").frame(maxWidth: .infinity, minHeight: 44) }
-                Button(role: .destructive) { deleting = true } label: { Label("删除", systemImage: "trash").frame(maxWidth: .infinity, minHeight: 44) }.tint(.red)
+                    .disabled(library.isUpdatingTransferControls)
+                Button(role: .destructive) { deleting = true } label: { Label("删除", systemImage: "trash").frame(maxWidth: .infinity, minHeight: 44) }
+                    .tint(.red).disabled(library.isUpdatingTransferControls)
             }.font(.subheadline).buttonStyle(.bordered)
-                .disabled(tracks.isEmpty || library.isImporting || isSending || library.isUpdatingTransferControls)
+                .disabled(tracks.isEmpty || library.isImporting || isSending)
         }.padding(.horizontal, 20).padding(.vertical, 10).background(AppPalette.surface)
         .confirmationDialog("移动所选歌曲", isPresented: $moving, titleVisibility: .visible) {
             ForEach(library.folders) { folder in
@@ -416,6 +437,7 @@ private struct MusicTrackRow: View {
             }
             if !isSelecting { Menu {
                 Button("发送到手表", systemImage: "applewatch.and.arrow.forward") { library.send([track], retryPending: true) }
+                    .disabled(library.isImporting)
                 Button("重命名", systemImage: "pencil") { name = track.title; renaming = true }
                 Button("移动到目录", systemImage: "folder") { moving = true }
                 Button("删除手机副本", systemImage: "trash", role: .destructive) { deleting = true }
@@ -596,11 +618,11 @@ private struct TransferRow: View {
             return record.method == .localNetwork ? "正在校验和保存" : "等待手表确认"
         }
         guard record.state == .queued else { return record.state.title }
-        if record.method == .localNetwork && library.isPreparingLAN && record.lanSessionID == nil { return "正在准备…" }
+        if record.method == .localNetwork && library.isCurrentLANTransfer(record.id) && library.isPreparingLAN && record.lanSessionID == nil { return "正在准备…" }
         if fraction >= 1 { return "等待手表确认" }
         if metrics?.isTransferring == true { return "传输中" }
         if hasStarted { return "等待进度更新" }
-        if record.method == .localNetwork && library.isAwaitingLANAcceptance { return "等待手表接收" }
+        if record.method == .localNetwork && library.isCurrentLANTransfer(record.id) && library.isAwaitingLANAcceptance { return "等待手表接收" }
         return "等待传输"
     }
 

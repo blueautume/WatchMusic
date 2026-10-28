@@ -11,7 +11,7 @@ test_output_dir="$(mktemp -d "${TMPDIR:-/tmp}/phone-transfer-control.XXXXXX")"
 trap 'rm -rf "$test_output_dir"' EXIT
 mkdir -p "$test_output_dir/Sources/Shared" "$test_output_dir/Sources/PhoneApp"
 cp "$test_root"/Shared/*.swift "$test_output_dir/Sources/Shared/"
-for test_file in PhoneLibrary.swift PhoneLibrary+Bulk.swift PhoneResourceImport.swift LANHTTPServer.swift; do
+for test_file in PhoneLibrary.swift PhoneLibrary+Bulk.swift PhoneResourceImport.swift LANHTTPServer.swift LANSendPreparation.swift; do
   cp "$test_root/PhoneApp/$test_file" "$test_output_dir/Sources/PhoneApp/$test_file"
 done
 cp "$test_root/Tests/PhoneTransferControlProbe.swift" "$test_output_dir/Sources/"
