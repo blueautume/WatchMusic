@@ -31,16 +31,20 @@ struct NowPlayingView: View {
         )
         .background(AppPalette.background)
         .watchPage(title: "", action: { dismiss() }, symbol: "chevron.left")
-        .digitalCrownAccessory {
+        // The accessory wasn't mounted by this non-scrolling page, so its
+        // volume control never existed to request Crown focus.
+        // Keep the native control mounted at normal size/opacity behind the
+        // opaque page instead; hiding it would make native focus unreliable.
+        .background(alignment: .trailing) {
             WatchCrownVolumeControl(isFocused: acceptsCrownInput, isPlaying: player.isPlaying)
                 .frame(width: 28, height: 64)
-                .accessibilityLabel("系统音量，转动表冠调整")
+                .accessibilityHidden(true)
         }
-        .digitalCrownAccessory(acceptsCrownInput ? .visible : .hidden)
         .confirmationDialog(activeDialog?.title ?? "", isPresented: dialogPresented, titleVisibility: .visible) {
             dialogActions
         }
         .onAppear {
+            WatchCrownDiagnostics.record("page-appeared")
             isOnScreen = true
             #if DEBUG && targetEnvironment(simulator)
             if !previewApplied {
@@ -52,9 +56,32 @@ struct NowPlayingView: View {
             #endif
         }
         .onDisappear {
+            WatchCrownDiagnostics.record("page-disappeared")
             isOnScreen = false
             activeDialog = nil
         }
+        #if DEBUG && targetEnvironment(simulator)
+        .task {
+            guard ProcessInfo.processInfo.arguments.contains("-preview-crown-cycle") else { return }
+            // One cancellable test sequence exercises real presentation and
+            // NavigationStack teardown without synthesizing Crown/OS input.
+            do {
+                guard await WatchCrownDiagnostics.waitForInitialFocusRequest() else { return }
+                try await Task.sleep(for: .milliseconds(400))
+                guard isOnScreen else { return }
+                WatchCrownDiagnostics.record("cycle-dialog-open")
+                activeDialog = .speed
+                try await Task.sleep(for: .milliseconds(600))
+                guard isOnScreen else { return }
+                WatchCrownDiagnostics.record("cycle-dialog-close")
+                activeDialog = nil
+                try await Task.sleep(for: .milliseconds(600))
+                guard isOnScreen else { return }
+                WatchCrownDiagnostics.record("cycle-page-dismiss")
+                dismiss()
+            } catch { return }
+        }
+        #endif
     }
 
     private var dialogPresented: Binding<Bool> {
@@ -267,16 +294,19 @@ private struct WatchCrownVolumeControl: WKInterfaceObjectRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeWKInterfaceObject(context: Context) -> WKInterfaceVolumeControl {
+        WatchCrownDiagnostics.record("made")
         let control = WKInterfaceVolumeControl(origin: .local)
         control.setTintColor(UIColor(AppPalette.accent))
         return control
     }
 
     func updateWKInterfaceObject(_ object: WKInterfaceVolumeControl, context: Context) {
+        WatchCrownDiagnostics.record("updated", focused: isFocused, playing: isPlaying)
         context.coordinator.update(object, focused: isFocused, isPlaying: isPlaying)
     }
 
     static func dismantleWKInterfaceObject(_ object: WKInterfaceVolumeControl, coordinator: Coordinator) {
+        WatchCrownDiagnostics.record("dismantled")
         coordinator.stop(object)
     }
 
@@ -297,10 +327,14 @@ private struct WatchCrownVolumeControl: WKInterfaceObjectRepresentable {
                 focusTask = Task { @MainActor [weak self, weak control] in
                     // Let the representable attach before requesting native focus.
                     await Task.yield()
-                    guard !Task.isCancelled, self?.wantsFocus == true else { return }
-                    control?.focus()
+                    guard !Task.isCancelled, self?.wantsFocus == true, let control else { return }
+                    control.focus()
+                    WatchCrownDiagnostics.record("focus-requested")
                 }
-            } else { control.resignFocus() }
+            } else {
+                control.resignFocus()
+                WatchCrownDiagnostics.record("focus-resigned")
+            }
         }
 
         func stop(_ control: WKInterfaceVolumeControl) {
@@ -309,6 +343,7 @@ private struct WatchCrownVolumeControl: WKInterfaceObjectRepresentable {
             focusTask?.cancel()
             focusTask = nil
             control.resignFocus()
+            WatchCrownDiagnostics.record("focus-resigned")
         }
     }
 }

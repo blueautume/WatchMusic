@@ -1,0 +1,6 @@
+{"event": "made", "time": 1793270643.5453181}
+{"event": "updated", "focused": false, "playing": false, "time": 1793270643.704866}
+{"event": "focus-resigned", "time": 1793270643.705601}
+{"event": "page-appeared", "time": 1793270643.848102}
+{"event": "updated", "focused": true, "playing": false, "time": 1793270643.8592448}
+{"event": "focus-requested", "time": 1793270643.9718199}

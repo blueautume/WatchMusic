@@ -39,6 +39,8 @@ iPhone 首次启动会全屏展示协议入口，明确同意后才初始化音�
 - 新图标沿用参考图的手表与音符轮廓，以蓝色区分实验版；iPhone 提供浅色与深色图标，Watch 使用适配圆形裁切的深色版本。[生成提示词及导出说明](Brand/IconPrompt.txt)。
 - 文件管理只修改所在设备的副本。
 
+手机播放页按可用高度和文字实际高度布局，优先扩大封面，再分配区块间距，底部操作保留适量边距；小屏、大字或开启定时时可以滚动。手表播放器的原生音量控件常驻在不透明页面背景后，不改变页面布局；进入播放器、开始播放或关闭弹层后请求表冠焦点，离开或进入后台时释放。
+
 ## 传输进度
 
 所有新发送和重试均使用局域网传输：手机临时提供文件下载服务，手表通过 HTTP 接收并校验后保存。手机“传输”页分为“进行中”和“已传输”两个标签，无需选择传输方式。旧版普通 WatchConnectivity 任务的历史记录、取消和保存回执继续兼容，重试时统一走局域网。[实验说明与测试步骤](LANTransferExperiment.md)
@@ -92,6 +94,7 @@ Tests/run-watch-orientation-tests.sh
 Tests/run-watch-surface-tests.sh
 Tests/run-transfer-queue-estimate-tests.sh
 Tests/run-privacy-consent-tests.sh
+Tests/run-phone-playback-layout-tests.sh
 python3 Tests/check-legal-pages.py
 ```
 

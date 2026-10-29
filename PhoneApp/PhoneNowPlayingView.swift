@@ -5,14 +5,14 @@ struct PhoneNowPlayingView: View {
     @EnvironmentObject private var player: MusicPlayer
     @EnvironmentObject private var library: PhoneLibrary
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var showingQueue = false
 
     var body: some View {
         NavigationStack {
             GeometryReader { geometry in
                 ScrollView {
-                    let artworkSide = min(geometry.size.width - 56, max(160, min(geometry.size.height * 0.32, 330)))
-                    VStack(spacing: 22) {
+                    PhonePlayerPageLayout(viewport: geometry.size) {
                         HStack {
                             Text(player.currentURL?.deletingLastPathComponent().lastPathComponent ?? "本地音乐")
                                 .font(.caption).foregroundStyle(AppPalette.textSecondary).lineLimit(1)
@@ -22,22 +22,28 @@ struct PhoneNowPlayingView: View {
                                 info: PlaybackInfo(player: player)).equatable()
                         }
                         MusicArtwork(title: player.title, data: player.artworkData)
-                            .frame(width: artworkSide, height: artworkSide)
                             .clipShape(RoundedRectangle(cornerRadius: 32))
                             .shadow(color: AppPalette.accent.opacity(0.1), radius: 30, y: 16)
-                            .padding(.vertical, 8)
                         VStack(alignment: .leading, spacing: 10) {
-                            Text(player.title.isEmpty ? "未选择歌曲" : player.title).font(.system(size: 28, weight: .bold, design: .rounded)).lineLimit(3).frame(maxWidth: .infinity, alignment: .leading)
-                            if !player.artist.isEmpty { Text(player.artist).font(.subheadline).foregroundStyle(AppPalette.textSecondary).lineLimit(2) }
+                            Text(player.title.isEmpty ? "未选择歌曲" : player.title)
+                                .font(.system(.title, design: .rounded).weight(.bold))
+                                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 3)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            if !player.artist.isEmpty {
+                                Text(player.artist).font(.subheadline).foregroundStyle(AppPalette.textSecondary)
+                                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                            }
                         }
+                        .fixedSize(horizontal: false, vertical: true)
                         PlaybackProgress(player: player)
                         transportControls
                         secondaryControls
                         if let deadline = player.sleepTimerDeadline {
                             SleepTimerCountdown(deadline: deadline)
                         }
-                    }.padding(.horizontal, 28).padding(.top, 16).padding(.bottom, 28)
+                    }
                 }
+                .scrollBounceBehavior(.basedOnSize)
             }
             .background(AppPalette.background)
             .foregroundStyle(AppPalette.textPrimary)
@@ -106,6 +112,33 @@ struct PhoneNowPlayingView: View {
         .buttonStyle(.plain).foregroundStyle(AppPalette.textSecondary).padding(.top, 2)
     }
 
+}
+
+/// Measure text and controls at their natural height before sizing the artwork.
+/// The ScrollView can still grow beyond the viewport for large text or short screens.
+private struct PhonePlayerPageLayout: Layout {
+    let viewport: CGSize
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        arrangement(proposal: proposal, subviews: subviews).size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let placement = arrangement(proposal: ProposedViewSize(width: bounds.width, height: nil), subviews: subviews)
+        for (index, frame) in placement.frames.enumerated() {
+            subviews[index].place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                                  anchor: .topLeading, proposal: ProposedViewSize(frame.size))
+        }
+    }
+
+    private func arrangement(proposal: ProposedViewSize, subviews: Subviews) -> PhonePlaybackLayout.Arrangement {
+        let metrics = PhonePlaybackLayout(viewport: CGSize(width: proposal.width ?? viewport.width,
+                                                          height: viewport.height))
+        let heights = subviews.enumerated().map { index, view in
+            index == 1 ? CGFloat.zero : view.sizeThatFits(ProposedViewSize(width: metrics.contentWidth, height: nil)).height
+        }
+        return metrics.arrange(sectionHeights: heights)
+    }
 }
 
 /// The audio clock redraws only this subtree; menus never subscribe to a ticking publisher.

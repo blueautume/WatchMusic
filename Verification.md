@@ -285,3 +285,19 @@ Watch 重力采样另外改为 Core Motion 原生串行队列回调，移除 0.2
 验证：Debug、Release完整通用iOS Simulator构建（含Watch）通过，无源码编译警告；iOS/watchOS模拟器播放器集成各65项通过，覆盖旧0.7衰减及0静音迁移、真实解码器增益与播放恢复。HTML版本、离线约束、链接锚点、ZIP和两种构建内资源一致检查通过。iOS26.5原生模拟器实际验证音乐库无设置、传输页设置在清理左侧且空记录时仍可用、设置仅两项、设置与音乐库标签切换的播放条恢复，以及浅深色播放页只剩进度滑条和原四个操作图标。使用已有模拟器音频夹具，未播放用户音频；测试同意与播放恢复键及浅色外观已恢复。未安装或操作真机，实际表冠音量由用户手动确认。
 
 截图：[音乐库](Artifacts/Previews/SystemVolume/library-light.png)、[传输页设置位置](Artifacts/Previews/SystemVolume/transfers-settings-light.png)、[浅色播放页](Artifacts/Previews/SystemVolume/player-system-volume-light.png)、[深色播放页](Artifacts/Previews/SystemVolume/player-system-volume-dark.png)。
+
+## 手机播放页空间分配与 Watch 表冠实际挂载修复（2026-10-29）
+
+手机原播放页删除音量滑条后仍用内容自然高度和固定封面比例，底部留下空白。现采用独立 PhonePlaybackLayout 和 SwiftUI Layout：先测量文字、进度、播放控制与四操作图标的自然高度，将剩余空间优先给正方形封面，再分配区块间距，末控件距内容底部20pt。页面至少填满当前可用高度；小屏、大字、长标题或睡眠定时令内容超高时保留滚动范围，不压缩文字和操作区。菜单快照、局部时钟更新及原有操作保持。
+
+Watch 本轮确认了上一轮静态API审查遗漏的问题：40/49mm旧版实际 NavigationStack push 后都只有 page-appeared，未创建 WKInterfaceVolumeControl。digitalCrownAccessory 在当前无SwiftUI表冠宿主的页面未挂载附属内容，因此 focus 根本没有执行；播放器本身没有分页或滚动容器。现把正常28×64尺寸、正常透明度、enabled的原生音量控件常驻在不透明页面背景后，不添加可见音量条，不变动前景布局。继续按页面、真实播放激活、弹层、输出选择和前后台事件请求或释放原生焦点，没有生产轮询、延时重试、App增益模拟或系统音量写入。使用 [Apple WKInterfaceVolumeControl](https://developer.apple.com/documentation/watchkit/wkinterfacevolumecontrol) 的 [focus()](https://developer.apple.com/documentation/watchkit/wkinterfacevolumecontrol/focus())。
+
+验证：
+
+- 手机布局2137项断言通过，覆盖多种可用尺寸、标题高度和可选定时高度，检查方形封面、自然控件高度、无重叠、底部边距及大字溢出范围。iPhone17Pro浅深色、独立SE3默认/大字截图通过；SE3默认字号完整显示全部操作。CUA对大字滚动输入返回 noWindowsAvailable，未宣称实际滚到底通过；滚动内容范围另由几何断言验证。临时QA模拟器已删除，17Pro测试同意/播放键与浅色外观恢复。
+- Watch两种尺寸共6个真实native生命周期场景通过：正常挂载各6事件，倍速弹层不抢焦点各4事件，开关弹层与NavigationStack返回完整cycle各16事件。cycle仅在Debug模拟器明确标志下由一次可取消测试夹具驱动，等待实际首次focus请求信号后打开/关闭原生弹层，再调用同一dismiss，确认释放、再次请求、拆卸和清理后无迟到focus。不是手动界面操作，也不代表物理音量变化。40mm前后截图排除系统时钟角落后变化像素为0；49mm只检查修复后外观，旧截图含启动遮罩，不用作像素对比。
+- 最终Debug/Release完整通用模拟器构建（含Phone/Watch）通过，无源码编译警告；旧协议资源一致检查通过。没有安装、启动或操作真机，未播放用户音频。Watch本轮测试偏好及临时trace已清理。
+
+完整证据与回归命令见 [CrownMount](Artifacts/Previews/CrownMount/README.md)。记录仅在Debug模拟器且显式 -preview-crown-trace 时产生；真机和Release不记录。实际物理表冠焦点与蓝牙输出音量仍由用户手动验收：重新安装两端构建，手表连接耳机播放，转动表冠；再打开并关闭倍速/定时弹层，确认调节仍可用，返回音乐库确认列表滚动恢复。
+
+截图：[手机浅色](Artifacts/Previews/PlaybackLayoutV2/phone-player-light.png)、[手机深色](Artifacts/Previews/PlaybackLayoutV2/phone-player-dark.png)、[SE3默认字号](Artifacts/Previews/PlaybackLayoutV2/se3-player-default.png)、[SE3大字顶部](Artifacts/Previews/PlaybackLayoutV2/se3-player-accessibility-top.png)、[40mm手表修复后](Artifacts/Previews/CrownMount/40-fixed.png)、[49mm手表修复后](Artifacts/Previews/CrownMount/49-fixed.png)。
