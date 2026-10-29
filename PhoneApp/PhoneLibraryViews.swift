@@ -5,6 +5,7 @@ struct LibraryHome: View {
     @Environment(\.phonePlayer) private var player
     @Environment(\.pinnedPlayerClearance) private var playerClearance
     let openPlayer: () -> Void
+    let openSettings: () -> Void
     @State private var search = ""
     @State private var showCreate = false
     @State private var folderName = ""
@@ -60,6 +61,10 @@ struct LibraryHome: View {
         }
         .searchable(text: $search, prompt: "搜索目录")
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button(action: openSettings) { Image(systemName: "gearshape") }
+                .accessibilityLabel("设置")
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     folderName = ""; showCreate = true

@@ -5,11 +5,11 @@
 ```sh
 git clone git@github.com:blueautume/WatchMusic.git
 cd WatchMusic
-git switch experiment/iphone-background-transfer
+git switch main
 open OfflineWatchPlayerLab.xcodeproj
 ```
 
-当前开发分支沿用 `experiment/iphone-background-transfer`。本轮以 `main` 的局域网版本 `54c6da9` 为基线，恢复双端前台传输，并保留移除跨设备播放同步与互控的改动。
+当前在 `main` 主分支开发。应用采用双端前台局域网传输，两端播放独立，不同步或互相控制播放。
 
 ## 打开与运行
 
@@ -22,6 +22,12 @@ open OfflineWatchPlayerLab.xcodeproj
 - 桌面名称：`随身音乐 Lab`；版本 `0.1.0 (1)`
 
 两个 target 继续使用原工程的开发团队与自动签名配置。真机运行时由 Xcode 为新 ID 创建相应描述文件。最低 iOS 17 / watchOS 10；手表双指互点下一首需要 watchOS 11 和支持该手势的设备。
+
+## 隐私协议与技术支持
+
+iPhone 首次启动会全屏展示协议入口，明确同意后才初始化音乐库、播放器与传输服务；本机记录当前协议版本和同意时间，再次启动直接进入。取消保持未进入状态，协议版本更新后重新询问。音乐库左上角设置仅提供“隐私协议”和“关于”，可离线阅读隐私协议、用户协议，以及撤回同意。撤回会停止本机播放和传输、清除同意记录，保留音乐与传输队列；Apple Watch 不添加签署流程。
+
+可部署的 [隐私协议](PhoneApp/Legal/privacy.html)、[用户协议](PhoneApp/Legal/terms.html)、[技术支持](PhoneApp/Legal/support.html) 也是应用内的离线文档，避免分别维护内容。运行 `bash Website/package.sh` 生成 [静态网页压缩包](Artifacts/Deployment/watchmusic-web-2026-10-29.zip)，解压上传即可；详见 [部署说明](Website/README.md)。网页支持深浅色模式，无外部依赖或追踪代码。开发者：李浩（个人开发者），支持邮箱：2114581274@qq.com。
 
 ## 实验范围
 
@@ -85,6 +91,8 @@ Tests/run-transfer-source-version-tests.sh
 Tests/run-watch-orientation-tests.sh
 Tests/run-watch-surface-tests.sh
 Tests/run-transfer-queue-estimate-tests.sh
+Tests/run-privacy-consent-tests.sh
+python3 Tests/check-legal-pages.py
 ```
 
 库存去重测试检查实际文件查询及指纹缓存失效，文件版本测试覆盖同大小修改、保留 mtime 的写入、原子替换和删除。库存测试也可在已启动的 iPhone 模拟器运行：

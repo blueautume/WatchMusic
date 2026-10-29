@@ -424,6 +424,71 @@ struct PhoneForegroundQueueProbe {
         for file in watchPeer.offers[1].files { watchPeer.finish(file, in: watchPeer.offers[1], on: watch) }
         watch.clearAllTasks()
 
+        // Privacy withdrawal retires an existing model, including callbacks
+        // already in flight. Re-agreement restores intent in a fresh model.
+        let withdrawalRoot = try directory("privacy-withdrawal")
+        let withdrawalPeer = ForegroundQueuePeer()
+        let withdrawal = model(withdrawalPeer, at: withdrawalRoot)
+        _ = await send([a1, b1], on: withdrawal)
+        try await ready(1, on: withdrawal, peer: withdrawalPeer)
+        let withdrawalOffer = withdrawalPeer.offers[0]
+        let manualFile = withdrawalOffer.files[1]
+        withdrawal.pauseTransfers(ids: [manualFile.id])
+        try await wait("manual pause before withdrawal") {
+            !withdrawal.isUpdatingTransferControls && withdrawal.transfers.first { $0.id == manualFile.id }?.state == .paused
+        }
+        withdrawal.shutdownForPrivacyWithdrawal()
+        withdrawal.shutdownForPrivacyWithdrawal()
+        let withdrawnTransfers = try Data(contentsOf: withdrawalRoot.appendingPathComponent("transfers.json"))
+        let withdrawnQueue = try Data(contentsOf: withdrawalRoot.appendingPathComponent("lan-phone-queue.json"))
+        try check(!withdrawal.isLANActive && !withdrawal.canSend && !withdrawal.isImporting,
+                  "Withdrawal closes the source and disables business work idempotently")
+        try check(withdrawal.transfers.allSatisfy { $0.state == .paused } &&
+                  withdrawal.transfers.first { $0.id == manualFile.id }?.resumesWhenForeground == false,
+                  "Withdrawal parks active work and preserves the user's separate manual pause")
+        withdrawal.sceneDidBecomeActive()
+        withdrawal.setTransferQueueProbeReachable(true)
+        withdrawal.retryAutomaticTransfersForProbe()
+        withdrawal.receiveTransferQueueProbeEvent(LANTransferEvent(sessionID: withdrawalOffer.sessionID,
+            fileID: withdrawalOffer.files[0].id, kind: .stored, completedBytes: withdrawalOffer.files[0].byteCount,
+            totalBytes: withdrawalOffer.files[0].byteCount, message: nil))
+        withdrawal.clearAllTasks()
+        withdrawal.clearCompletedTransfers()
+        withdrawal.importFiles([fixture], into: PhoneFolder(name: folders[0].lastPathComponent))
+        let refusedAfterWithdrawal = await send([a2], on: withdrawal)
+        try check(refusedAfterWithdrawal.isEmpty && !withdrawal.createFolder(prefix + "-withdrawn"),
+                  "A retired model rejects both new transfer submissions and file mutations")
+        try await Task.sleep(nanoseconds: 80_000_000)
+        try check(withdrawalPeer.offers.count == 1 && !withdrawal.isLANActive &&
+                  (try? Data(contentsOf: withdrawalRoot.appendingPathComponent("transfers.json"))) == withdrawnTransfers &&
+                  (try? Data(contentsOf: withdrawalRoot.appendingPathComponent("lan-phone-queue.json"))) == withdrawnQueue,
+                  "Late receipts and foreground callbacks cannot restart or rewrite a retired model")
+        let agreedAgain = model(withdrawalPeer, at: withdrawalRoot)
+        try agreedAgain.restoreTransferQueueForProbe()
+        try check(agreedAgain.transfers.first { $0.id == manualFile.id }?.resumesWhenForeground == false,
+                  "A new model restores the manual pause without changing consent-related saved intent")
+        agreedAgain.sceneDidBecomeActive()
+        try await ready(2, on: agreedAgain, peer: withdrawalPeer)
+        let afterConsent = withdrawalPeer.offers[1]
+        try check(afterConsent.files.map(\.id) == [withdrawalOffer.files[0].id],
+                  "Re-agreement resumes only automatically parked work in FIFO order")
+        withdrawalPeer.finish(afterConsent.files[0], in: afterConsent, on: agreedAgain)
+        agreedAgain.resumeTransfers(ids: [manualFile.id])
+        try await ready(3, on: agreedAgain, peer: withdrawalPeer)
+        withdrawalPeer.finish(withdrawalPeer.offers[2].files[0], in: withdrawalPeer.offers[2], on: agreedAgain)
+        try check(agreedAgain.pendingCount == 0 && agreedAgain.storedTransfers.count == 2,
+                  "The independently paused item resumes only after the user's explicit start")
+        agreedAgain.clearAllTasks()
+
+        let importCancellation = PhoneImportCancellation()
+        importCancellation.cancel()
+        do {
+            _ = try PhoneResourceImport.audio(fixture, into: folders[0], cancellation: importCancellation)
+            throw ProbeFailure.failed("A cancelled importer must not commit a file")
+        } catch is CancellationError {
+            try check(true, "An importer cancelled before coordination cannot create a local copy")
+        }
+
         for (index, url) in realIndexes.enumerated() {
             try check((try? Data(contentsOf: url)) == realIndexBytes[index], "Probe leaves real \(url.lastPathComponent) untouched")
         }

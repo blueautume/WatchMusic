@@ -255,3 +255,22 @@ Watch 重力采样另外改为 Core Motion 原生串行队列回调，移除 0.2
 最新截图：[49mm竖屏播放器](Artifacts/Previews/ImmersiveWatch/49-player-portrait.png)、[49mm横屏播放器](Artifacts/Previews/ImmersiveWatch/49-player-landscape-right.png)、[49mm横屏列表](Artifacts/Previews/ImmersiveWatch/49-library-landscape-right.png)、[40mm横屏列表](Artifacts/Previews/ImmersiveWatch/40-library-right.png)、[40mm反向横屏](Artifacts/Previews/ImmersiveWatch/40-player-left.png)、[横屏接收](Artifacts/Previews/ImmersiveWatch/49-transfer-landscape-left.png)。所有截图为模拟器夹具，测试不播放用户音乐。临时空目录按当前沙盒路径清理，未操作任何真机。
 
 [本轮自定义返回与全画布导航过渡短片](Artifacts/Previews/ImmersiveWatch/40-navigation.mp4)。40mm的8个临时空目录与49mm的8个唯一测试目录均已按当前沙盒路径清理。
+
+## iPhone 协议同意、精简设置与部署网页（2026-10-29）
+
+本轮在 `main` 开发。iPhone 通过独立 PrivacyConsentGate 检查当前协议版本：首次、无效记录或版本变化时全屏提示，仅底部并排灰色“取消”和主题色“同意并继续”，另提供离线协议阅读入口。取消不写入记录、不初始化 PhoneLibrary / MusicPlayer，停留可再次查看协议的页面；同意仅在本机保存协议版本和时间，再次启动直接进入业务页面。缺少协议资源时不允许同意。Apple Watch 没有新增签署流程。
+
+音乐库左上角增加设置，首页仅“隐私协议”和“关于”。二级协议页可查看隐私协议、用户协议与撤回同意；关于显示真实 Bundle 版本、李浩（个人开发者）及邮件支持入口。设置整个路由期间收起固定播放条，避免遮挡协议正文。撤回先停止本机播放并清理系统媒体信息，然后关闭 HTTP / WC 委托、所有发送、导入、进度观察、消息等待和元数据任务，清除同意记录并返回门禁页；保留本地音乐与传输队列。取消导入使用 64KiB 分块读取与 NSFileCoordinator 取消，不依赖对象释放才能停止。
+
+三个自包含 HTML 位于 PhoneApp/Legal，既是应用内离线资源，也是网页部署源；内联 CSS、无 JavaScript / 外部资源 / 统计，适配深浅色、窄屏与打印。WKWebView 使用临时数据存储、禁用脚本，仅允许随包附带的三个文件与页内锚点；用户主动点击外部链接才交由系统浏览器或邮件客户端处理。Website/package.sh 生成的部署包仅包含 privacy.html、terms.html、support.html 及 support 的 index.html 副本。
+
+协议文字按代码审计描述：系统文件选择器导入 MP3/FLAC，本机音乐/播放/传输信息，配对设备局域网 HTTP（未声明 TLS 或端到端加密）、临时令牌与校验、系统备份、独立删除，以及用户自愿支持邮件和网站托管日志。隐私披露与同意设计参考 [Apple 5.1.1](https://developer.apple.com/app-store/review/guidelines/#data-collection-and-storage) 与 [个人信息保护法第十四至十七条](https://www.cac.gov.cn/2021-08/20/c_1631050028355286.htm)，没有把本机数据表述为开发者服务端收集。
+
+验证结果：
+
+- 同意状态 25 项断言通过，覆盖取消不写、阅读后重开、版本变化、有效时间、损坏记录、重复事件及撤回清除；前台队列探针 99 项（新增撤回、迟到回执、拒绝操作、重新同意恢复意图与导入取消），既有批量文件操作 35 项通过。
+- 最终 Debug / Release 通用 iOS Simulator 完整构建（含 Watch target）成功，无源码编译警告；协议版本、全部相对链接和锚点、无外部依赖、部署 zip 与 Debug / Release 应用内文档字节一致检查通过。
+- iOS 26.5 模拟器实际操作首次提示、取消、未同意离线阅读、HTML 互链、同意后进入、冷启动跳过、设置仅两项、关于、撤回后清除记录返回门禁；已有三首模拟器夹具音乐保留。测试签署键与播放恢复键恢复，外观恢复原浅色；没有安装、启动或操作真机，没有发送邮件。
+- 浏览器检查桌面深色与390px浅色窄屏、正文互链和FAQ展开，没有横向溢出。静态网页交付用户部署，没有注册或发布托管网站。
+
+界面：[浅色首次提示](Artifacts/Previews/PrivacyConsent/consent-light.png)、[深色首次提示](Artifacts/Previews/PrivacyConsent/consent-dark.png)、[精简设置](Artifacts/Previews/PrivacyConsent/settings-dark.png)、[离线隐私协议](Artifacts/Previews/PrivacyConsent/privacy-offline-dark.png)、[关于](Artifacts/Previews/PrivacyConsent/about-dark.png)。网页：[桌面隐私页](Artifacts/Previews/Legal/privacy-desktop-dark.png)、[手机支持页](Artifacts/Previews/Legal/support-mobile-light.png)。部署使用 [压缩包](Artifacts/Deployment/watchmusic-web-2026-10-29.zip) 和 [说明](Website/README.md)。

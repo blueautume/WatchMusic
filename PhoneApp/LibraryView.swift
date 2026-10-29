@@ -19,14 +19,18 @@ struct LibraryView: View {
     @Environment(\.phonePlayer) private var player
     @Environment(\.scenePhase) private var scenePhase
     @State private var showingPlayer = false
+    @State private var showingSettings = false
     @State private var tab = 0
     @State private var hasPlayer = false
     @State private var tabBarClearance: CGFloat = 68
 
+    private var isInSettings: Bool { tab == 0 && showingSettings }
+
     var body: some View {
         TabView(selection: $tab) {
             NavigationStack {
-                LibraryHome(openPlayer: { showingPlayer = true })
+                LibraryHome(openPlayer: { showingPlayer = true }, openSettings: { showingSettings = true })
+                    .navigationDestination(isPresented: $showingSettings) { PhoneSettingsView() }
             }
             .tabItem { Label("音乐库", systemImage: "music.note.list") }.tag(0)
 
@@ -45,11 +49,13 @@ struct LibraryView: View {
         .overlay(alignment: .bottom) {
             // The overlay's only view is the actual 72pt bar. Offset moves its
             // drawing and hit region together, without a full-screen container.
-            PinnedPlayerView(openPlayer: { showingPlayer = true })
-                .padding(.horizontal, PinnedPlayerLayout.horizontalMargin)
-                .offset(y: -(tabBarClearance + PinnedPlayerLayout.tabBarGap))
+            if !isInSettings {
+                PinnedPlayerView(openPlayer: { showingPlayer = true })
+                    .padding(.horizontal, PinnedPlayerLayout.horizontalMargin)
+                    .offset(y: -(tabBarClearance + PinnedPlayerLayout.tabBarGap))
+            }
         }
-        .environment(\.pinnedPlayerClearance, hasPlayer ? PinnedPlayerLayout.listClearance : 0)
+        .environment(\.pinnedPlayerClearance, hasPlayer && !isInSettings ? PinnedPlayerLayout.listClearance : 0)
         .onReceive(playerPresence) { hasPlayer = $0 }
         .overlay(alignment: .top) { TransferSummaryToast() }
         .overlay { PhonePlayerErrorPresenter(isShowingPlayer: showingPlayer) }
