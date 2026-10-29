@@ -1,0 +1,14 @@
+{"event": "made", "time": 1793293481.328439}
+{"event": "updated", "focused": false, "playing": false, "time": 1793293481.490057}
+{"event": "focus-resigned", "time": 1793293481.490969}
+{"event": "page-appeared", "time": 1793293481.6750998}
+{"event": "updated", "focused": true, "playing": false, "time": 1793293481.694607}
+{"event": "volume-feedback-updated", "time": 1793293481.7004251}
+{"event": "focus-requested", "time": 1793293481.832555}
+{"event": "volume-feedback-shown", "time": 1793293482.122929}
+{"event": "volume-feedback-updated", "time": 1793293482.123238}
+{"event": "volume-feedback-updated", "time": 1793293482.7631168}
+{"event": "volume-feedback-hidden", "time": 1793293484.164688}
+{"event": "volume-feedback-shown", "time": 1793293484.651492}
+{"event": "volume-feedback-updated", "time": 1793293484.652614}
+{"event": "volume-feedback-hidden", "time": 1793293486.074264}

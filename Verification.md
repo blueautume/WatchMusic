@@ -366,3 +366,11 @@ python3 Tests/run-watch-crown-mount-probe.py WATCH_SIMULATOR_UDID /absolute/path
 Debug / Release 通用模拟器完整构建通过（含 Watch），无 Swift 源码编译警告。40mm、49mm 竖屏及40mm向左横屏实际页面音量场景各 14 个生命周期事件通过，覆盖显示、调节更新、隐藏和再次显示；截图确认细条位于右上角且无文字，横屏没有覆盖歌名或系统时钟。使用 Debug 音量事件夹具，未操作真机、未播放用户音频。用户既有本地修改保留。
 
 截图：[40mm 小音量条](Artifacts/Previews/CompactVolume/40mm/volume-visible.png)、[40mm 隐藏后](Artifacts/Previews/CompactVolume/40mm/volume-dismissed.png)、[49mm 小音量条](Artifacts/Previews/CompactVolume/49mm/volume-visible.png)、[49mm 隐藏后](Artifacts/Previews/CompactVolume/49mm/volume-dismissed.png)。
+
+## 固定页面右上角的竖向音量条（2026-10-30）
+
+按用户确认，音量条固定在当前页面右上角，屏幕旋转后仍保持这个逻辑位置。删除按表冠、时钟或内容区域重新定位的逻辑，位置统一为距顶40pt、距右8pt。样式改为5×32pt竖向胶囊，音量填充从下向上平滑变化；显隐只组合向右14pt位移与透明度，不使用纵向位移或顶部缩放。继续在最后一次音量变化1.4秒后隐藏。
+
+Debug / Release 完整通用模拟器构建通过（含Watch）。40mm的竖屏、左横屏、右横屏、倒置，以及49mm竖屏共5个真实页面场景通过，每场景14个生命周期事件，均包含Crown焦点请求与两次显示/隐藏。截图确认旋转后音量条仍位于当前页面右上角；模拟器截图使用物理屏幕方向，横屏画面中的条随页面一起旋转。使用Debug音量事件夹具，未操作真机、未播放用户音频；用户原有本地修改保留。
+
+截图：[40mm竖屏](Artifacts/Previews/VerticalVolume/40mm-portrait/volume-visible.png)、[40mm左横屏](Artifacts/Previews/VerticalVolume/40mm-landscape-left/volume-visible.png)、[40mm右横屏](Artifacts/Previews/VerticalVolume/40mm-landscape-right/volume-visible.png)、[40mm倒置](Artifacts/Previews/VerticalVolume/40mm-upside-down/volume-visible.png)、[49mm竖屏](Artifacts/Previews/VerticalVolume/49mm-portrait/volume-visible.png)。对应隐藏后截图与trace保存在同目录。

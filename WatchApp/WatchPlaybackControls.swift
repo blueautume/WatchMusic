@@ -258,23 +258,19 @@ private struct WatchPlaybackPageContent: View {
 private struct WatchVolumeFeedbackOverlay: View {
     @StateObject private var feedback = WatchVolumeFeedback()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.watchContentViewport) private var viewport
     let isActive: Bool
 
     var body: some View {
-        GeometryReader { geometry in
-            let frame = barFrame(in: geometry.size)
-            ZStack(alignment: .topLeading) {
-                // Keep observing after the animated bar disappears.
-                Color.clear
-                if feedback.isVisible {
-                    volumeBar
-                        .transition(reduceMotion ? .opacity :
-                            .scale(scale: 0.65, anchor: .trailing)
-                                .combined(with: .offset(x: 10))
-                                .combined(with: .opacity))
-                        .offset(x: frame.minX, y: frame.minY)
-                }
+        ZStack(alignment: .topTrailing) {
+            // Position in the page's coordinates, independent of the physical
+            // Crown and charging orientation. Keep the observer mounted.
+            Color.clear
+            if feedback.isVisible {
+                volumeBar
+                    .padding(.top, 40)
+                    .padding(.trailing, 8)
+                    .transition(reduceMotion ? .opacity :
+                        .offset(x: 14).combined(with: .opacity))
             }
         }
         .ignoresSafeArea()
@@ -308,13 +304,13 @@ private struct WatchVolumeFeedbackOverlay: View {
 
     private var volumeBar: some View {
         GeometryReader { geometry in
-            ZStack(alignment: .leading) {
+            ZStack(alignment: .bottom) {
                 Capsule().fill(AppPalette.accent.opacity(0.24))
                 Capsule().fill(AppPalette.accent)
-                    .frame(width: geometry.size.width * CGFloat(feedback.volume))
+                    .frame(height: geometry.size.height * CGFloat(feedback.volume))
             }
         }
-        .frame(width: 44, height: 5)
+        .frame(width: 5, height: 32)
         .clipShape(Capsule())
         .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: feedback.volume)
         .accessibilityElement(children: .ignore)
@@ -322,26 +318,6 @@ private struct WatchVolumeFeedbackOverlay: View {
         .accessibilityValue("百分之\(Int((feedback.volume * 100).rounded()))")
     }
 
-    private func barFrame(in size: CGSize) -> CGRect {
-        let metrics = viewport?.metrics ?? WatchSurfaceMetrics(physicalSize: size, orientation: .portrait)
-        let insets = metrics.pageInsets(hasAction: true, hasTitle: false)
-        var frame = CGRect(x: size.width - 56, y: 12, width: 44, height: 5)
-        if insets.headerHeight == 0 {
-            // Rotated pages start with metadata instead of a header. Use its
-            // following gap so the bar doesn't cover a song title.
-            let layout = WatchPlaybackLayout(size: size, minimumBottom: insets.bottomControlBottom)
-            frame.origin.y = layout.metadataHeight + max(0, (layout.spacing - frame.height) / 2)
-        }
-        let clock = metrics.clockFrame
-        if frame.intersects(clock.insetBy(dx: -4, dy: -4)) {
-            if clock.width >= clock.height { frame.origin.y = clock.maxY + 4 }
-            else { frame.origin.x = max(12, clock.minX - frame.width - 4) }
-        }
-        if frame.intersects(insets.backFrame) {
-            frame.origin.y = insets.backFrame.maxY + 1
-        }
-        return frame
-    }
 }
 
 private enum PlaybackDialog: Equatable {
