@@ -4,39 +4,39 @@
   "assets": [
     {
       "file": "screenshots/zh-Hans/iphone/01.png",
-      "width": 1320,
-      "height": 2868,
+      "width": 1206,
+      "height": 2622,
       "kind": "iphone",
       "locale": "zh-Hans",
       "encoding": "RGB PNG; no alpha",
-      "sha256": "757a204781f5ff9dc803d8261425b369553750ce3ea1df6692043e78e08cecaf"
+      "sha256": "b2f2fb2435fac7224fc454632993901d8bbfe2a23d852583fb9250be476faf41"
     },
     {
       "file": "screenshots/zh-Hans/iphone/02.png",
-      "width": 1320,
-      "height": 2868,
+      "width": 1206,
+      "height": 2622,
       "kind": "iphone",
       "locale": "zh-Hans",
       "encoding": "RGB PNG; no alpha",
-      "sha256": "81a38dfb9c8068632bd0f6243a0053420fceac9b5316a483f72e2930935e68ba"
+      "sha256": "3cfca53d6b8bd780033f4f9bf3b0e68f6f81fc7eadfa6bcdac16bcaf1a6fa904"
     },
     {
       "file": "screenshots/zh-Hans/iphone/03.png",
-      "width": 1320,
-      "height": 2868,
+      "width": 1206,
+      "height": 2622,
       "kind": "iphone",
       "locale": "zh-Hans",
       "encoding": "RGB PNG; no alpha",
-      "sha256": "424b2394ae6cfac6406a9c2357ea481b4fadd7df2a3104599cba4d830bf5c0ea"
+      "sha256": "53b51e45d2ecf57443510c0d7f072dbe45fc00e83373afde14b66612d63cbc21"
     },
     {
       "file": "screenshots/zh-Hans/iphone/04.png",
-      "width": 1320,
-      "height": 2868,
+      "width": 1206,
+      "height": 2622,
       "kind": "iphone",
       "locale": "zh-Hans",
       "encoding": "RGB PNG; no alpha",
-      "sha256": "1905078bd84cda227fecdf0c3ed231b71a3acb9fc975386e7873e8aec9056b49"
+      "sha256": "c8268bdd12ab64710357608133a1d99d8910e314ce9471eb2e20a87f18bb96c2"
     },
     {
       "file": "creative/header-zh-Hans.png",
@@ -58,39 +58,39 @@
     },
     {
       "file": "screenshots/en-US/iphone/01.png",
-      "width": 1320,
-      "height": 2868,
+      "width": 1206,
+      "height": 2622,
       "kind": "iphone",
       "locale": "en-US",
       "encoding": "RGB PNG; no alpha",
-      "sha256": "17b89f5670498e3aac3d6b43c659a80a099ca88a159f429b0cff82913223ec77"
+      "sha256": "f19691de5827be5cf2b20d91f2a86663535e7d1b2a411f1978914c92a4182688"
     },
     {
       "file": "screenshots/en-US/iphone/02.png",
-      "width": 1320,
-      "height": 2868,
+      "width": 1206,
+      "height": 2622,
       "kind": "iphone",
       "locale": "en-US",
       "encoding": "RGB PNG; no alpha",
-      "sha256": "96e3bce75274114b8c5206aafc4e825b4d227c8f29c17ade32f457ea4912b4cc"
+      "sha256": "a598817709235db6890f3d3f8c0262d04857f769a5766a1634e4459bb88414d6"
     },
     {
       "file": "screenshots/en-US/iphone/03.png",
-      "width": 1320,
-      "height": 2868,
+      "width": 1206,
+      "height": 2622,
       "kind": "iphone",
       "locale": "en-US",
       "encoding": "RGB PNG; no alpha",
-      "sha256": "afbf482c197b829cf13325b13cc1298404c8bc865b21ebdfb5b7118841af869b"
+      "sha256": "42d24bb3d87de360c194b8a5a2791fe654ddc4b5db995077fad40130ce35c85c"
     },
     {
       "file": "screenshots/en-US/iphone/04.png",
-      "width": 1320,
-      "height": 2868,
+      "width": 1206,
+      "height": 2622,
       "kind": "iphone",
       "locale": "en-US",
       "encoding": "RGB PNG; no alpha",
-      "sha256": "c947acb9ad44624401131fe9c99ca6687d9fe0406785774baa6d3c184e997265"
+      "sha256": "e410fbd0ea2a4c2fcad454c4f1324f7110d43d7ff472ab8a73d5e789c508dddc"
     },
     {
       "file": "creative/header-en-US.png",

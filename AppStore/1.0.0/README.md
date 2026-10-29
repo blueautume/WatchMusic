@@ -1,11 +1,11 @@
 # WatchMusic 1.0.0 上架交付
 
-打开 `index.html`：浏览标题图、搜索图、手机和手表截图，直接复制中英文名称、副标题、推广文本、描述和关键词。详细填写步骤在 `submission-guide.md`。
+打开 `index.html`：浏览标题图、搜索图、手机和手表截图，直接复制中英文名称、副标题、推广文本、描述和关键词。详细填写步骤在 `submission-guide.md`。手机宣传图已修正为当前 App Store Connect“带灵动岛的 iPhone（中等显示屏）”栏位所接受的 1206×2622；请从下面的正式上传目录选图。
 
 ## 交付目录
 
-- `screenshots/zh-Hans/iphone`：4张中文短文案截图，1320×2868。
-- `screenshots/en-US/iphone`：4张英文短文案截图，1320×2868；实际App界面仍为简中。
+- `screenshots/zh-Hans/iphone`：4张中文短文案截图，1206×2622。
+- `screenshots/en-US/iphone`：4张英文短文案截图，1206×2622；实际App界面仍为简中。
 - `screenshots/watch`：4张原生Watch界面，422×514，两种商店语言共用。
 - `creative/header-*.png`：中英文标题图，3840×1646。
 - `creative/search-*.png`：中英文搜索结果图，1920×1280。
@@ -13,6 +13,8 @@
 - `metadata-*.md`、`metadata.json`：商店字段；`keyword-bank.md` 为相关备用词，不能全部塞入关键词栏。
 - `manifest.json`：正式16张上传图片的尺寸、SHA-256与用途。
 - `qa`：网页响应式检查截图与验证记录，不用于App Store上传。
+
+仅重新上传手机截图可直接用 `Artifacts/Deployment/watchmusic-iphone-1206x2622.zip`，其中按中文/英文分为两组，每组4张。
 
 ## 网站与素材分开使用
 

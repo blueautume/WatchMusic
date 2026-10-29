@@ -9,7 +9,7 @@ repo=root.parents[1]
 assets=[]
 for locale in ('zh-Hans','en-US'):
     for n in range(1,5):
-        assets.append((f'screenshots/{locale}/iphone/0{n}.png',(1320,2868),'iphone',locale))
+        assets.append((f'screenshots/{locale}/iphone/0{n}.png',(1206,2622),'iphone',locale))
     assets.extend([(f'creative/header-{locale}.png',(3840,1646),'header',locale),
                    (f'creative/search-{locale}.png',(1920,1280),'search',locale)])
 for n in range(1,5):assets.append((f'screenshots/watch/0{n}.png',(422,514),'watch','shared'))

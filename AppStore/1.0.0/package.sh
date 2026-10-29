@@ -3,6 +3,7 @@ set -euo pipefail
 store_dir="$(cd "$(dirname "$0")" && pwd)"
 project_dir="$(cd "$store_dir/../.." && pwd)"
 python3 "$store_dir/tools/validate-package.py"
+python3 "$store_dir/tools/package-iphone.py"
 archive="$project_dir/Artifacts/Deployment/watchmusic-appstore-1.0.0.zip"
 mkdir -p "$(dirname "$archive")"
 stage_dir="$(mktemp -d "${TMPDIR:-/tmp}/watchmusic-appstore.XXXXXX")"

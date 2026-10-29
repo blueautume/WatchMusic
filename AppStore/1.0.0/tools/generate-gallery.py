@@ -15,7 +15,7 @@ html='''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name
 <h2 id="creative">标题与搜索结果</h2><p>蓝色品牌 · 腕间离线音乐 · 按展示位分别构图</p>'''
 for lang,title in [('zh-Hans','简体中文'),('en-US','English')]:
  html+=f'<h3>{title}</h3><div class="wide"><figure><a href="creative/header-{lang}.png"><img src="creative/header-{lang}.png" alt="{title}标题素材"></a><figcaption>标题 · 3840 × 1646</figcaption></figure><figure><a href="creative/search-{lang}.png"><img src="creative/search-{lang}.png" alt="{title}搜索结果素材"></a><figcaption>搜索结果 · 1920 × 1280</figcaption></figure></div>'
-html+='<h2 id="phone">iPhone · 1320 × 2868</h2><p>按 01—04 顺序上传到 iPhone 最大显示屏组。英文版只翻译营销短文案，真实应用界面仍是简体中文。</p>'
+html+='<h2 id="phone">iPhone · 1206 × 2622</h2><p>按 01—04 顺序上传到“带灵动岛的 iPhone（中等显示屏）”栏。英文版只翻译营销短文案，真实应用界面仍是简体中文。</p>'
 for lang,title in [('zh-Hans','简体中文'),('en-US','English')]:
  html+=f'<h3>{title}</h3><div class="phones">'
  for i,name in enumerate(['离线聆听','目录整理','长按多选','目录歌曲'],1):

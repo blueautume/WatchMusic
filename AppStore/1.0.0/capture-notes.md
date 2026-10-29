@@ -2,14 +2,14 @@
 
 拍摄日期：2026-10-29。应用：当前正式标识 WatchMusic / 随身音乐，1.0.0 (1)。所有 `screenshots/raw/*.png` 均由 `xcrun simctl io … screenshot` 直接捕获，没有重绘界面、替换控件、后期修改屏幕内容或拉伸截图。商店排版衍生素材应保留本目录原图作为出处。
 
-## 一个平台一种尺寸
+## 原始拍摄尺寸
 
 | 平台 | 标准竖屏尺寸 | 模拟器 | 系统 |
 | --- | --- | --- | --- |
 | iPhone | 1320 × 2868 px | iPhone 17 Pro Max | iOS 26.5 |
 | Apple Watch | 422 × 514 px | Apple Watch Ultra 3 (49mm) | watchOS 26.5 |
 
-这里的“一种尺寸”指每个平台的所有截图统一分辨率，而不是只提供一张图。原图为无设备外框 PNG。Watch 商店截图请上传 `screenshots/watch/01.png`—`04.png`，不添加设备边框或营销标语。它们从来源原图无损导出为不含 Alpha 通道的 RGB PNG，像素内容逐张比对一致。`raw` 保留模拟器原始 RGBA 文件作为来源。
+上表记录原始拍摄尺寸，原始文件仍保留不变。当前正式上传的手机宣传图已按中等显示屏栏位重导出为1206×2622；Watch正式上传图仍为422×514。每个平台的正式上传图只保留一种尺寸，而不是只提供一张图。原图为无设备外框 PNG。Watch 商店截图请上传 `screenshots/watch/01.png`—`04.png`，不添加设备边框或营销标语。它们从来源原图无损导出为不含 Alpha 通道的 RGB PNG，像素内容逐张比对一致。`raw` 保留模拟器原始 RGBA 文件作为来源。
 
 ## 截图内容
 
@@ -59,6 +59,6 @@ Watch 播放器预览要求临时路径 `Music/UI预览/测试旋律.flac`，其
 
 ## 最终导出
 
-手表上传图由 `tools/export-watch-rgb.swift` 仅转换 PNG 编码，移除原生模拟器文件中不需要的 Alpha 通道。与来源图统一为 sRGB 后逐像素相同，尺寸不变。手机宣传截图与横版创意由 `creative/exports.html` 的 HTML/CSS 确定性排版，在浏览器以目标像素导出不透明 RGB PNG；实际 UI 内容取自本目录原生截图，没有生成或重绘控件。
+手表上传图由 `tools/export-watch-rgb.swift` 仅转换 PNG 编码，移除原生模拟器文件中不需要的 Alpha 通道。与来源图统一为 sRGB 后逐像素相同，尺寸不变。手机宣传截图与横版创意由 `creative/exports.html` 的 HTML/CSS 确定性排版，在浏览器以目标像素导出不透明 RGB PNG。手机最终宣传导出统一为1206×2622，匹配 App Store Connect“带灵动岛的 iPhone（中等显示屏）”；原始 `raw/phone-*.png` 仍为1320×2868，仅作为UI来源；实际 UI 内容取自本目录原生截图，没有生成或重绘控件。
 
 `tools/validate-package.py` 核查16张上传图片的标准尺寸和无透明通道、10个元数据字段限制及部署包严格四个自包含HTML。

@@ -6,14 +6,14 @@
 
 | 交付 | 统一尺寸（宽 × 高） | 上传位置 |
 | --- | --- | --- |
-| iPhone 截图 | **1320 × 2868**，竖屏 | 6.9 英寸 iPhone 组／对应最大显示屏组 |
+| iPhone 截图 | **1206 × 2622**，竖屏 | 带灵动岛的 iPhone（中等显示屏） |
 | Apple Watch 截图 | **422 × 514**，竖屏 | Apple Watch 组 |
 | 标题视觉素材 | **3840 × 1646** | 标题和搜索结果 → 标题 |
 | 搜索结果视觉素材 | **1920 × 1280** | 标题和搜索结果 → 搜索结果 |
 
 正式上传文件（`screenshots/zh-Hans/iphone`、`screenshots/en-US/iphone`、`screenshots/watch`、`creative` 的标题/搜索图）使用 RGB PNG，无 Alpha 通道。`screenshots/raw` 保留未经修改的来源，不是默认上传目录。每个平台所有截图统一该平台尺寸，按文件名前缀顺序上传。标题与搜索结果是独立的横版创意素材，不放进竖版截图栏。
 
-你给的截图当前选中了中等 iPhone 显示屏，只在那里上传 1206 × 2622 并不能代替必需的大屏组。iPhone 最大组截图可自动缩放供较小尺寸使用；Apple Watch 所有本地化统一使用同一尺寸。因此只交付上述两种设备截图尺寸，不额外制作各机型版本。[Apple 截图规格](https://developer.apple.com/help/app-store-connect/reference/app-information/screenshot-specifications/)、[只提交最高分辨率的规则](https://developer.apple.com/help/app-store-connect/manage-app-information/upload-app-previews-and-screenshots/)。
+你当前选中的是“带灵动岛的 iPhone（中等显示屏）”。该栏位接受的竖屏尺寸为 1206 × 2622 或 1179 × 2556；本次统一交付 1206 × 2622，直接上传到该栏位。先前的 1320 × 2868 属于大显示屏尺寸，放进中等显示屏栏位会报尺寸错误；它并非所有栏位都不支持。此前要求只上传最大组的说明已纠正，当前请按本表中的栏位和尺寸配对上传。Apple Watch 所有本地化继续统一使用 422 × 514。[Apple 截图规格](https://developer.apple.com/help/app-store-connect/reference/app-information/screenshot-specifications/)。
 
 当前工程面向 iPhone 与 Apple Watch，不以 iPad 为目标；不提供虚构的 iPad 版本截图。App 预览视频可选，本次交付静态截图。每个平台至少一张、最多十张。[上传说明](https://developer.apple.com/help/app-store-connect/manage-app-information/upload-app-previews-and-screenshots/)。
 
@@ -66,3 +66,5 @@
 本地双击 `index.html` 可预览全部素材与复制字段；点击图片打开对应上传原图。`metadata.json` 提供同样字段的结构化文本，`manifest.json` 记录16张正式上传图片的尺寸、类型和SHA-256。
 
 完整素材压缩包：`Artifacts/Deployment/watchmusic-appstore-1.0.0.zip`。网站部署压缩包：`Artifacts/Deployment/watchmusic-marketing-1.0.0.zip`。部署包严格四个HTML，素材包不用于网站部署。
+
+手机尺寸修正版单独压缩包：`Artifacts/Deployment/watchmusic-iphone-1206x2622.zip`，只包含适合当前中等显示屏栏位的中文、英文各4张图片与上传说明。
