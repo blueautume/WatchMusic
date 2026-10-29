@@ -1,4 +1,4 @@
-# 协议与技术支持网页
+# 网站与协议网页
 
 以下为“随身音乐”可直接部署的静态网页，同时也是 iPhone 应用离线显示的协议来源：
 
@@ -10,7 +10,19 @@
 
 三个文件均为 UTF-8 HTML，CSS 内联，无 JavaScript、外部字体、统计、广告、Cookie 或运行时依赖，跟随系统深浅色模式；可以放在域名根目录或同一个子目录下。保留文件名及相对位置，页面之间的链接即可正常工作。应用内读取随安装包附带的相同文件，无需先填入线上域名。
 
-## 打包与部署
+## 营销首页与四页部署（推荐）
+
+营销站点源文件在 `Website/marketing/`，完整说明见该目录 README。运行：
+
+```sh
+bash Website/package-marketing.sh
+```
+
+输出 `Artifacts/Deployment/watchmusic-marketing-1.0.0.zip`，严格包含四个自包含 HTML：营销 `index.html`、`privacy.html`、`terms.html`、`support.html`。首页图片已内嵌，无需额外图片目录。四个文件一起上传到同一网站目录；营销网址填首页 HTTPS 地址，技术支持与隐私网址继续使用对应页面地址。
+
+App Store 文案、手机/手表统一尺寸截图、标题及搜索结果创意在 `AppStore/1.0.0/`，打开该目录 `index.html` 可预览与复制字段。
+
+## 仅协议与支持页打包
 
 在项目根目录运行：
 

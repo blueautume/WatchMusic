@@ -1,0 +1,150 @@
+{
+  "version": "1.0.0",
+  "date": "2026-10-29",
+  "assets": [
+    {
+      "file": "screenshots/zh-Hans/iphone/01.png",
+      "width": 1320,
+      "height": 2868,
+      "kind": "iphone",
+      "locale": "zh-Hans",
+      "encoding": "RGB PNG; no alpha",
+      "sha256": "757a204781f5ff9dc803d8261425b369553750ce3ea1df6692043e78e08cecaf"
+    },
+    {
+      "file": "screenshots/zh-Hans/iphone/02.png",
+      "width": 1320,
+      "height": 2868,
+      "kind": "iphone",
+      "locale": "zh-Hans",
+      "encoding": "RGB PNG; no alpha",
+      "sha256": "81a38dfb9c8068632bd0f6243a0053420fceac9b5316a483f72e2930935e68ba"
+    },
+    {
+      "file": "screenshots/zh-Hans/iphone/03.png",
+      "width": 1320,
+      "height": 2868,
+      "kind": "iphone",
+      "locale": "zh-Hans",
+      "encoding": "RGB PNG; no alpha",
+      "sha256": "424b2394ae6cfac6406a9c2357ea481b4fadd7df2a3104599cba4d830bf5c0ea"
+    },
+    {
+      "file": "screenshots/zh-Hans/iphone/04.png",
+      "width": 1320,
+      "height": 2868,
+      "kind": "iphone",
+      "locale": "zh-Hans",
+      "encoding": "RGB PNG; no alpha",
+      "sha256": "1905078bd84cda227fecdf0c3ed231b71a3acb9fc975386e7873e8aec9056b49"
+    },
+    {
+      "file": "creative/header-zh-Hans.png",
+      "width": 3840,
+      "height": 1646,
+      "kind": "header",
+      "locale": "zh-Hans",
+      "encoding": "RGB PNG; no alpha",
+      "sha256": "7f86e9f4b811de4e0af8ca3b09f9ffd40e77e9f2388e788097206e6dd080cbfb"
+    },
+    {
+      "file": "creative/search-zh-Hans.png",
+      "width": 1920,
+      "height": 1280,
+      "kind": "search",
+      "locale": "zh-Hans",
+      "encoding": "RGB PNG; no alpha",
+      "sha256": "97e68518b570e5fb46a14edf0ee4798d47aa0f48de74fc1e59638b34e1724879"
+    },
+    {
+      "file": "screenshots/en-US/iphone/01.png",
+      "width": 1320,
+      "height": 2868,
+      "kind": "iphone",
+      "locale": "en-US",
+      "encoding": "RGB PNG; no alpha",
+      "sha256": "17b89f5670498e3aac3d6b43c659a80a099ca88a159f429b0cff82913223ec77"
+    },
+    {
+      "file": "screenshots/en-US/iphone/02.png",
+      "width": 1320,
+      "height": 2868,
+      "kind": "iphone",
+      "locale": "en-US",
+      "encoding": "RGB PNG; no alpha",
+      "sha256": "96e3bce75274114b8c5206aafc4e825b4d227c8f29c17ade32f457ea4912b4cc"
+    },
+    {
+      "file": "screenshots/en-US/iphone/03.png",
+      "width": 1320,
+      "height": 2868,
+      "kind": "iphone",
+      "locale": "en-US",
+      "encoding": "RGB PNG; no alpha",
+      "sha256": "afbf482c197b829cf13325b13cc1298404c8bc865b21ebdfb5b7118841af869b"
+    },
+    {
+      "file": "screenshots/en-US/iphone/04.png",
+      "width": 1320,
+      "height": 2868,
+      "kind": "iphone",
+      "locale": "en-US",
+      "encoding": "RGB PNG; no alpha",
+      "sha256": "c947acb9ad44624401131fe9c99ca6687d9fe0406785774baa6d3c184e997265"
+    },
+    {
+      "file": "creative/header-en-US.png",
+      "width": 3840,
+      "height": 1646,
+      "kind": "header",
+      "locale": "en-US",
+      "encoding": "RGB PNG; no alpha",
+      "sha256": "9c21612027b97588703873f5ee49149d813ae3e1f298513132f01f461c1a9191"
+    },
+    {
+      "file": "creative/search-en-US.png",
+      "width": 1920,
+      "height": 1280,
+      "kind": "search",
+      "locale": "en-US",
+      "encoding": "RGB PNG; no alpha",
+      "sha256": "a398c98626bbbcae830ce97944dbae8a8c4b29a0a561b1daa3fa9995e60c6fb1"
+    },
+    {
+      "file": "screenshots/watch/01.png",
+      "width": 422,
+      "height": 514,
+      "kind": "watch",
+      "locale": "shared",
+      "encoding": "RGB PNG; no alpha",
+      "sha256": "dc8a20108f4209dcb5d67a60a9883908575fc9bff4a279afb038f62a52fd8e0f"
+    },
+    {
+      "file": "screenshots/watch/02.png",
+      "width": 422,
+      "height": 514,
+      "kind": "watch",
+      "locale": "shared",
+      "encoding": "RGB PNG; no alpha",
+      "sha256": "c4414fff487edf778d77da17afa2cfcccfbded159e2600eec68fd4175f7929ee"
+    },
+    {
+      "file": "screenshots/watch/03.png",
+      "width": 422,
+      "height": 514,
+      "kind": "watch",
+      "locale": "shared",
+      "encoding": "RGB PNG; no alpha",
+      "sha256": "a0340b1364f1424d2d663d96b47e1fcc8817f3bc1fe467941de4a58c9d4164d2"
+    },
+    {
+      "file": "screenshots/watch/04.png",
+      "width": 422,
+      "height": 514,
+      "kind": "watch",
+      "locale": "shared",
+      "encoding": "RGB PNG; no alpha",
+      "sha256": "789c2fbf7174ab7564d11193f2b050167273eaea0b35ebb615c9ea456e3c99a7"
+    }
+  ]
+}

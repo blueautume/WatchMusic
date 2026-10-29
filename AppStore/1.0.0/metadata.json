@@ -1,0 +1,56 @@
+{
+  "zh-Hans": {
+    "name": {
+      "value": "WatchMusic 随身音乐",
+      "characters": 15,
+      "utf8Bytes": 23
+    },
+    "subtitle": {
+      "value": "手表离线播放与 Wi-Fi 传输",
+      "characters": 16,
+      "utf8Bytes": 34
+    },
+    "promotionalText": {
+      "value": "把喜欢的 MP3、FLAC 整理进目录，通过 Wi-Fi 传到 Apple Watch。保存后即可在手表独立离线听歌；播放模式、倍速和睡眠定时，让每次聆听都顺手。",
+      "characters": 81,
+      "utf8Bytes": 187
+    },
+    "description": {
+      "value": "把音乐带在手腕上。\n\nWatchMusic 随身音乐是一款为 iPhone 和 Apple Watch 设计的本地音乐播放器。导入自己的 MP3、FLAC 文件，按目录整理，再把想听的歌曲传到手表。保存完成后，Apple Watch 可以独立离线播放，无需手机持续连接。\n\n从自己的音乐开始\n• 通过系统“文件”选择器导入 MP3、FLAC。\n• 显示歌曲内嵌的封面、歌名和艺术家。\n• 用目录整理音乐，长按歌曲即可批量发送、移动或删除。\n\n传到手表，逐首排队\n• 默认通过局域网 Wi-Fi 传输，显示进度、速度与大概剩余时间。\n• 传输中可以继续加入其他目录的歌曲，所有任务依次排队。\n• 核对手表已有文件，跳过已保存且内容相同的歌曲。\n• 支持暂停、继续和清理任务；离开应用自动暂停，返回后检查连接并尝试恢复。\n\n在手表独立聆听\n• 上一首、播放或暂停、下一首，操作简洁。\n• 提供顺序、随机和循环模式，以及播放速度与睡眠定时。\n• 支持系统音频输出与音量控制。\n• 显示手表电量，充电时可根据放置方向调整应用布局。\n\n在手机也能听\niPhone 保留独立本地播放、锁屏和系统播放控制。音乐库中的紧凑播放条让整理音乐与切歌更方便。手机界面跟随系统深浅色模式。\n\n音乐属于你\n无需注册账号。当前版本没有广告或行为追踪，也不向开发者服务器上传音乐和播放记录。\n\n使用条件\n传输需要配对的 iPhone 与 Apple Watch 连接可互相访问的同一 Wi-Fi，并保持两端应用打开。未完成单曲在恢复时可能需要重新传输。传输完成后的手表本地播放不需要保持网络连接。两端独立播放。\n\n本应用播放你自行导入且有权使用的音频，不提供在线曲库或音乐内容下载。\n\n兼容 iOS 17 及以上、watchOS 10 及以上。实际音频输出与部分系统能力取决于设备及系统支持。\n\n技术支持：2114581274@qq.com\n开发者：李浩（个人开发者）",
+      "characters": 819,
+      "utf8Bytes": 2089
+    },
+    "keywords": {
+      "value": "mp3,flac,无损音频,文件管理,睡眠定时,倍速播放,跑步听歌,local,audio,player,timer",
+      "characters": 58,
+      "utf8Bytes": 98
+    }
+  },
+  "en-US": {
+    "name": {
+      "value": "WatchMusic",
+      "characters": 10,
+      "utf8Bytes": 10
+    },
+    "subtitle": {
+      "value": "Offline music for your watch",
+      "characters": 28,
+      "utf8Bytes": 28
+    },
+    "promotionalText": {
+      "value": "Bring your MP3 and FLAC files to Apple Watch over Wi-Fi. Organize folders, queue transfers, and listen offline with playback modes, speed controls and a sleep timer.",
+      "characters": 165,
+      "utf8Bytes": 165
+    },
+    "description": {
+      "value": "Your music, on your wrist.\n\nWatchMusic is a local audio player for iPhone and Apple Watch. Import your own MP3 and FLAC files, organize them into folders, and send the tracks you want to your watch. Once saved, your Apple Watch can play them offline without an ongoing iPhone connection.\n\nStart with your own files\n• Import MP3 and FLAC through the system Files picker.\n• See embedded cover art, titles and artists.\n• Organize folders and long-press tracks to send, move or delete several at once.\n\nSend music over Wi-Fi\n• Queue tracks from multiple folders in one sequential transfer queue.\n• See transfer progress, speed and an approximate remaining time.\n• Skip matching tracks already saved on the watch.\n• Pause or continue tasks. Leaving either app pauses transfer; reopening both apps checks the connection and attempts to continue.\n\nListen on Apple Watch\n• Previous, play or pause, and next controls in a compact player.\n• Sequential, shuffle and repeat playback modes.\n• Playback speed controls and a sleep timer.\n• System audio output and volume controls.\n• Battery status and an app layout that adapts to the watch's placement while charging.\n\nListen on iPhone too\nThe iPhone player works independently, with system playback controls, a compact library playback bar, and light and dark appearances.\n\nMade for your own music\nNo account is required. The current version has no ads or behavioral tracking, and does not upload music or listening history to a developer server.\n\nBefore transferring\nUse a paired iPhone and Apple Watch on the same reachable Wi-Fi network and keep both apps open during transfer. An incomplete track may restart when a transfer is retried. Once a track is saved on the watch, offline playback does not need a network connection. Each device plays independently.\n\nWatchMusic plays audio that you import and have permission to use. It does not provide a streaming catalog or music-download service. The current app interface is in Simplified Chinese.\n\nRequires iOS 17 or later and watchOS 10 or later. Audio output and some system features depend on device and operating system support.\n\nSupport: 2114581274@qq.com\nDeveloper: Li Hao",
+      "characters": 2168,
+      "utf8Bytes": 2192
+    },
+    "keywords": {
+      "value": "mp3,flac,local,audio,player,wifi,transfer,folders,lossless,sleep,timer,speed,shuffle,repeat,library",
+      "characters": 99,
+      "utf8Bytes": 99
+    }
+  }
+}
