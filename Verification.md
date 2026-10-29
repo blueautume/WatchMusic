@@ -325,3 +325,9 @@ Debug/Release完整通用模拟器构建通过；iOS26.5空音乐库、空目录
 删除目录列表内“已导入xx首”提示，同时移除PhoneLibrary中全局importSummary状态、清理赋值和仅供提示使用的成功计数，避免上一次导入结果在其他目录残留。导入中进度、结束后的目录刷新和失败提醒保留。
 
 Debug/Release完整通用模拟器构建通过，既有批量文件操作探针35项通过，源码与测试无已删除状态引用。未新增浅层界面测试、未操作真机；用户Config/PhoneInfo.plist修改保留且不纳入本次提交。
+
+## 1.0.0 发布分支（2026-10-29）
+
+iPhone/Watch的Debug与Release共四处MARKETING_VERSION统一为1.0.0，Build保持1；关于后备版本、README、技术支持HTML与部署ZIP同步。隐私协议版本仍为2026-10-29。版本提交在main完成，release分支从该提交创建并推送，后续开发继续留在main；未创建版本标签或发布托管版本。
+
+Debug/Release完整通用模拟器构建成功，直接读取两种安装包及其嵌入Watch的Info.plist，确认均为1.0.0(1)且companion关系一致。网页源与ZIP版本一致检查通过；已有PhoneInfo.plist及Watch Scheme本地修改保留，不纳入版本提交。未操作真机。

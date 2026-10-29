@@ -19,7 +19,7 @@ open WatchMusic.xcodeproj
 - Apple Watch scheme：`WatchMusicWatch`
 - iPhone Bundle ID：`com.lihao.WatchMusic`
 - Watch Bundle ID：`com.lihao.WatchMusic.watchkitapp`
-- 桌面名称：`随身音乐`；版本 `0.1.0 (1)`
+- 桌面名称：`随身音乐`；版本 `1.0.0 (1)`
 
 两个 target 继续使用原工程的开发团队与自动签名配置。真机运行时由 Xcode 为新 ID 创建相应描述文件。最低 iOS 17 / watchOS 10；手表双指互点下一首需要 watchOS 11 和支持该手势的设备。
 
