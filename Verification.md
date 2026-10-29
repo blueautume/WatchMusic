@@ -356,3 +356,13 @@ python3 Tests/run-watch-crown-mount-probe.py WATCH_SIMULATOR_UDID /absolute/path
 python3 Tests/run-watch-crown-mount-probe.py WATCH_SIMULATOR_UDID /absolute/path/Debug-watchsimulator/WatchMusicWatch.app --dialog
 python3 Tests/run-watch-crown-mount-probe.py WATCH_SIMULATOR_UDID /absolute/path/Debug-watchsimulator/WatchMusicWatch.app --cycle
 ```
+
+## 右上角紧凑音量条（2026-10-30）
+
+音量提示改为右上角 44×5pt 胶囊条，不显示图标、文字或百分比，保留无障碍音量标签。填充宽度随系统音量以 0.16 秒 easeOut 平滑过渡；弹出与隐藏组合缩放、轻微右移和淡入淡出，采用 0.28 秒弹簧动画，最后一次变化 1.4 秒后隐藏。系统开启“减少动态效果”时关闭运动动画。
+
+浮层使用完整页面坐标并独立忽略安全区，竖屏放在系统时钟下方；旋转页面利用歌曲信息与操作按钮之间的空隙，同时避让时钟和返回按钮。仍由常驻透明宿主观察音量，不占触控或 Crown 焦点，不改音量观察和隐藏任务模型。
+
+Debug / Release 通用模拟器完整构建通过（含 Watch），无 Swift 源码编译警告。40mm、49mm 竖屏及40mm向左横屏实际页面音量场景各 14 个生命周期事件通过，覆盖显示、调节更新、隐藏和再次显示；截图确认细条位于右上角且无文字，横屏没有覆盖歌名或系统时钟。使用 Debug 音量事件夹具，未操作真机、未播放用户音频。用户既有本地修改保留。
+
+截图：[40mm 小音量条](Artifacts/Previews/CompactVolume/40mm/volume-visible.png)、[40mm 隐藏后](Artifacts/Previews/CompactVolume/40mm/volume-dismissed.png)、[49mm 小音量条](Artifacts/Previews/CompactVolume/49mm/volume-visible.png)、[49mm 隐藏后](Artifacts/Previews/CompactVolume/49mm/volume-dismissed.png)。

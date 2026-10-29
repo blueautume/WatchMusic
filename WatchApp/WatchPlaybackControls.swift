@@ -29,11 +29,11 @@ struct NowPlayingView: View {
                 player.requestAudioOutput { choosingOutput = false }
             }
         )
+        .background(AppPalette.background)
+        .watchPage(title: "", action: { dismiss() }, symbol: "chevron.left")
         .overlay {
             WatchVolumeFeedbackOverlay(isActive: acceptsCrownInput)
         }
-        .background(AppPalette.background)
-        .watchPage(title: "", action: { dismiss() }, symbol: "chevron.left")
         // The accessory wasn't mounted by this non-scrolling page, so its
         // volume control never existed to request Crown focus.
         // Keep the native control mounted at normal size/opacity behind the
@@ -258,47 +258,28 @@ private struct WatchPlaybackPageContent: View {
 private struct WatchVolumeFeedbackOverlay: View {
     @StateObject private var feedback = WatchVolumeFeedback()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.watchContentViewport) private var viewport
     let isActive: Bool
 
     var body: some View {
-        ZStack {
-            // Keep the observer's lifecycle mounted before the first popup.
-            Color.clear
-            if feedback.isVisible {
-                HStack(spacing: 9) {
-                    Image(systemName: feedback.volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                        .font(.system(size: 15, weight: .semibold))
-                        .frame(width: 21)
-                    VStack(alignment: .leading, spacing: 5) {
-                        HStack {
-                            Text("音量")
-                            Spacer(minLength: 4)
-                            Text("\(Int((feedback.volume * 100).rounded()))%")
-                                .monospacedDigit()
-                        }
-                        .font(.system(size: 12, weight: .semibold))
-                        ProgressView(value: Double(feedback.volume))
-                            .tint(AppPalette.accent)
-                    }
+        GeometryReader { geometry in
+            let frame = barFrame(in: geometry.size)
+            ZStack(alignment: .topLeading) {
+                // Keep observing after the animated bar disappears.
+                Color.clear
+                if feedback.isVisible {
+                    volumeBar
+                        .transition(reduceMotion ? .opacity :
+                            .scale(scale: 0.65, anchor: .trailing)
+                                .combined(with: .offset(x: 10))
+                                .combined(with: .opacity))
+                        .offset(x: frame.minX, y: frame.minY)
                 }
-                .foregroundStyle(AppPalette.textPrimary)
-                .padding(12)
-                .frame(maxWidth: 172)
-                .background(AppPalette.surface, in: RoundedRectangle(cornerRadius: 16))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 16)
-                        .strokeBorder(AppPalette.accent.opacity(0.4), lineWidth: 1)
-                }
-                .shadow(color: .black.opacity(0.4), radius: 8)
-                .padding(.horizontal, 12)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("音量")
-                .accessibilityValue("百分之\(Int((feedback.volume * 100).rounded()))")
-                .transition(.opacity)
             }
         }
+        .ignoresSafeArea()
         .allowsHitTesting(false)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: feedback.isVisible)
+        .animation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.85), value: feedback.isVisible)
         .onAppear { feedback.setActive(isActive) }
         .onChange(of: isActive) { _, active in feedback.setActive(active) }
         .onDisappear { feedback.setActive(false) }
@@ -323,6 +304,43 @@ private struct WatchVolumeFeedbackOverlay: View {
             } catch { return }
         }
         #endif
+    }
+
+    private var volumeBar: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                Capsule().fill(AppPalette.accent.opacity(0.24))
+                Capsule().fill(AppPalette.accent)
+                    .frame(width: geometry.size.width * CGFloat(feedback.volume))
+            }
+        }
+        .frame(width: 44, height: 5)
+        .clipShape(Capsule())
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: feedback.volume)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("音量")
+        .accessibilityValue("百分之\(Int((feedback.volume * 100).rounded()))")
+    }
+
+    private func barFrame(in size: CGSize) -> CGRect {
+        let metrics = viewport?.metrics ?? WatchSurfaceMetrics(physicalSize: size, orientation: .portrait)
+        let insets = metrics.pageInsets(hasAction: true, hasTitle: false)
+        var frame = CGRect(x: size.width - 56, y: 12, width: 44, height: 5)
+        if insets.headerHeight == 0 {
+            // Rotated pages start with metadata instead of a header. Use its
+            // following gap so the bar doesn't cover a song title.
+            let layout = WatchPlaybackLayout(size: size, minimumBottom: insets.bottomControlBottom)
+            frame.origin.y = layout.metadataHeight + max(0, (layout.spacing - frame.height) / 2)
+        }
+        let clock = metrics.clockFrame
+        if frame.intersects(clock.insetBy(dx: -4, dy: -4)) {
+            if clock.width >= clock.height { frame.origin.y = clock.maxY + 4 }
+            else { frame.origin.x = max(12, clock.minX - frame.width - 4) }
+        }
+        if frame.intersects(insets.backFrame) {
+            frame.origin.y = insets.backFrame.maxY + 1
+        }
+        return frame
     }
 }
 
