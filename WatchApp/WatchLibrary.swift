@@ -26,7 +26,7 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
     var trackCount: Int { allTracks.count }
 
     private let fileManager = FileManager.default
-    private let ioQueue = DispatchQueue(label: "com.offlinewatchplayer.lab.watch-library", qos: .utility)
+    private let ioQueue = DispatchQueue(label: "com.lihao.WatchMusic.watch-library", qos: .utility)
     private let receiveLock = NSLock()
     private var receivingCount = 0
     private var lanReservedPaths = Set<String>()

@@ -34,7 +34,7 @@ Diagnostics require a Debug simulator build and the explicit
 no trace. Run the regression against a built Debug Watch app with:
 
 ```sh
-python3 Tests/run-watch-crown-mount-probe.py BOOTED_WATCH_SIMULATOR_UDID /absolute/path/OfflineWatchPlayerLabWatch.app
-python3 Tests/run-watch-crown-mount-probe.py BOOTED_WATCH_SIMULATOR_UDID /absolute/path/OfflineWatchPlayerLabWatch.app --dialog
-python3 Tests/run-watch-crown-mount-probe.py BOOTED_WATCH_SIMULATOR_UDID /absolute/path/OfflineWatchPlayerLabWatch.app --cycle
+python3 Tests/run-watch-crown-mount-probe.py BOOTED_WATCH_SIMULATOR_UDID /absolute/path/WatchMusicWatch.app
+python3 Tests/run-watch-crown-mount-probe.py BOOTED_WATCH_SIMULATOR_UDID /absolute/path/WatchMusicWatch.app --dialog
+python3 Tests/run-watch-crown-mount-probe.py BOOTED_WATCH_SIMULATOR_UDID /absolute/path/WatchMusicWatch.app --cycle
 ```

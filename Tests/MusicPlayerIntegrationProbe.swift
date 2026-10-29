@@ -2,6 +2,7 @@ import Foundation
 import ImageIO
 import Combine
 import AVFoundation
+import MediaPlayer
 
 /// Standalone simulator integration test. It restores local files without
 /// activating playback or an audio output route, and restores preferences after
@@ -73,6 +74,24 @@ struct MusicPlayerIntegrationProbe {
         defaults.set(PlaybackMode.repeatAll.rawValue, forKey: "player.mode")
         defaults.set(1.25, forKey: "player.rate")
         defaults.set(Float(0.7), forKey: "player.volume")
+        let commands = MPRemoteCommandCenter.shared()
+        let remoteCommands = [commands.playCommand, commands.pauseCommand, commands.togglePlayPauseCommand,
+                              commands.nextTrackCommand, commands.previousTrackCommand,
+                              commands.skipForwardCommand, commands.skipBackwardCommand,
+                              commands.seekForwardCommand, commands.seekBackwardCommand,
+                              commands.changePlaybackPositionCommand]
+        let commandStates = remoteCommands.map(\.isEnabled)
+        defer {
+            for (command, wasEnabled) in zip(remoteCommands, commandStates) { command.isEnabled = wasEnabled }
+        }
+        // Deliberately simulate stale interval controls, rather than depending
+        // on the command center's default state in a particular OS release.
+        commands.skipForwardCommand.isEnabled = true
+        commands.skipBackwardCommand.isEnabled = true
+        commands.seekForwardCommand.isEnabled = true
+        commands.seekBackwardCommand.isEnabled = true
+        commands.nextTrackCommand.isEnabled = false
+        commands.previousTrackCommand.isEnabled = false
         var restoredDecoder: AVAudioPlayer?
         player = MusicPlayer(makeAudioPlayer: { url in
             let decoder = try AVAudioPlayer(contentsOf: url)
@@ -80,6 +99,16 @@ struct MusicPlayerIntegrationProbe {
             return decoder
         })
         guard let engine = player else { throw ProbeError.failure("player initialization") }
+        try check(!commands.skipForwardCommand.isEnabled && !commands.skipBackwardCommand.isEnabled,
+                  "system playback controls disable interval skips instead of exposing fifteen-second buttons")
+        try check(!commands.seekForwardCommand.isEnabled && !commands.seekBackwardCommand.isEnabled,
+                  "continuous seek commands do not replace track navigation")
+        try check(commands.nextTrackCommand.isEnabled && commands.previousTrackCommand.isEnabled,
+                  "system playback controls enable previous and next tracks")
+        try check(commands.playCommand.isEnabled && commands.pauseCommand.isEnabled && commands.togglePlayPauseCommand.isEnabled,
+                  "system playback controls retain play and pause actions")
+        try check(commands.changePlaybackPositionCommand.isEnabled,
+                  "system timeline scrubbing remains available independently of track buttons")
         try check(engine.currentURL == a, "relative-path session restores current track")
         try check(engine.queue == [a, b, c], "session restores queue order")
         try check(abs(engine.elapsed - 5) < 0.15, "session restores elapsed position")

@@ -7,7 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		A166E1229B291D4E229342A0 /* OfflineWatchPlayerLabWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = BA8AE886E0153A5E49FECD72 /* OfflineWatchPlayerLabWatch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		A166E1229B291D4E229342A0 /* WatchMusicWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = BA8AE886E0153A5E49FECD72 /* WatchMusicWatch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -16,7 +16,7 @@
 			containerPortal = C998FDDA669AF8B2717867F3 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = C6E215EB937388CDC839B83F;
-			remoteInfo = OfflineWatchPlayerLabWatch;
+			remoteInfo = WatchMusicWatch;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -27,7 +27,7 @@
 			dstPath = "$(CONTENTS_FOLDER_PATH)/Watch";
 			dstSubfolderSpec = 16;
 			files = (
-				A166E1229B291D4E229342A0 /* OfflineWatchPlayerLabWatch.app in Embed Watch Content */,
+				A166E1229B291D4E229342A0 /* WatchMusicWatch.app in Embed Watch Content */,
 			);
 			name = "Embed Watch Content";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -35,8 +35,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		BA8AE886E0153A5E49FECD72 /* OfflineWatchPlayerLabWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OfflineWatchPlayerLabWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		CA2B4963723B7EC567B4CE1F /* OfflineWatchPlayerLab.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OfflineWatchPlayerLab.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		BA8AE886E0153A5E49FECD72 /* WatchMusicWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WatchMusicWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		CA2B4963723B7EC567B4CE1F /* WatchMusic.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WatchMusic.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -76,8 +76,8 @@
 		CF6F9CB37700838AC204B854 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				CA2B4963723B7EC567B4CE1F /* OfflineWatchPlayerLab.app */,
-				BA8AE886E0153A5E49FECD72 /* OfflineWatchPlayerLabWatch.app */,
+				CA2B4963723B7EC567B4CE1F /* WatchMusic.app */,
+				BA8AE886E0153A5E49FECD72 /* WatchMusicWatch.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -85,9 +85,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		0E6DFE83E340C99DBF86E65E /* OfflineWatchPlayerLab */ = {
+		0E6DFE83E340C99DBF86E65E /* WatchMusic */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 0D902E6D0A314B84259F1250 /* Build configuration list for PBXNativeTarget "OfflineWatchPlayerLab" */;
+			buildConfigurationList = 0D902E6D0A314B84259F1250 /* Build configuration list for PBXNativeTarget "WatchMusic" */;
 			buildPhases = (
 				5E0266744D4D08A98DEAE05D /* Sources */,
 				B4051F840118D90D1362140D /* Frameworks */,
@@ -103,14 +103,14 @@
 				657193940AE356BE1E63F587 /* Shared */,
 				E21E3F79A7F692C246C9BE72 /* PhoneApp */,
 			);
-			name = OfflineWatchPlayerLab;
-			productName = OfflineWatchPlayerLab;
-			productReference = CA2B4963723B7EC567B4CE1F /* OfflineWatchPlayerLab.app */;
+			name = WatchMusic;
+			productName = WatchMusic;
+			productReference = CA2B4963723B7EC567B4CE1F /* WatchMusic.app */;
 			productType = "com.apple.product-type.application";
 		};
-		C6E215EB937388CDC839B83F /* OfflineWatchPlayerLabWatch */ = {
+		C6E215EB937388CDC839B83F /* WatchMusicWatch */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = DD152A860889A8462DA064FC /* Build configuration list for PBXNativeTarget "OfflineWatchPlayerLabWatch" */;
+			buildConfigurationList = DD152A860889A8462DA064FC /* Build configuration list for PBXNativeTarget "WatchMusicWatch" */;
 			buildPhases = (
 				C977A67B2E96FC8F29EC539E /* Sources */,
 				DF3149848F78C44B84A2621A /* Frameworks */,
@@ -124,9 +124,9 @@
 				657193940AE356BE1E63F587 /* Shared */,
 				A998CA22E679FAAE9D18AB5D /* WatchApp */,
 			);
-			name = OfflineWatchPlayerLabWatch;
-			productName = OfflineWatchPlayerLabWatch;
-			productReference = BA8AE886E0153A5E49FECD72 /* OfflineWatchPlayerLabWatch.app */;
+			name = WatchMusicWatch;
+			productName = WatchMusicWatch;
+			productReference = BA8AE886E0153A5E49FECD72 /* WatchMusicWatch.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -146,7 +146,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 520CFA5378A2A4F95DF2DA9C /* Build configuration list for PBXProject "OfflineWatchPlayerLab" */;
+			buildConfigurationList = 520CFA5378A2A4F95DF2DA9C /* Build configuration list for PBXProject "WatchMusic" */;
 			compatibilityVersion = "Xcode 16.0";
 			developmentRegion = "zh-Hans";
 			hasScannedForEncodings = 0;
@@ -160,8 +160,8 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				0E6DFE83E340C99DBF86E65E /* OfflineWatchPlayerLab */,
-				C6E215EB937388CDC839B83F /* OfflineWatchPlayerLabWatch */,
+				0E6DFE83E340C99DBF86E65E /* WatchMusic */,
+				C6E215EB937388CDC839B83F /* WatchMusicWatch */,
 			);
 		};
 /* End PBXProject section */
@@ -203,7 +203,7 @@
 /* Begin PBXTargetDependency section */
 		D84D0BA7654A461F0420FC94 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = C6E215EB937388CDC839B83F /* OfflineWatchPlayerLabWatch */;
+			target = C6E215EB937388CDC839B83F /* WatchMusicWatch */;
 			targetProxy = 028A217FD9624BA3B2F8A8BB /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
@@ -212,7 +212,7 @@
 		1BABB2C1E57E1A79628F8AA2 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				BASE_BUNDLE_IDENTIFIER = com.lihao.OfflineWatchPlayerLab;
+				BASE_BUNDLE_IDENTIFIER = com.lihao.WatchMusic;
 				CLANG_ENABLE_MODULES = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG";
 				SWIFT_VERSION = 5.0;
@@ -222,7 +222,7 @@
 		27E117CCA8DB8C1BD706B918 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				BASE_BUNDLE_IDENTIFIER = com.lihao.OfflineWatchPlayerLab;
+				BASE_BUNDLE_IDENTIFIER = com.lihao.WatchMusic;
 				CLANG_ENABLE_MODULES = YES;
 				SWIFT_VERSION = 5.0;
 			};
@@ -258,7 +258,7 @@
 				DEVELOPMENT_TEAM = A82X46N3WS;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Config/PhoneInfo.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "随身音乐 Lab";
+				INFOPLIST_KEY_CFBundleDisplayName = "随身音乐";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MARKETING_VERSION = 0.1.0;
@@ -280,7 +280,7 @@
 				DEVELOPMENT_TEAM = A82X46N3WS;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Config/PhoneInfo.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "随身音乐 Lab";
+				INFOPLIST_KEY_CFBundleDisplayName = "随身音乐";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MARKETING_VERSION = 0.1.0;
@@ -317,7 +317,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		0D902E6D0A314B84259F1250 /* Build configuration list for PBXNativeTarget "OfflineWatchPlayerLab" */ = {
+		0D902E6D0A314B84259F1250 /* Build configuration list for PBXNativeTarget "WatchMusic" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				A7EE36E519BA114F5C912E11 /* Debug */,
@@ -326,7 +326,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		520CFA5378A2A4F95DF2DA9C /* Build configuration list for PBXProject "OfflineWatchPlayerLab" */ = {
+		520CFA5378A2A4F95DF2DA9C /* Build configuration list for PBXProject "WatchMusic" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				1BABB2C1E57E1A79628F8AA2 /* Debug */,
@@ -335,7 +335,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		DD152A860889A8462DA064FC /* Build configuration list for PBXNativeTarget "OfflineWatchPlayerLabWatch" */ = {
+		DD152A860889A8462DA064FC /* Build configuration list for PBXNativeTarget "WatchMusicWatch" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				DAF6CAA18B1C8E39A3230EF7 /* Debug */,

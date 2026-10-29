@@ -13,7 +13,7 @@ extension EnvironmentValues {
 
 enum PhoneAppInformation {
     static var displayName: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "随身音乐 Lab"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "随身音乐"
     }
 
     static var version: String {

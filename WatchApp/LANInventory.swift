@@ -11,7 +11,7 @@ final class LANInventory: @unchecked Sendable {
 
     private let root: URL
     private let cacheURL: URL
-    private let queue = DispatchQueue(label: "com.offlinewatchplayer.lab.inventory", qos: .utility,
+    private let queue = DispatchQueue(label: "com.lihao.WatchMusic.inventory", qos: .utility,
                                       autoreleaseFrequency: .workItem)
     private let manager = FileManager.default
     private var entries: [String: Entry] = [:]

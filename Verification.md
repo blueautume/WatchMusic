@@ -301,3 +301,13 @@ Watch 本轮确认了上一轮静态API审查遗漏的问题：40/49mm旧版实�
 完整证据与回归命令见 [CrownMount](Artifacts/Previews/CrownMount/README.md)。记录仅在Debug模拟器且显式 -preview-crown-trace 时产生；真机和Release不记录。实际物理表冠焦点与蓝牙输出音量仍由用户手动验收：重新安装两端构建，手表连接耳机播放，转动表冠；再打开并关闭倍速/定时弹层，确认调节仍可用，返回音乐库确认列表滚动恢复。
 
 截图：[手机浅色](Artifacts/Previews/PlaybackLayoutV2/phone-player-light.png)、[手机深色](Artifacts/Previews/PlaybackLayoutV2/phone-player-dark.png)、[SE3默认字号](Artifacts/Previews/PlaybackLayoutV2/se3-player-default.png)、[SE3大字顶部](Artifacts/Previews/PlaybackLayoutV2/se3-player-accessibility-top.png)、[40mm手表修复后](Artifacts/Previews/CrownMount/40-fixed.png)、[49mm手表修复后](Artifacts/Previews/CrownMount/49-fixed.png)。
+
+## 正式应用标识与系统切歌播控（2026-10-29）
+
+工程更名为 `WatchMusic.xcodeproj`，targets、schemes 和 products 分别为 `WatchMusic`、`WatchMusicWatch`；两端显示名为“随身音乐”，正式Bundle ID分别为 `com.lihao.WatchMusic`、`com.lihao.WatchMusic.watchkitapp`。Watch companion ID继续从主应用标识派生。保留原开发团队、自动签名、版本0.1.0(1)、最低iOS17/watchOS10和全部LaunchAction选项，包括Watch的Release、不附加调试器、PosixSpawn。当前README、两端安装提示、关于后备名称、运行队列标签、回归脚本、离线与部署网页同步正式命名；历史验证截图和记录保留原事实。
+
+新Bundle ID具有独立沙盒，旧实验应用数据保留，不自动迁移音乐或同意记录。原项目、当前仓库物理目录位置及用户已有未跟踪网页解压目录未改动；网页ZIP已重新生成。保持现有 `.lan-download.v2` 后缀、持久化目录与任务协议版本，未为命名调整改写传输格式。
+
+系统播控移除±15秒handler，明确禁用skipForward/Backward与连续seekForward/Backward，启用上一首/下一首及播放暂停；保留changePlaybackPosition系统进度拖动。参考 [Apple远程播控命令](https://developer.apple.com/documentation/mediaplayer/mpremotecommandcenter) 和 [companion标识要求](https://developer.apple.com/documentation/bundleresources/information-property-list/wkcompanionappbundleidentifier)。
+
+验证：iOS/watchOS播放器集成各70项通过，新增5项先模拟旧跳秒命令启用和切歌禁用，再检查真实MPRemoteCommandCenter恢复目标配置。完整Debug/Release通用模拟器构建、未签名Release通用真机目标构建均成功（含嵌入Watch）；直接读取三种产物Info.plist核对两端标识、companion关系、显示名、可执行名称和版本。两个Scheme与改名前LaunchAction字典逐项一致，Xcode列出的targets/schemes仅正式命名。网页源/ZIP/两种模拟器安装包内文档一致，当前运行源码与工程无Lab/Demo标记；正式Watch ID的真实挂载/弹层/返回探针16事件通过。未操作真机，未注册、上传或发布App Store记录，系统控制中心最终外观由用户手动安装两端后播放音乐确认。

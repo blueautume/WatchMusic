@@ -15,7 +15,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-BUNDLE = "com.lihao.OfflineWatchPlayerLab.watchkitapp"
+BUNDLE = "com.lihao.WatchMusic.watchkitapp"
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -195,7 +195,7 @@ def run_case(device, documents, title, specifications, expected_kind, capture=No
             assert server.request_started.wait(timeout=20), "download did not start before process restart"
             pid = int(launch_output.rsplit(":", 1)[1].strip())
             command = subprocess.check_output(["ps", "-p", str(pid), "-o", "command="], text=True)
-            assert "OfflineWatchPlayerLabWatch" in command, "unexpected simulator process"
+            assert "WatchMusicWatch" in command, "unexpected simulator process"
             # A crash-style kill tests system-owned tasks, unlike an explicit
             # user force-quit, which tells the OS to cancel background transfers.
             os.kill(pid, signal.SIGKILL)

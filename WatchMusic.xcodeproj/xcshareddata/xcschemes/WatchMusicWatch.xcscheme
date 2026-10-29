@@ -15,9 +15,22 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
+               BlueprintIdentifier = "C6E215EB937388CDC839B83F"
+               BuildableName = "WatchMusicWatch.app"
+               ReferencedContainer = "container:WatchMusic.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "YES"
+            buildForProfiling = "YES"
+            buildForArchiving = "YES"
+            buildForAnalyzing = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
                BlueprintIdentifier = "0E6DFE83E340C99DBF86E65E"
-               BuildableName = "OfflineWatchPlayerLab.app"
-               ReferencedContainer = "container:OfflineWatchPlayerLab.xcodeproj">
+               BuildableName = "WatchMusic.app"
+               ReferencedContainer = "container:WatchMusic.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -30,9 +43,9 @@
       shouldAutocreateTestPlan = "YES">
    </TestAction>
    <LaunchAction
-      buildConfiguration = "Debug"
-      selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
-      selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
+      buildConfiguration = "Release"
+      selectedDebuggerIdentifier = ""
+      selectedLauncherIdentifier = "Xcode.IDEFoundation.Launcher.PosixSpawn"
       launchStyle = "0"
       useCustomWorkingDirectory = "NO"
       ignoresPersistentStateOnLaunch = "NO"
@@ -44,9 +57,9 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "0E6DFE83E340C99DBF86E65E"
-            BuildableName = "OfflineWatchPlayerLab.app"
-            ReferencedContainer = "container:OfflineWatchPlayerLab.xcodeproj">
+            BlueprintIdentifier = "C6E215EB937388CDC839B83F"
+            BuildableName = "WatchMusicWatch.app"
+            ReferencedContainer = "container:WatchMusic.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </LaunchAction>
@@ -60,9 +73,9 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "0E6DFE83E340C99DBF86E65E"
-            BuildableName = "OfflineWatchPlayerLab.app"
-            ReferencedContainer = "container:OfflineWatchPlayerLab.xcodeproj">
+            BlueprintIdentifier = "C6E215EB937388CDC839B83F"
+            BuildableName = "WatchMusicWatch.app"
+            ReferencedContainer = "container:WatchMusic.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>

@@ -46,13 +46,13 @@ final class LANStoragePermission {
 /// and complete download caches survive interruption; partial downloads restart.
 final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessionTaskDelegate {
     static var backgroundSessionIdentifier: String {
-        (Bundle.main.bundleIdentifier ?? "com.offlinewatchplayer.lab") + ".lan-download.v2"
+        (Bundle.main.bundleIdentifier ?? "com.lihao.WatchMusic") + ".lan-download.v2"
     }
 
     var onUpdate: ((LANReceptionStatus?) -> Void)?
     var onEvent: ((LANTransferEvent) -> Void)?
-    private let stateQueue = DispatchQueue(label: "com.offlinewatchplayer.lab.lan-download")
-    private let validationQueue = DispatchQueue(label: "com.offlinewatchplayer.lab.lan-validation", qos: .utility)
+    private let stateQueue = DispatchQueue(label: "com.lihao.WatchMusic.lan-download")
+    private let validationQueue = DispatchQueue(label: "com.lihao.WatchMusic.lan-validation", qos: .utility)
     private let storeFile: (URL, LANTransferFile, LANStoragePermission) throws -> Void
     private let root: URL
     private let stagingRoot: URL

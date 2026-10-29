@@ -1,27 +1,29 @@
-# 随身音乐 Lab
+# 随身音乐
 
-基于原项目 `OfflineWatchPlayer` 建立的独立实验工程，用于开发简化版音乐播放器。本仓库包含运行所需的源码、工程、资源和测试，无需原项目目录。工程、scheme、应用沙盒和播放偏好均独立，可与原应用同时安装。
+随身音乐是一款面向 iPhone 与 Apple Watch 的离线音乐播放器，提供本地音乐管理、独立播放和局域网传输。本仓库包含运行所需的源码、工程、资源和测试，使用正式工程与应用标识，无需原项目目录。
 
 ```sh
 git clone git@github.com:blueautume/WatchMusic.git
 cd WatchMusic
 git switch main
-open OfflineWatchPlayerLab.xcodeproj
+open WatchMusic.xcodeproj
 ```
 
 当前在 `main` 主分支开发。应用采用双端前台局域网传输，两端播放独立，不同步或互相控制播放。
 
 ## 打开与运行
 
-打开 `OfflineWatchPlayerLab.xcodeproj`：
+打开 `WatchMusic.xcodeproj`：
 
-- iPhone scheme：`OfflineWatchPlayerLab`
-- Apple Watch scheme：`OfflineWatchPlayerLabWatch`
-- iPhone Bundle ID：`com.lihao.OfflineWatchPlayerLab`
-- Watch Bundle ID：`com.lihao.OfflineWatchPlayerLab.watchkitapp`
-- 桌面名称：`随身音乐 Lab`；版本 `0.1.0 (1)`
+- iPhone scheme：`WatchMusic`
+- Apple Watch scheme：`WatchMusicWatch`
+- iPhone Bundle ID：`com.lihao.WatchMusic`
+- Watch Bundle ID：`com.lihao.WatchMusic.watchkitapp`
+- 桌面名称：`随身音乐`；版本 `0.1.0 (1)`
 
 两个 target 继续使用原工程的开发团队与自动签名配置。真机运行时由 Xcode 为新 ID 创建相应描述文件。最低 iOS 17 / watchOS 10；手表双指互点下一首需要 watchOS 11 和支持该手势的设备。
+
+正式版使用新的 Bundle ID，因此会作为独立应用安装，不会自动继承旧实验版沙盒中的歌曲、播放偏好或协议同意记录。旧版应用及其原有音乐、数据仍保留；如需继续使用已有音频，请从原始文件重新导入并传到正式版手表应用。
 
 ## 隐私协议与技术支持
 
@@ -29,21 +31,22 @@ iPhone 首次启动会全屏展示协议入口，明确同意后才初始化音�
 
 可部署的 [隐私协议](PhoneApp/Legal/privacy.html)、[用户协议](PhoneApp/Legal/terms.html)、[技术支持](PhoneApp/Legal/support.html) 也是应用内的离线文档，避免分别维护内容。运行 `bash Website/package.sh` 生成 [静态网页压缩包](Artifacts/Deployment/watchmusic-web-2026-10-29.zip)，解压上传即可；详见 [部署说明](Website/README.md)。网页支持深浅色模式，无外部依赖或追踪代码。开发者：李浩（个人开发者），支持邮箱：2114581274@qq.com。
 
-## 实验范围
+## 功能范围
 
 - 手机：音乐库和传输两个入口，导入 MP3 / FLAC，管理目录、本地播放和发送到手表。音乐库根页仅展示目录和新建入口；先建目录，再在目录内导入。长按歌曲进入多选，右上角“操作”菜单提供批量发送、移动、删除，旁边“完成”退出选择；同名目标不覆盖，部分失败会汇总提示。
 - 手表：单页播放器，按歌曲信息、四个图标操作、上一首/播放暂停/下一首纵向排列；模式、速度、睡眠定时和音频输出直接操作，表冠交给系统本地音量控件，页面统一采用自定义返回按钮；系统导航栏隐藏，避免挤占曲面屏幕。移除播放进度条和拖动手势。
 - 移除歌词解析、显示、校准与传输，以及外部歌词/封面资源管理。歌曲内嵌标题、艺术家和封面继续显示。
 - 两端独立本地播放，保留离线播放、后台音频、系统锁屏/耳机控制、播放恢复、模式、倍速、音量和睡眠定时；不交换播放状态，也不控制另一台设备。
+- 系统控制中心和锁屏播控使用上一首、播放/暂停、下一首，关闭前后跳秒命令；系统进度拖动保留。
 - 手机播放条固定叠放在标签栏上方，两侧留边距，不参与目录列表的纵向排版；去掉拖动和悬浮球。目录、歌曲及传输列表只在播放条存在时追加可滚动尾部空白，最后一项可滚到条上方。播放页模式、速度、睡眠和输出统一为四个无文字图标；不提供独立应用音量，音量由系统控制，升级时移除旧应用增益偏好。应用配色跟随系统深浅色模式。
-- 新图标沿用参考图的手表与音符轮廓，以蓝色区分实验版；iPhone 提供浅色与深色图标，Watch 使用适配圆形裁切的深色版本。[生成提示词及导出说明](Brand/IconPrompt.txt)。
+- 新图标沿用参考图的手表与音符轮廓，以蓝色作为应用主题；iPhone 提供浅色与深色图标，Watch 使用适配圆形裁切的深色版本。[生成提示词及导出说明](Brand/IconPrompt.txt)。
 - 文件管理只修改所在设备的副本。
 
 手机播放页按可用高度和文字实际高度布局，优先扩大封面，再分配区块间距，底部操作保留适量边距；小屏、大字或开启定时时可以滚动。手表播放器的原生音量控件常驻在不透明页面背景后，不改变页面布局；进入播放器、开始播放或关闭弹层后请求表冠焦点，离开或进入后台时释放。
 
 ## 传输进度
 
-所有新发送和重试均使用局域网传输：手机临时提供文件下载服务，手表通过 HTTP 接收并校验后保存。手机“传输”页分为“进行中”和“已传输”两个标签，无需选择传输方式。旧版普通 WatchConnectivity 任务的历史记录、取消和保存回执继续兼容，重试时统一走局域网。[实验说明与测试步骤](LANTransferExperiment.md)
+所有新发送和重试均使用局域网传输：手机临时提供文件下载服务，手表通过 HTTP 接收并校验后保存。手机“传输”页分为“进行中”和“已传输”两个标签，无需选择传输方式。旧版普通 WatchConnectivity 任务的历史记录、取消和保存回执继续兼容，重试时统一走局域网。[传输说明与测试步骤](LANTransferExperiment.md)
 
 发送前按目录、文件名、大小和 SHA-256 查询手表实际库存，内容相同的歌曲自动跳过，同路径已有未结束任务也不重复加入。指纹缓存独立于手机传输历史，清空记录后仍可去重；旧文件首次查询时计算摘要，文件版本变化会使缓存失效，手表已删除或内容不同的同名文件可重新发送。操作结果用简短摘要提示新增及跳过数量。
 
@@ -76,7 +79,7 @@ LAN 接收开始后，手表自动进入专用全屏接收页，显示进度、�
 ## 验证
 
 ```sh
-xcodebuild -project OfflineWatchPlayerLab.xcodeproj -scheme OfflineWatchPlayerLab \
+xcodebuild -project WatchMusic.xcodeproj -scheme WatchMusic \
   -configuration Debug -destination 'generic/platform=iOS Simulator' build
 Tests/run-playback-tests.sh
 Tests/run-audio-format-tests.sh
@@ -129,7 +132,7 @@ Tests/run-phone-foreground-queue-probe.sh IPHONE_SIMULATOR_UDID
 
 ```sh
 python3 Tests/run-watch-lan-probe.py WATCH_SIMULATOR_UDID \
-  --app /absolute/path/to/Debug-watchsimulator/OfflineWatchPlayerLabWatch.app \
+  --app /absolute/path/to/Debug-watchsimulator/WatchMusicWatch.app \
   --foreground-only
 ```
 
@@ -137,7 +140,7 @@ python3 Tests/run-watch-lan-probe.py WATCH_SIMULATOR_UDID \
 
 ```sh
 python3 Tests/run-watch-lan-probe.py WATCH_SIMULATOR_UDID \
-  --app /absolute/path/to/Debug-watchsimulator/OfflineWatchPlayerLabWatch.app \
+  --app /absolute/path/to/Debug-watchsimulator/WatchMusicWatch.app \
   --pause-only
 ```
 
@@ -147,7 +150,7 @@ python3 Tests/run-watch-lan-probe.py WATCH_SIMULATOR_UDID \
 
 ```sh
 python3 Tests/run-watch-lan-probe.py WATCH_SIMULATOR_UDID \
-  --app /absolute/path/to/Debug-watchsimulator/OfflineWatchPlayerLabWatch.app \
+  --app /absolute/path/to/Debug-watchsimulator/WatchMusicWatch.app \
   --serial-only
 ```
 

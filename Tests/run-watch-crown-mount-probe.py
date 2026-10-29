@@ -34,7 +34,7 @@ def main():
     app = arguments.app.resolve()
     info = plistlib.loads((app / "Info.plist").read_bytes())
     bundle = info["CFBundleIdentifier"]
-    assert bundle == "com.lihao.OfflineWatchPlayerLab.watchkitapp", "unexpected app"
+    assert bundle == "com.lihao.WatchMusic.watchkitapp", "unexpected app"
     root = Path(__file__).resolve().parent.parent
 
     def container():

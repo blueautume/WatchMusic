@@ -98,7 +98,7 @@ Tests/run-lan-inventory-tests.sh IPHONE_SIMULATOR_UDID
 
 ```sh
 python3 Tests/run-watch-lan-probe.py WATCH_SIMULATOR_UDID \
-  --app /absolute/path/to/Debug-watchsimulator/OfflineWatchPlayerLabWatch.app
+  --app /absolute/path/to/Debug-watchsimulator/WatchMusicWatch.app
 ```
 
 探针启动本机 HTTP 服务，通过仅 Debug 可用的 `-lan-offer-file` 启动参数传入真实清单，检查 MP3/FLAC 下载保存、同大小损坏、HTTP 失败、重定向后最终 URL 不符、超出大小及取消后不落盘。它不模拟网络进度，也不替代配对真机的 WatchConnectivity 握手验证。仅测试模式接受 loopback，正式接收清单拒绝 loopback。
@@ -115,7 +115,7 @@ Tests/run-lan-memory-probe.sh IPHONE_SIMULATOR_UDID
 
 ```sh
 python3 Tests/run-watch-lan-probe.py WATCH_SIMULATOR_UDID \
-  --app /absolute/path/to/Debug-watchsimulator/OfflineWatchPlayerLabWatch.app \
+  --app /absolute/path/to/Debug-watchsimulator/WatchMusicWatch.app \
   --foreground-only
 ```
 
@@ -125,7 +125,7 @@ python3 Tests/run-watch-lan-probe.py WATCH_SIMULATOR_UDID \
 
 ```sh
 python3 Tests/run-watch-lan-probe.py WATCH_SIMULATOR_UDID \
-  --app /absolute/path/to/Debug-watchsimulator/OfflineWatchPlayerLabWatch.app \
+  --app /absolute/path/to/Debug-watchsimulator/WatchMusicWatch.app \
   --pause-only
 ```
 
@@ -135,7 +135,7 @@ python3 Tests/run-watch-lan-probe.py WATCH_SIMULATOR_UDID \
 
 ```sh
 python3 Tests/run-watch-lan-probe.py WATCH_SIMULATOR_UDID \
-  --app /absolute/path/to/Debug-watchsimulator/OfflineWatchPlayerLabWatch.app \
+  --app /absolute/path/to/Debug-watchsimulator/WatchMusicWatch.app \
   --serial-only
 ```
 

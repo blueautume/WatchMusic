@@ -467,15 +467,17 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
     private func configureRemoteCommands() {
         let center = MPRemoteCommandCenter.shared()
+        // A music queue uses track navigation in Control Center and on the
+        // Lock Screen. Interval-skip commands otherwise take those positions.
+        center.skipForwardCommand.isEnabled = false
+        center.skipBackwardCommand.isEnabled = false
+        center.seekForwardCommand.isEnabled = false
+        center.seekBackwardCommand.isEnabled = false
         bind(center.playCommand) { $0.resume() }
         bind(center.pauseCommand) { $0.pause() }
         bind(center.togglePlayPauseCommand) { $0.togglePlayback() }
         bind(center.nextTrackCommand) { $0.next() }
         bind(center.previousTrackCommand) { $0.previous() }
-        center.skipForwardCommand.preferredIntervals = [15]
-        center.skipBackwardCommand.preferredIntervals = [15]
-        bind(center.skipForwardCommand) { $0.skip(seconds: 15) }
-        bind(center.skipBackwardCommand) { $0.skip(seconds: -15) }
         let seek = center.changePlaybackPositionCommand
         seek.isEnabled = true
         let target = seek.addTarget { [weak self] event in

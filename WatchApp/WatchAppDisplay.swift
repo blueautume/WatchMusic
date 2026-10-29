@@ -12,7 +12,7 @@ final class WatchAppDisplay: ObservableObject {
     private let motion = CMMotionManager()
     private let motionQueue: OperationQueue = {
         let queue = OperationQueue()
-        queue.name = "com.lihao.OfflineWatchPlayerLab.orientation"
+        queue.name = "com.lihao.WatchMusic.orientation"
         queue.maxConcurrentOperationCount = 1
         queue.qualityOfService = .utility
         return queue
