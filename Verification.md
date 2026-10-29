@@ -311,3 +311,11 @@ Watch 本轮确认了上一轮静态API审查遗漏的问题：40/49mm旧版实�
 系统播控移除±15秒handler，明确禁用skipForward/Backward与连续seekForward/Backward，启用上一首/下一首及播放暂停；保留changePlaybackPosition系统进度拖动。参考 [Apple远程播控命令](https://developer.apple.com/documentation/mediaplayer/mpremotecommandcenter) 和 [companion标识要求](https://developer.apple.com/documentation/bundleresources/information-property-list/wkcompanionappbundleidentifier)。
 
 验证：iOS/watchOS播放器集成各70项通过，新增5项先模拟旧跳秒命令启用和切歌禁用，再检查真实MPRemoteCommandCenter恢复目标配置。完整Debug/Release通用模拟器构建、未签名Release通用真机目标构建均成功（含嵌入Watch）；直接读取三种产物Info.plist核对两端标识、companion关系、显示名、可执行名称和版本。两个Scheme与改名前LaunchAction字典逐项一致，Xcode列出的targets/schemes仅正式命名。网页源/ZIP/两种模拟器安装包内文档一致，当前运行源码与工程无Lab/Demo标记；正式Watch ID的真实挂载/弹层/返回探针16事件通过。未操作真机，未注册、上传或发布App Store记录，系统控制中心最终外观由用户手动安装两端后播放音乐确认。
+
+## 空状态移除重复按钮（2026-10-29）
+
+按用户要求，音乐库“还没有目录”和目录内“还没有音乐”仅保留图标、文字；删除两处ContentUnavailableView actions以及随附按钮样式，右上角新建目录/导入音乐入口保持。搜索无结果也继续只显示对应空提示。全PhoneApp检查未发现其他同构的空状态重复入口，传输和协议缺失页本来没有actions。
+
+Debug/Release完整通用模拟器构建通过；iOS26.5空音乐库、空目录均检查浅/深色，确认内容区无按钮、右上角入口可见。CUA坐标点击被noWindowsAvailable拒绝，因此目录页使用已有Debug导航预览检查，没有宣称实际点击或文件导入通过。本轮仅创建一个模拟器空目录并已删除，临时同意/播放偏好和浅色外观恢复；未操作真机，用户现有Config/PhoneInfo.plist修改未纳入提交。
+
+截图：[音乐库浅色](Artifacts/Previews/EmptyLibrary/library-light.png)、[音乐库深色](Artifacts/Previews/EmptyLibrary/library-dark.png)、[目录浅色](Artifacts/Previews/EmptyLibrary/folder-light.png)、[目录深色](Artifacts/Previews/EmptyLibrary/folder-dark.png)。

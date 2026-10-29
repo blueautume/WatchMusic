@@ -19,15 +19,7 @@ struct LibraryHome: View {
     var body: some View {
         List {
             if folders.isEmpty {
-                ContentUnavailableView {
-                    Label(search.isEmpty ? "还没有目录" : "没有找到目录", systemImage: "folder")
-                } actions: {
-                    if search.isEmpty {
-                        Button("新建目录", systemImage: "folder.badge.plus") {
-                            folderName = ""; showCreate = true
-                        }.buttonStyle(.borderedProminent)
-                    }
-                }
+                ContentUnavailableView(search.isEmpty ? "还没有目录" : "没有找到目录", systemImage: "folder")
                 .listRowBackground(Color.clear)
             }
             ForEach(folders) { folder in
@@ -173,14 +165,8 @@ struct FolderDetailView: View {
             }
             Section {
                 if tracks.isEmpty {
-                    ContentUnavailableView {
-                        Label(search.isEmpty ? "还没有音乐" : "没有找到歌曲", systemImage: "music.note")
-                    } actions: {
-                        if search.isEmpty {
-                            Button("导入音乐", systemImage: "plus") { importing = true }
-                                .buttonStyle(.borderedProminent).disabled(library.isImporting)
-                        }
-                    }.listRowBackground(Color.clear)
+                    ContentUnavailableView(search.isEmpty ? "还没有音乐" : "没有找到歌曲", systemImage: "music.note")
+                        .listRowBackground(Color.clear)
                 }
                 ForEach(tracks) { track in
                     MusicTrackRow(
