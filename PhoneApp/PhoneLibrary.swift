@@ -69,7 +69,6 @@ final class PhoneLibrary: NSObject, ObservableObject {
     @Published private(set) var isImporting = false
     @Published private(set) var importMessage = ""
     @Published private(set) var importProgress: Double = 0
-    @Published private(set) var importSummary: String?
     @Published var errorMessage: String?
     @Published private var trackIndex: [String: [PhoneTrack]] = [:]
 
@@ -232,7 +231,6 @@ final class PhoneLibrary: NSObject, ObservableObject {
         canSend = false
         isImporting = false
         importMessage = ""
-        importSummary = nil
         transferSummary = nil
         connectionDescription = "尚未同意隐私协议"
     }
@@ -367,13 +365,11 @@ final class PhoneLibrary: NSObject, ObservableObject {
         isImporting = true
         importProgress = 0
         importMessage = "正在准备…"
-        importSummary = nil
         let directory = root.appendingPathComponent(folder.name, isDirectory: true)
         let cancellation = PhoneImportCancellation()
         importCancellation = cancellation
         importTask = Task { [weak self] in
             guard let self else { return }
-            var songCount = 0
             var failures: [String] = []
             for (index, source) in urls.enumerated() {
                 guard !Task.isCancelled, !self.isShutDown else { return }
@@ -386,9 +382,8 @@ final class PhoneLibrary: NSObject, ObservableObject {
                         cancellation.cancel(); worker.cancel()
                     }
                     guard !Task.isCancelled, !self.isShutDown else { return }
-                    switch result {
-                    case .success: songCount += 1
-                    case .failure(let error): failures.append("\(source.lastPathComponent)：\(error.localizedDescription)")
+                    if case .failure(let error) = result {
+                        failures.append("\(source.lastPathComponent)：\(error.localizedDescription)")
                     }
                 } else { failures.append("\(source.lastPathComponent)：请选择 MP3 或 FLAC") }
                 self.importProgress = Double(index + 1) / Double(max(urls.count, 1))
@@ -398,7 +393,6 @@ final class PhoneLibrary: NSObject, ObservableObject {
             self.isImporting = false
             self.importMessage = ""
             self.importProgress = 1
-            self.importSummary = "已导入 \(songCount) 首"
             self.refreshFolders()
             if !failures.isEmpty { self.errorMessage = failures.joined(separator: "\n") }
         }

@@ -319,3 +319,9 @@ Watch 本轮确认了上一轮静态API审查遗漏的问题：40/49mm旧版实�
 Debug/Release完整通用模拟器构建通过；iOS26.5空音乐库、空目录均检查浅/深色，确认内容区无按钮、右上角入口可见。CUA坐标点击被noWindowsAvailable拒绝，因此目录页使用已有Debug导航预览检查，没有宣称实际点击或文件导入通过。本轮仅创建一个模拟器空目录并已删除，临时同意/播放偏好和浅色外观恢复；未操作真机，用户现有Config/PhoneInfo.plist修改未纳入提交。
 
 截图：[音乐库浅色](Artifacts/Previews/EmptyLibrary/library-light.png)、[音乐库深色](Artifacts/Previews/EmptyLibrary/library-dark.png)、[目录浅色](Artifacts/Previews/EmptyLibrary/folder-light.png)、[目录深色](Artifacts/Previews/EmptyLibrary/folder-dark.png)。
+
+## 移除导入完成计数（2026-10-29）
+
+删除目录列表内“已导入xx首”提示，同时移除PhoneLibrary中全局importSummary状态、清理赋值和仅供提示使用的成功计数，避免上一次导入结果在其他目录残留。导入中进度、结束后的目录刷新和失败提醒保留。
+
+Debug/Release完整通用模拟器构建通过，既有批量文件操作探针35项通过，源码与测试无已删除状态引用。未新增浅层界面测试、未操作真机；用户Config/PhoneInfo.plist修改保留且不纳入本次提交。

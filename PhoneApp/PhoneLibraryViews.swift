@@ -186,10 +186,6 @@ struct FolderDetailView: View {
                 ProgressView(library.importMessage, value: library.importProgress)
                     .font(.caption).tint(AppPalette.accent).listRowBackground(AppPalette.surface)
             }
-            if let summary = library.importSummary, !summary.isEmpty {
-                Text(summary).font(.caption).foregroundStyle(AppPalette.textSecondary)
-                    .listRowBackground(Color.clear)
-            }
             if playerClearance > 0 { PinnedPlayerListSpace(height: playerClearance) }
         }
         .foregroundStyle(AppPalette.textPrimary)
