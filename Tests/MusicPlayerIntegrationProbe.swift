@@ -73,7 +73,12 @@ struct MusicPlayerIntegrationProbe {
         defaults.set(PlaybackMode.repeatAll.rawValue, forKey: "player.mode")
         defaults.set(1.25, forKey: "player.rate")
         defaults.set(Float(0.7), forKey: "player.volume")
-        player = MusicPlayer()
+        var restoredDecoder: AVAudioPlayer?
+        player = MusicPlayer(makeAudioPlayer: { url in
+            let decoder = try AVAudioPlayer(contentsOf: url)
+            restoredDecoder = decoder
+            return decoder
+        })
         guard let engine = player else { throw ProbeError.failure("player initialization") }
         try check(engine.currentURL == a, "relative-path session restores current track")
         try check(engine.queue == [a, b, c], "session restores queue order")
@@ -81,7 +86,8 @@ struct MusicPlayerIntegrationProbe {
         try check(abs(engine.duration - 16) < 0.15, "decoder exposes duration")
         try check(!engine.isPlaying && !engine.isPreparing, "restoration never starts playback or route activation")
         try check(engine.mode == .repeatAll && engine.playbackRate == 1.25, "preferences restored")
-        try check(abs(engine.volume - 0.7) < 0.01, "volume preference restored")
+        try check(restoredDecoder?.volume == 1, "legacy reduced app gain cannot attenuate restored audio")
+        try check(defaults.object(forKey: "player.volume") == nil, "legacy app gain preference is removed")
         engine.seek(to: 8)
         try check(abs(engine.elapsed - 8) < 0.15, "seek changes paused decoder position")
         engine.seek(to: -100)
@@ -143,6 +149,22 @@ struct MusicPlayerIntegrationProbe {
         engine.stop()
         player = nil
         print("CORE_PLAYER_PASS: \(assertions) restore/seek/queue assertions")
+
+        // A previously muted app must also recover when its slider disappears.
+        // Inspect the real decoder without activating a route or playing audio.
+        defaults.set(try JSONEncoder().encode(snapshot), forKey: "player.session")
+        defaults.set(Float(0), forKey: "player.volume")
+        var migratedDecoder: AVAudioPlayer?
+        let migratedEngine = MusicPlayer(makeAudioPlayer: { url in
+            let decoder = try AVAudioPlayer(contentsOf: url)
+            migratedDecoder = decoder
+            return decoder
+        })
+        try check(migratedEngine.currentURL == a && !migratedEngine.isPlaying,
+                  "legacy mute migration preserves silent session restoration")
+        try check(migratedDecoder?.volume == 1, "legacy mute cannot suppress the system-controlled volume")
+        try check(defaults.object(forKey: "player.volume") == nil, "legacy mute is removed from preferences")
+        migratedEngine.stop()
 
         // Drive the real delegate/state flow while holding route activation. The
         // decoder reads a real local file but never opens or plays an audio output.

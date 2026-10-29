@@ -33,7 +33,6 @@ struct PhoneNowPlayingView: View {
                         PlaybackProgress(player: player)
                         transportControls
                         secondaryControls
-                        volumeControl
                         if let deadline = player.sleepTimerDeadline {
                             SleepTimerCountdown(deadline: deadline)
                         }
@@ -105,14 +104,6 @@ struct PhoneNowPlayingView: View {
                 .accessibilityLabel("选择音频输出设备")
         }
         .buttonStyle(.plain).foregroundStyle(AppPalette.textSecondary).padding(.top, 2)
-    }
-
-    private var volumeControl: some View {
-        HStack(spacing: 14) {
-            Image(systemName: "speaker.fill").font(.caption)
-            Slider(value: Binding(get: { Double(player.volume) }, set: { player.volume = Float($0) }), in: 0...1).tint(AppPalette.accent).accessibilityLabel("应用播放音量")
-            Image(systemName: "speaker.wave.3.fill").font(.caption)
-        }.foregroundStyle(AppPalette.textSecondary)
     }
 
 }

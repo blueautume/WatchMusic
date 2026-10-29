@@ -25,12 +25,6 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
     @Published private(set) var mode: PlaybackMode = .sequential
     @Published private(set) var sleepTimerDeadline: Date?
     @Published var errorMessage: String?
-    @Published var volume: Float = 1 {
-        didSet {
-            audioPlayer?.volume = min(1, max(0, volume))
-            UserDefaults.standard.set(volume, forKey: "player.volume")
-        }
-    }
 
     var formatName: String {
         currentURL.flatMap { AudioFileFormat.format(for: $0) }?.displayName ?? "音频"
@@ -71,7 +65,9 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         mode = PlaybackMode(rawValue: defaults.string(forKey: "player.mode") ?? "") ?? .sequential
         playbackRate = defaults.double(forKey: "player.rate")
         if !(0.5...2).contains(playbackRate) { playbackRate = 1 }
-        if defaults.object(forKey: "player.volume") != nil { volume = defaults.float(forKey: "player.volume") }
+        // Earlier builds persisted a separate app gain. Remove it so system
+        // volume remains the only user-controlled level, including after upgrade.
+        if defaults.object(forKey: "player.volume") != nil { defaults.removeObject(forKey: "player.volume") }
         let center = NotificationCenter.default
         observers.append(center.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] notification in
             let reason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
@@ -381,7 +377,7 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         player.delegate = self
         player.enableRate = true
         player.rate = Float(playbackRate)
-        player.volume = volume
+        player.volume = 1
         if prepare, !player.prepareToPlay() { throw PlayerError.cannotPlay }
         return player
     }

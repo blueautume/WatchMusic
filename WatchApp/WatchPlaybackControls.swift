@@ -258,8 +258,8 @@ private struct WatchPlaybackLayout {
     }
 }
 
-/// This control changes the system's local output volume. The player gain is
-/// deliberately separate, and no volume polling or programmatic writes occur.
+/// The Crown changes system local output volume, without volume polling or
+/// programmatic writes to system volume.
 private struct WatchCrownVolumeControl: WKInterfaceObjectRepresentable {
     let isFocused: Bool
     let isPlaying: Bool

@@ -7,6 +7,7 @@ private enum TransferListTab: String, CaseIterable, Identifiable {
 
 struct TransfersView: View {
     @EnvironmentObject private var library: PhoneLibrary
+    let openSettings: () -> Void
     @State private var selectedTab = TransferListTab.inProgress
     @State private var clearingTasks = false
 
@@ -52,7 +53,9 @@ struct TransfersView: View {
         .background(AppPalette.background)
         .navigationTitle("").navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button(action: openSettings) { Image(systemName: "gearshape") }
+                    .accessibilityLabel("设置")
                 Button {
                     if selectedTab == .inProgress { clearingTasks = true }
                     else { library.clearCompletedTransfers() }

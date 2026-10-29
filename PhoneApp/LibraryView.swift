@@ -24,17 +24,19 @@ struct LibraryView: View {
     @State private var hasPlayer = false
     @State private var tabBarClearance: CGFloat = 68
 
-    private var isInSettings: Bool { tab == 0 && showingSettings }
+    private var isInSettings: Bool { tab == 1 && showingSettings }
 
     var body: some View {
         TabView(selection: $tab) {
             NavigationStack {
-                LibraryHome(openPlayer: { showingPlayer = true }, openSettings: { showingSettings = true })
-                    .navigationDestination(isPresented: $showingSettings) { PhoneSettingsView() }
+                LibraryHome(openPlayer: { showingPlayer = true })
             }
             .tabItem { Label("音乐库", systemImage: "music.note.list") }.tag(0)
 
-            NavigationStack { TransfersView() }
+            NavigationStack {
+                TransfersView(openSettings: { showingSettings = true })
+                    .navigationDestination(isPresented: $showingSettings) { PhoneSettingsView() }
+            }
                 .tabItem { Label("传输", systemImage: "applewatch.and.arrow.forward") }
                 .badge(library.pendingCount).tag(1)
         }

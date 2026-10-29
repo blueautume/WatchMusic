@@ -274,3 +274,14 @@ Watch 重力采样另外改为 Core Motion 原生串行队列回调，移除 0.2
 - 浏览器检查桌面深色与390px浅色窄屏、正文互链和FAQ展开，没有横向溢出。静态网页交付用户部署，没有注册或发布托管网站。
 
 界面：[浅色首次提示](Artifacts/Previews/PrivacyConsent/consent-light.png)、[深色首次提示](Artifacts/Previews/PrivacyConsent/consent-dark.png)、[精简设置](Artifacts/Previews/PrivacyConsent/settings-dark.png)、[离线隐私协议](Artifacts/Previews/PrivacyConsent/privacy-offline-dark.png)、[关于](Artifacts/Previews/PrivacyConsent/about-dark.png)。网页：[桌面隐私页](Artifacts/Previews/Legal/privacy-desktop-dark.png)、[手机支持页](Artifacts/Previews/Legal/support-mobile-light.png)。部署使用 [压缩包](Artifacts/Deployment/watchmusic-web-2026-10-29.zip) 和 [说明](Website/README.md)。
+
+## 传输页设置与系统音量（2026-10-29）
+
+- 设置入口从音乐库移到传输页右上角，以原生 ToolbarItemGroup 按设置、清理的顺序排列；清理禁用不会禁用设置。设置导航归属传输标签，阅读期间隐藏播放条；切回音乐库或从设置返回时恢复正常播放条。设置内容及同意流程保持原有行为。
+- 手机播放页删除独立音量滑条及其绑定。共享播放器删除应用内可变增益、持久化和恢复逻辑，迁移清除旧 player.volume 偏好，真实 AVAudioPlayer 始终保持标准增益1；不改变系统音量本身，避免旧的应用衰减或静音在移除入口后仍影响播放。
+- 手表播放器布局、页面结构及表冠焦点逻辑均未改动，继续用 WKInterfaceVolumeControl(origin:.local) 接管系统本地音量；只有相关注释更新。官方 [focus() 说明](https://developer.apple.com/documentation/watchkit/wkinterfacevolumecontrol/focus()) 确认表冠增减音量能力；不能用模拟器证明真实蓝牙输出或物理表冠的音量变化。
+- 离线与可部署隐私/支持页同步新的设置路径，重新打包 ZIP；仅入口说明变化，不改变数据处理或协议同意版本。已有未跟踪的网页解压目录保留原样。
+
+验证：Debug、Release完整通用iOS Simulator构建（含Watch）通过，无源码编译警告；iOS/watchOS模拟器播放器集成各65项通过，覆盖旧0.7衰减及0静音迁移、真实解码器增益与播放恢复。HTML版本、离线约束、链接锚点、ZIP和两种构建内资源一致检查通过。iOS26.5原生模拟器实际验证音乐库无设置、传输页设置在清理左侧且空记录时仍可用、设置仅两项、设置与音乐库标签切换的播放条恢复，以及浅深色播放页只剩进度滑条和原四个操作图标。使用已有模拟器音频夹具，未播放用户音频；测试同意与播放恢复键及浅色外观已恢复。未安装或操作真机，实际表冠音量由用户手动确认。
+
+截图：[音乐库](Artifacts/Previews/SystemVolume/library-light.png)、[传输页设置位置](Artifacts/Previews/SystemVolume/transfers-settings-light.png)、[浅色播放页](Artifacts/Previews/SystemVolume/player-system-volume-light.png)、[深色播放页](Artifacts/Previews/SystemVolume/player-system-volume-dark.png)。
