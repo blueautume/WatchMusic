@@ -331,3 +331,28 @@ Debug/Release完整通用模拟器构建通过，既有批量文件操作探针3
 iPhone/Watch的Debug与Release共四处MARKETING_VERSION统一为1.0.0，Build保持1；关于后备版本、README、技术支持HTML与部署ZIP同步。隐私协议版本仍为2026-10-29。版本提交在main完成，release分支从该提交创建并推送，后续开发继续留在main；未创建版本标签或发布托管版本。
 
 Debug/Release完整通用模拟器构建成功，直接读取两种安装包及其嵌入Watch的Info.plist，确认均为1.0.0(1)且companion关系一致。网页源与ZIP版本一致检查通过；已有PhoneInfo.plist及Watch Scheme本地修改保留，不纳入版本提交。未操作真机。
+
+## Watch 音量提示与播放控制（2026-10-30）
+
+从 main 新建 `feature/watch-playback-controls`。播放器继续由原生 `WKInterfaceVolumeControl(origin: .local)` 接管表冠；独立的浮层通过 [AVAudioSession.outputVolume 的 KVO](https://developer.apple.com/documentation/avfaudio/avaudiosession/outputvolume) 跟随真实系统音量，显示图标、百分比和音量条，最后一次变化 1.4 秒后隐藏。常驻透明宿主承载观察者生命周期，提示消失后仍可再次出现；弹层、选择输出、离页及进入后台立即取消观察与隐藏任务。旧页面的迟到事件使用代际标识隔离。不增加第二个 Crown 焦点，也不写系统音量或恢复应用增益；到达音量上下限后继续空转不会产生 KVO 变化。
+
+“下一首”继续使用 [系统双指互点两次主操作](https://developer.apple.com/documentation/watchos-apps/enabling-double-tap)，补充页面可见、scene active、无弹层和输出选择、非准备播放的限制，并让系统高亮遵循按钮圆角。需要 watchOS 11 和支持该手势的设备；物理手势未在模拟器验收。
+
+系统播控补全队列数量、当前索引、稳定歌曲标识和非直播标记，并修复队列重排、删除非当前歌曲后系统信息未同步的问题。既有后台 audio、longFormAudio 会话、歌曲元数据和上一首/播放暂停/下一首远程命令继续提供系统 Now Playing 集成。[系统决定 Now Playing 的实际展示](https://developer.apple.com/documentation/mediaplayer/mpnowplayinginfocenter)，这些修改不能证明或强制表盘智能叠放自动显示播放卡片；该项仍需在真机播放后上划验收，并检查系统“智能叠放 → 实时活动”设置。
+
+验证结果：
+
+- Debug / Release 通用 iOS Simulator 完整构建通过（含 Watch），无 Swift 源码编译警告；仅有未使用 AppIntents 的元数据提取提示。
+- iOS / watchOS 播放器静音集成各 81 项断言通过，覆盖系统播放/暂停/seek/结束信息、队列同步、停止清理与 MP3/FLAC 内嵌封面；队列逻辑 46,760 项、Watch 全画布与安全区 1,224 项通过。
+- WatchVolumeFeedback 生产模型探针 22 项通过：KVO 观察启停、有效/重复/无效值、调节延后隐藏、离页清理以及旧事件/旧隐藏任务隔离。用手动 KVO 通知和音量事件夹具验证链路，不写系统音量，不激活音频。
+- 40mm / 49mm 实际 SwiftUI 页面各通过音量提示场景（14 个生命周期事件）、弹层不抢焦点（4 个事件）、弹层释放/重新聚焦及返回拆卸（17 个事件）。提示场景包含显示、再次更新、自动隐藏、重新显示、再次隐藏，并检查截图；音量来自 Debug 模拟器夹具，不能代表物理表冠。UI 探针须逐台运行，初次并行启动时页面未进入 active，串行复测全部通过。
+- 未安装、启动或操作真机，未播放用户音频；模拟器测试歌曲、播放偏好及临时 trace 已清理/恢复。用户已有 PhoneInfo.plist、Watch Scheme 与未跟踪网页解压目录保留。
+
+截图：[40mm 音量提示](Artifacts/Previews/PlaybackControls/40mm/volume-visible.png)、[40mm 自动隐藏后](Artifacts/Previews/PlaybackControls/40mm/volume-dismissed.png)、[49mm 音量提示](Artifacts/Previews/PlaybackControls/49mm/volume-visible.png)、[49mm 自动隐藏后](Artifacts/Previews/PlaybackControls/49mm/volume-dismissed.png)。对应的 volume-trace.jsonl 与截图同目录。
+
+```sh
+Tests/run-watch-volume-feedback-probe.sh WATCH_SIMULATOR_UDID
+python3 Tests/run-watch-crown-mount-probe.py WATCH_SIMULATOR_UDID /absolute/path/Debug-watchsimulator/WatchMusicWatch.app --volume-feedback
+python3 Tests/run-watch-crown-mount-probe.py WATCH_SIMULATOR_UDID /absolute/path/Debug-watchsimulator/WatchMusicWatch.app --dialog
+python3 Tests/run-watch-crown-mount-probe.py WATCH_SIMULATOR_UDID /absolute/path/Debug-watchsimulator/WatchMusicWatch.app --cycle
+```

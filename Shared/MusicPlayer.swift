@@ -49,6 +49,7 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private var metadataTask: Task<Void, Never>?
     private let makeAudioPlayer: (URL) throws -> AVAudioPlayer
     private let activateAudioSession: SessionActivation?
+    private let publishNowPlayingInfo: ([String: Any]?) -> Void
     private let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
 
     override convenience init() {
@@ -57,9 +58,12 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
     /// Dependencies keep session activation and completion transitions testable
     /// without starting a simulator audio output or waiting for a physical route.
-    init(makeAudioPlayer: @escaping (URL) throws -> AVAudioPlayer, activateAudioSession: SessionActivation? = nil) {
+    init(makeAudioPlayer: @escaping (URL) throws -> AVAudioPlayer,
+         activateAudioSession: SessionActivation? = nil,
+         publishNowPlayingInfo: @escaping ([String: Any]?) -> Void = { MPNowPlayingInfoCenter.default().nowPlayingInfo = $0 }) {
         self.makeAudioPlayer = makeAudioPlayer
         self.activateAudioSession = activateAudioSession
+        self.publishNowPlayingInfo = publishNowPlayingInfo
         super.init()
         let defaults = UserDefaults.standard
         mode = PlaybackMode(rawValue: defaults.string(forKey: "player.mode") ?? "") ?? .sequential
@@ -304,13 +308,19 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         metadataTask?.cancel()
         setSleepTimer(minutes: nil)
         UserDefaults.standard.removeObject(forKey: "player.session")
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        publishNowPlayingInfo(nil)
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
     func removeFromQueue(_ url: URL) {
         if isPreparing { activationID = UUID(); isPreparing = false }
-        if currentURL == url { stop() } else { queue.removeAll { $0 == url }; history.removeAll { $0 == url }; savePlayback() }
+        if currentURL == url { stop() }
+        else {
+            queue.removeAll { $0 == url }
+            history.removeAll { $0 == url }
+            savePlayback()
+            updateNowPlaying()
+        }
     }
 
     func playQueueItem(at index: Int) {
@@ -329,6 +339,7 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         guard currentURL == removed else {
             queue = remaining
             savePlayback()
+            updateNowPlaying()
             return
         }
         guard !remaining.isEmpty else { stop(); return }
@@ -352,6 +363,7 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         let adjusted = max(0, min(queue.count, destination - valid.filter { $0 < destination }.count))
         queue.insert(contentsOf: moving, at: adjusted)
         savePlayback()
+        updateNowPlaying()
     }
 
     func requestAudioOutput(onCompletion: (@MainActor () -> Void)? = nil) {
@@ -498,17 +510,27 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
     }
 
     private func updateNowPlaying() {
-        guard currentURL != nil else { return }
+        guard let currentURL else { return }
         var info: [String: Any] = [MPMediaItemPropertyTitle: title, MPMediaItemPropertyArtist: artist,
             MPMediaItemPropertyAlbumTitle: album, MPMediaItemPropertyPlaybackDuration: duration,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: elapsed,
             MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? playbackRate : 0,
             MPNowPlayingInfoPropertyDefaultPlaybackRate: playbackRate,
-            MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.audio.rawValue]
+            MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.audio.rawValue,
+            MPNowPlayingInfoPropertyIsLiveStream: false,
+            MPNowPlayingInfoPropertyPlaybackQueueCount: queue.count]
+        // The system owns the Now Playing card (including the Watch Smart Stack).
+        // Keep its queue context current even when edits do not change the song.
+        if let index = queue.firstIndex(of: currentURL) {
+            info[MPNowPlayingInfoPropertyPlaybackQueueIndex] = index
+        }
+        if let identifier = relativePath(currentURL) {
+            info[MPNowPlayingInfoPropertyExternalContentIdentifier] = identifier
+        }
         if let artworkData, let image = UIImage(data: artworkData) {
             info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
         }
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        publishNowPlayingInfo(info)
     }
 
     private func loadMetadata(_ url: URL) {

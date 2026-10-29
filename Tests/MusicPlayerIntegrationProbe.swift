@@ -93,11 +93,12 @@ struct MusicPlayerIntegrationProbe {
         commands.nextTrackCommand.isEnabled = false
         commands.previousTrackCommand.isEnabled = false
         var restoredDecoder: AVAudioPlayer?
+        var systemInfo: [String: Any]?
         player = MusicPlayer(makeAudioPlayer: { url in
             let decoder = try AVAudioPlayer(contentsOf: url)
             restoredDecoder = decoder
             return decoder
-        })
+        }, publishNowPlayingInfo: { systemInfo = $0 })
         guard let engine = player else { throw ProbeError.failure("player initialization") }
         try check(!commands.skipForwardCommand.isEnabled && !commands.skipBackwardCommand.isEnabled,
                   "system playback controls disable interval skips instead of exposing fifteen-second buttons")
@@ -117,8 +118,17 @@ struct MusicPlayerIntegrationProbe {
         try check(engine.mode == .repeatAll && engine.playbackRate == 1.25, "preferences restored")
         try check(restoredDecoder?.volume == 1, "legacy reduced app gain cannot attenuate restored audio")
         try check(defaults.object(forKey: "player.volume") == nil, "legacy app gain preference is removed")
+        try check((systemInfo?[MPNowPlayingInfoPropertyPlaybackRate] as? NSNumber)?.doubleValue == 0,
+                  "restored system controls describe paused playback")
+        try check(systemInfo?[MPNowPlayingInfoPropertyPlaybackQueueCount] as? Int == 3
+                  && systemInfo?[MPNowPlayingInfoPropertyPlaybackQueueIndex] as? Int == 0,
+                  "system controls receive restored queue context")
+        try check(systemInfo?[MPNowPlayingInfoPropertyExternalContentIdentifier] as? String == relative(a),
+                  "system media identity remains stable without exposing a sandbox URL")
         engine.seek(to: 8)
         try check(abs(engine.elapsed - 8) < 0.15, "seek changes paused decoder position")
+        try check(abs((systemInfo?[MPNowPlayingInfoPropertyElapsedPlaybackTime] as? Double ?? -1) - 8) < 0.15,
+                  "system timeline follows seeking without a recurring timer")
         engine.seek(to: -100)
         try check(engine.elapsed == 0, "seek lower bound")
         engine.seek(to: .infinity)
@@ -161,8 +171,12 @@ struct MusicPlayerIntegrationProbe {
         try check(abs((savedAfterLifecycle?.elapsed ?? 0) - engine.elapsed) < 0.15, "lifecycle save persists the decoder position")
         engine.moveQueueItems(from: IndexSet(integer: 2), to: 0)
         try check(engine.queue == [c, a, b] && engine.currentURL == a, "queue reorder preserves current track")
+        try check(systemInfo?[MPNowPlayingInfoPropertyPlaybackQueueIndex] as? Int == 1,
+                  "system queue index follows a reorder that leaves the song unchanged")
         engine.removeQueueItem(at: 2)
         try check(engine.queue == [c, a] && engine.currentURL == a && !engine.isPlaying, "noncurrent removal preserves paused current track")
+        try check(systemInfo?[MPNowPlayingInfoPropertyPlaybackQueueCount] as? Int == 2,
+                  "system queue count follows noncurrent removal")
         engine.removeQueueItem(at: -1)
         engine.removeQueueItem(at: 999)
         try check(engine.queue == [c, a], "invalid queue removals are no-ops")
@@ -174,6 +188,7 @@ struct MusicPlayerIntegrationProbe {
         try await Task.sleep(nanoseconds: 250_000_000)
         try check(engine.currentURL == nil && engine.queue.isEmpty && !engine.isPlaying, "last queue removal stops player")
         try check(engine.artworkData == nil, "canceled metadata cannot restore stopped-track content")
+        try check(systemInfo == nil, "last removal clears system controls and canceled metadata cannot republish them")
         try check([a, b, c].allSatisfy { manager.fileExists(atPath: $0.path) }, "queue edits never delete audio files")
         engine.stop()
         player = nil
@@ -200,11 +215,12 @@ struct MusicPlayerIntegrationProbe {
         defaults.set(try JSONEncoder().encode(snapshot), forKey: "player.session")
         var completionDecoder: SilentCompletionDecoder?
         var activations: [@MainActor (Bool, String?) -> Void] = []
+        var completionInfo: [String: Any]?
         player = MusicPlayer(makeAudioPlayer: { url in
             let decoder = try SilentCompletionDecoder(contentsOf: url)
             completionDecoder = decoder
             return decoder
-        }, activateAudioSession: { activations.append($0) })
+        }, activateAudioSession: { activations.append($0) }, publishNowPlayingInfo: { completionInfo = $0 })
         guard let completionEngine = player, let decoder = completionDecoder else {
             throw ProbeError.failure("completion transition player")
         }
@@ -212,6 +228,13 @@ struct MusicPlayerIntegrationProbe {
         try check(activations.count == 1 && completionEngine.isPreparing, "resume waits for route activation")
         activations.removeFirst()(true, nil)
         try check(completionEngine.isPlaying, "successful activation marks decoder playing")
+        try check((completionInfo?[MPNowPlayingInfoPropertyPlaybackRate] as? NSNumber)?.doubleValue == 1.25,
+                  "successful playback publishes its real rate to system controls")
+        completionEngine.pause()
+        try check((completionInfo?[MPNowPlayingInfoPropertyPlaybackRate] as? NSNumber)?.doubleValue == 0,
+                  "pause immediately publishes a stopped system timeline")
+        completionEngine.resume()
+        activations.removeFirst()(true, nil)
         completionEngine.play(b, in: [a, b, c])
         try check(activations.count == 1 && completionEngine.isPreparing, "requested next track waits for its route")
         decoder.stop()
@@ -221,6 +244,10 @@ struct MusicPlayerIntegrationProbe {
         }
         try check(completionEngine.isPreparing && completionEngine.currentURL == a, "completion preserves pending user track request")
         try check(abs(completionEngine.elapsed - completionEngine.duration) < 0.15, "completion preserves the ended position")
+        try check((completionInfo?[MPNowPlayingInfoPropertyPlaybackRate] as? NSNumber)?.doubleValue == 0
+                  && abs((completionInfo?[MPNowPlayingInfoPropertyElapsedPlaybackTime] as? Double ?? -1)
+                         - completionEngine.duration) < 0.15,
+                  "completion publishes the ended position while the next route is still pending")
         activations.removeFirst()(false, "模拟路由不可用")
         try check(!completionEngine.isPlaying && !completionEngine.isPreparing, "failed pending route cannot leave playback running")
         let completedSnapshot = defaults.data(forKey: "player.session").flatMap { try? JSONDecoder().decode(Session.self, from: $0) }
@@ -252,6 +279,8 @@ struct MusicPlayerIntegrationProbe {
         }
         activations.removeFirst()(true, nil)
         try check(completionDecoder === decoder && !completionEngine.isPlaying, "stale activation cannot start a new decoder after audio services reset")
+        try check((completionInfo?[MPNowPlayingInfoPropertyPlaybackRate] as? NSNumber)?.doubleValue == 0,
+                  "audio service reset cannot leave the system card reporting active playback")
         completionEngine.resume()
         try check(activations.count == 1 && abs(completionEngine.elapsed - 6) < 0.15, "service recovery recreates the paused decoder at its saved position")
         activations.removeFirst()(true, nil)

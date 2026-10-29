@@ -25,7 +25,9 @@ def main():
     scenario = parser.add_mutually_exclusive_group()
     scenario.add_argument("--dialog", action="store_true", help="verify a presented speed dialog prevents volume focus")
     scenario.add_argument("--cycle", action="store_true", help="exercise actual dialog presentation, closure and page teardown")
+    scenario.add_argument("--volume-feedback", action="store_true", help="verify HUD rendering and auto-hide using volume event fixtures")
     parser.add_argument("--trace-output", type=Path)
+    parser.add_argument("--screenshot-output", type=Path, help="volume-feedback fixture: save visible and dismissed HUD screenshots")
     arguments = parser.parse_args()
     devices = json.loads(simctl("list", "devices", "--json"))["devices"]
     matching = [(runtime, item) for runtime, items in devices.items() for item in items
@@ -64,8 +66,11 @@ def main():
             launch.append("-preview-playback-rate")
         if arguments.cycle:
             launch.append("-preview-crown-cycle")
+        if arguments.volume_feedback:
+            launch.append("-preview-volume-feedback")
         simctl(*launch)
         events = []
+        captured_volume = False
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             events = [json.loads(line) for line in trace.read_text().splitlines()] if trace.exists() else []
@@ -73,7 +78,13 @@ def main():
             complete = "page-appeared" in names and "made" in names and "updated" in names
             cycle_complete = not arguments.cycle or ("dismantled" in names and "page-disappeared" in names
                                                       and "focus-resigned" in names[names.index("dismantled") + 1:])
-            if complete and cycle_complete and (arguments.dialog or "focus-requested" in names):
+            volume_complete = not arguments.volume_feedback or names.count("volume-feedback-hidden") >= 2
+            if arguments.volume_feedback and arguments.screenshot_output and not captured_volume and "volume-feedback-shown" in names:
+                arguments.screenshot_output.mkdir(parents=True, exist_ok=True)
+                time.sleep(.2)  # Let the HUD's opacity transition finish.
+                simctl("io", arguments.device, "screenshot", str(arguments.screenshot_output / "volume-visible.png"))
+                captured_volume = True
+            if complete and cycle_complete and volume_complete and (arguments.dialog or "focus-requested" in names):
                 if arguments.dialog:
                     # An absence assertion needs to include the settled page,
                     # not just the first pre-appearance representable update.
@@ -102,8 +113,20 @@ def main():
             assert "page-disappeared" in names[cursor:] and "dismantled" in names[cursor:], names
             assert "focus-resigned" in names[names.index("dismantled") + 1:], names
             assert "focus-requested" not in names[cursor:], names
+        if arguments.volume_feedback:
+            assert names.count("volume-feedback-shown") == 2 and names.count("volume-feedback-hidden") == 2, names
+            shown = names.index("volume-feedback-shown")
+            hidden = names.index("volume-feedback-hidden")
+            assert hidden > shown, names
+            updates = [event for event in events[shown:hidden] if event["event"] == "volume-feedback-updated"]
+            assert updates, f"no volume update while HUD was visible: {names}"
+            assert events[hidden]["time"] - updates[-1]["time"] >= 1.2, "HUD dismissed before the idle timeout"
+            if arguments.screenshot_output:
+                time.sleep(.25)
+                simctl("io", arguments.device, "screenshot", str(arguments.screenshot_output / "volume-dismissed.png"))
         print("PASS: native Watch volume bridge mounted; " +
-              ("dialog release/refocus and native teardown" if arguments.cycle else
+              ("volume feedback shown, updated, dismissed and reopened (fixture events)" if arguments.volume_feedback else
+               "dialog release/refocus and native teardown" if arguments.cycle else
                "dialog retains Crown input" if arguments.dialog else "native Crown focus requested") +
               f" ({len(events)} actual lifecycle events)")
     finally:

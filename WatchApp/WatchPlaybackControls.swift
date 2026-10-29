@@ -21,7 +21,7 @@ struct NowPlayingView: View {
     var body: some View {
         WatchPlaybackPageContent(
             choosingOutput: choosingOutput,
-            acceptsPrimaryGesture: activeDialog == nil && !choosingOutput,
+            acceptsPrimaryGesture: acceptsCrownInput && !player.isPreparing,
             chooseSpeed: { activeDialog = .speed },
             chooseSleep: { activeDialog = .sleep },
             chooseOutput: {
@@ -29,6 +29,9 @@ struct NowPlayingView: View {
                 player.requestAudioOutput { choosingOutput = false }
             }
         )
+        .overlay {
+            WatchVolumeFeedbackOverlay(isActive: acceptsCrownInput)
+        }
         .background(AppPalette.background)
         .watchPage(title: "", action: { dismiss() }, symbol: "chevron.left")
         // The accessory wasn't mounted by this non-scrolling page, so its
@@ -240,6 +243,7 @@ private struct WatchPlaybackPageContent: View {
             player.next()
             WKInterfaceDevice.current().play(.click)
         } label: { transportSymbol("forward.end.fill", height: height) }
+            .clipShape(RoundedRectangle(cornerRadius: 14))
             .accessibilityLabel("下一首")
         if #available(watchOS 11.0, *) {
             control.handGestureShortcut(.primaryAction,
@@ -247,6 +251,79 @@ private struct WatchPlaybackPageContent: View {
         } else { control }
     }
 
+}
+
+/// Keep volume changes local to this overlay so Crown input doesn't redraw
+/// the playback page or disrupt the native control's focus.
+private struct WatchVolumeFeedbackOverlay: View {
+    @StateObject private var feedback = WatchVolumeFeedback()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let isActive: Bool
+
+    var body: some View {
+        ZStack {
+            // Keep the observer's lifecycle mounted before the first popup.
+            Color.clear
+            if feedback.isVisible {
+                HStack(spacing: 9) {
+                    Image(systemName: feedback.volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(width: 21)
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack {
+                            Text("音量")
+                            Spacer(minLength: 4)
+                            Text("\(Int((feedback.volume * 100).rounded()))%")
+                                .monospacedDigit()
+                        }
+                        .font(.system(size: 12, weight: .semibold))
+                        ProgressView(value: Double(feedback.volume))
+                            .tint(AppPalette.accent)
+                    }
+                }
+                .foregroundStyle(AppPalette.textPrimary)
+                .padding(12)
+                .frame(maxWidth: 172)
+                .background(AppPalette.surface, in: RoundedRectangle(cornerRadius: 16))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 16)
+                        .strokeBorder(AppPalette.accent.opacity(0.4), lineWidth: 1)
+                }
+                .shadow(color: .black.opacity(0.4), radius: 8)
+                .padding(.horizontal, 12)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("音量")
+                .accessibilityValue("百分之\(Int((feedback.volume * 100).rounded()))")
+                .transition(.opacity)
+            }
+        }
+        .allowsHitTesting(false)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: feedback.isVisible)
+        .onAppear { feedback.setActive(isActive) }
+        .onChange(of: isActive) { _, active in feedback.setActive(active) }
+        .onDisappear { feedback.setActive(false) }
+        #if DEBUG && targetEnvironment(simulator)
+        .onChange(of: feedback.isVisible) { _, visible in
+            WatchCrownDiagnostics.record(visible ? "volume-feedback-shown" : "volume-feedback-hidden")
+        }
+        .onChange(of: feedback.volume) { _, _ in
+            WatchCrownDiagnostics.record("volume-feedback-updated")
+        }
+        .task(id: isActive) {
+            guard isActive, ProcessInfo.processInfo.arguments.contains("-preview-volume-feedback") else { return }
+            // Feed the same observer entry point without changing system volume
+            // or playing audio. This fixture only verifies HUD rendering/timing.
+            do {
+                try await Task.sleep(for: .milliseconds(400))
+                feedback.volumeDidChange(0.72)
+                try await Task.sleep(for: .milliseconds(600))
+                feedback.volumeDidChange(0.44)
+                try await Task.sleep(for: .milliseconds(1800))
+                feedback.volumeDidChange(0.68)
+            } catch { return }
+        }
+        #endif
+    }
 }
 
 private enum PlaybackDialog: Equatable {
