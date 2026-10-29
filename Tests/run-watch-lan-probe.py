@@ -314,10 +314,107 @@ def run_serial_cases(device, documents, mp3, flac):
     run_case(device, documents, "paused serial batch keeps waiting files unrequested until resume",
              [(mp3, "trickle"), (flac, "normal"), (mp3, "normal")], "stored", pause=True, serial=True,
              pause_after=2, resume_after=6)
-    run_case(device, documents, "receiver process recovery preserves one-at-a-time queue order",
-             [(mp3, "slow"), (flac, "normal"), (mp3, "normal")], "stored", restart=True, serial=True)
-    run_case(device, documents, "background receiver advances the remaining serial queue after each save",
-             [(mp3, "slow"), (flac, "normal"), (mp3, "normal")], "stored", background=True, serial=True)
+
+
+def run_foreground_case(device, documents, mp3, saving=False):
+    """Real simulator HTTP, lifecycle pause and an explicit fresh offer."""
+    folder = "LANProbe-" + str(uuid.uuid4())
+    identifier = str(uuid.uuid4())
+    body = mp3.read_bytes()
+    token = uuid.uuid4().hex + uuid.uuid4().hex
+    manifest = [{"id": identifier, "folder": folder, "fileName": "foreground.mp3", "byteCount": len(body),
+                 "sha256": hashlib.sha256(body).hexdigest()}]
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    server.routes, server.token = {"/v1/files/" + identifier: (body, "normal" if saving else "trickle")}, token
+    server.range_requests, server.disconnected_paths = [], set()
+    server.request_started = threading.Event()
+    server.request_lock = threading.Lock()
+    server.active_requests, server.requests = {}, []
+    server.peak_requests = server.peak_live_requests = 0
+    server.log_path = documents / "lan-test-events.json"
+    server.outbox_path = documents.parent / "Library/Application Support/LANBackground-v2/receipts.json"
+    server.destination = documents / "Music" / folder
+    server.manifest = manifest
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    offer_path = documents / "lan-probe-offer.json"
+    next_path = documents / "lan-next-offer.json"
+    try:
+        subprocess.run(["xcrun", "simctl", "terminate", device, BUNDLE], capture_output=True, check=False, timeout=15)
+        server.log_path.unlink(missing_ok=True)
+        first = {"protocolVersion": 1, "sessionID": str(uuid.uuid4()), "token": token,
+                 "baseURLs": [f"http://127.0.0.1:{server.server_port}"],
+                 "expiresAt": time.time() - 978_307_200 + 120, "files": manifest}
+        second = dict(first, sessionID=str(uuid.uuid4()))
+        offer_path.write_text(json.dumps(first))
+        next_path.write_text(json.dumps(second))
+        arguments = ["launch", device, BUNDLE, "-lan-offer-file", offer_path.name,
+                     "-lan-background-after", "1.5" if saving else "0.5",
+                     "-lan-foreground-after", "5.0" if saving else "3.0",
+                     "-lan-next-offer-file", next_path.name,
+                     "-lan-replacement-after", "7.0" if saving else "5.0"]
+        if saving:
+            arguments += ["-lan-save-delay", "3.0"]
+        simctl(*arguments)
+        assert server.request_started.wait(timeout=15), "foreground download did not start"
+        deadline = time.monotonic() + 3
+        paused = []
+        while time.monotonic() < deadline:
+            try:
+                paused = [event for event in json.loads(server.log_path.read_text())
+                          if event["kind"] == "paused" and event.get("automaticPause") is True]
+            except (OSError, json.JSONDecodeError):
+                pass
+            if paused:
+                break
+            time.sleep(0.05)
+        assert paused, "inactive transition did not emit automatic pause"
+        time.sleep(0.7)
+        with server.request_lock:
+            assert len(server.requests) == 1 and not server.active_requests, "inactive receiver kept a native HTTP body running"
+        assert not server.destination.exists(), "inactive receiver saved music"
+        if saving:
+            snapshot = documents.parent / "Library/Application Support/LANBackground-v2/transfer.json"
+            item = json.loads(snapshot.read_text())["items"][identifier]
+            assert item["phase"] == "paused" and item.get("lifecyclePaused") is True and item.get("stagingName"), "inactive validation did not retain a complete paused cache"
+        # Wait until active-ready, but before the deliberately delayed new offer.
+        deadline = time.monotonic() + 5
+        ready = []
+        while time.monotonic() < deadline:
+            try:
+                ready = [event for event in json.loads(server.log_path.read_text())
+                         if event["kind"] == "resumed" and event.get("automaticPause") is True]
+            except (OSError, json.JSONDecodeError):
+                pass
+            if ready:
+                break
+            time.sleep(0.05)
+        assert ready, "returning active did not signal fresh-offer readiness"
+        with server.request_lock:
+            assert len(server.requests) == 1, "active receiver retried the old source before a new offer"
+        deadline = time.monotonic() + 30
+        stored = None
+        while time.monotonic() < deadline:
+            try:
+                stored = next((event for event in json.loads(server.log_path.read_text())
+                               if event["kind"] == "stored" and event["sessionID"] == second["sessionID"]), None)
+            except (OSError, json.JSONDecodeError):
+                pass
+            if stored:
+                break
+            time.sleep(0.1)
+        assert stored, "fresh foreground offer did not save"
+        target = server.destination / manifest[0]["fileName"]
+        assert target.is_file() and hashlib.sha256(target.read_bytes()).hexdigest() == manifest[0]["sha256"], "fresh foreground save content mismatch"
+        with server.request_lock:
+            assert len(server.requests) == 2 and server.peak_requests == 1, "foreground restart did not preserve one-at-a-time HTTP"
+        print("PASS: " + ("inactive cancels uncommitted validation, complete cache remains paused, fresh offer saves exact SHA"
+                          if saving else "inactive cancels HTTP, active signals readiness without old-URL retry, fresh foreground offer saves exact SHA"), flush=True)
+    finally:
+        server.shutdown(); server.server_close()
+        offer_path.unlink(missing_ok=True); next_path.unlink(missing_ok=True)
+        if server.destination.exists():
+            shutil.rmtree(server.destination)
 
 
 def main():
@@ -326,11 +423,12 @@ def main():
     parser.add_argument("--app", type=Path, help="Install this Debug Watch .app before running")
     parser.add_argument("--capture", type=Path, help="Save a screenshot during the first download")
     parser.add_argument("--success-only", action="store_true", help="Run only the successful-download scenario")
-    parser.add_argument("--background-only", action="store_true", help="Run background and process-recovery scenarios only")
+    parser.add_argument("--background-only", action="store_true", help="Compatibility alias for the foreground-only lifecycle scenario")
     parser.add_argument("--pause-only", action="store_true", help="Run native pause/resume and cancellation-while-paused scenarios")
     parser.add_argument("--range-only", action="store_true", help="Run complete, malformed and incomplete HTTP 206 response scenarios")
-    parser.add_argument("--disconnect-resume-only", action="store_true", help="Diagnose one suspended TCP disconnect and native Range continuation")
-    parser.add_argument("--serial-only", action="store_true", help="Verify serial order, terminal gating, failure/cancel advance, pause and process recovery")
+    parser.add_argument("--disconnect-resume-only", action="store_true", help="Compatibility alias for interruption and fresh-offer retry")
+    parser.add_argument("--serial-only", action="store_true", help="Verify active serial order, terminal gating, failure/cancel advance and manual pause")
+    parser.add_argument("--foreground-only", action="store_true", help="Verify inactive pause, no stale-source retry and explicit foreground replacement")
     args = parser.parse_args()
     if args.app:
         simctl("install", args.device, str(args.app.resolve()))
@@ -339,13 +437,12 @@ def main():
     documents.mkdir(exist_ok=True)
     mp3, flac = (ROOT / "Tests/Fixtures" / name for name in ["EmbeddedResources.mp3", "EmbeddedResources.flac"])
     try:
+        if args.foreground_only or args.background_only or args.disconnect_resume_only:
+            run_foreground_case(args.device, documents, mp3)
+            run_foreground_case(args.device, documents, mp3, saving=True)
+            return
         if args.serial_only:
             run_serial_cases(args.device, documents, mp3, flac)
-            return
-        if args.disconnect_resume_only:
-            run_case(args.device, documents, "suspended TCP disconnect resumes with native Range request and matching SHA",
-                     [(mp3, "disconnect_resume")], "stored", pause=True, pause_after=2, resume_after=6,
-                     partial=True, require_range=True)
             return
         if args.range_only:
             run_range_cases(args.device, documents, mp3)
@@ -357,12 +454,6 @@ def main():
                      [(mp3, "slow"), (flac, "slow")], "stored", pause=True)
             run_case(args.device, documents, "cancel paused batch prevents late resume and save",
                      [(mp3, "slow")], "cancelled", pause=True, cancel=True)
-            return
-        if args.background_only:
-            run_case(args.device, documents, "background transition does not cancel batch",
-                     [(mp3, "slow"), (flac, "slow")], "stored", background=True)
-            run_case(args.device, documents, "system download survives receiver process restart",
-                     [(mp3, "slow"), (flac, "slow")], "stored", restart=True)
             return
         run_case(args.device, documents, "MP3 and FLAC download, integrity and save receipts",
                  [(mp3, "slow"), (flac, "normal")], "stored", args.capture)

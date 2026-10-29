@@ -3,7 +3,6 @@ import SwiftUI
 struct LANTransferView: View {
     let reception: LANReceptionStatus
     let cancel: () -> Void
-    @EnvironmentObject private var display: WatchAppDisplay
     @Environment(\.watchContentViewport) private var viewport
 
     private var progress: Double {
@@ -12,48 +11,67 @@ struct LANTransferView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let size = viewport?.size ?? geometry.size
-            content(landscape: display.orientation.isLandscape)
-                .padding(.horizontal, 16).padding(.vertical, 10)
+            let size = geometry.size
+            let landscape = viewport?.orientation.isLandscape ?? (size.width > size.height)
+            let layout = LANTransferLayout(size: size, clockFrame: viewport?.clockFrame ?? .zero, landscape: landscape)
+            content(size: size, landscape: landscape, layout: layout)
+                .padding(.top, 6).padding(.bottom, layout.bottom)
                 .frame(width: size.width, height: size.height)
-                .position(viewport?.center(in: geometry) ?? CGPoint(x: size.width / 2, y: size.height / 2))
         }
         .ignoresSafeArea()
-        .background(Color.black)
+        .foregroundStyle(AppPalette.textPrimary)
+        .background(AppPalette.background)
     }
 
-    private func content(landscape: Bool) -> some View {
-        VStack(spacing: 6) {
+    private func content(size: CGSize, landscape: Bool, layout: LANTransferLayout) -> some View {
+        let compact = size.height < 215
+        return VStack(spacing: 6) {
             HStack(spacing: 6) {
                 Image(systemName: "wifi").foregroundStyle(AppPalette.accent)
-                Text("局域网").fontWeight(.medium)
+                Text("接收中").fontWeight(.medium).lineLimit(1).minimumScaleFactor(0.8)
                 Spacer(minLength: 0)
-                Text("\(reception.fileIndex)/\(reception.fileCount)").monospacedDigit().foregroundStyle(.secondary)
-                    .accessibilityLabel("第 \(reception.fileIndex) 首，共 \(reception.fileCount) 首")
-            }.font(.system(size: 12))
-            Spacer(minLength: 0)
-            if landscape {
-                HStack(spacing: 10) {
-                    percentage
-                    fileName(lines: 2).frame(maxWidth: .infinity, alignment: .leading)
+            }.font(.system(size: 11)).frame(height: 16)
+                .padding(.leading, layout.headerLeading).padding(.trailing, layout.headerTrailing)
+            VStack(spacing: 6) {
+                if landscape {
+                    HStack(spacing: 10) {
+                        percentage(compact: compact)
+                        VStack(alignment: .leading, spacing: 2) {
+                            fileName(lines: 2)
+                            queueCount
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                } else {
+                    VStack(spacing: 3) {
+                        percentage(compact: compact)
+                        HStack(spacing: 7) {
+                            fileName(lines: compact ? 1 : 2).frame(maxWidth: .infinity, alignment: .leading)
+                            queueCount.fixedSize()
+                        }
+                    }
                 }
-            } else {
-                percentage
-                fileName(lines: 1).frame(maxWidth: .infinity)
+                ProgressView(value: progress).tint(AppPalette.accent).frame(height: 4).accessibilityLabel("接收进度")
             }
-            ProgressView(value: progress).tint(AppPalette.accent).accessibilityLabel("接收进度")
-            Spacer(minLength: 0)
+            .padding(.leading, layout.middleLeading).padding(.trailing, layout.middleTrailing)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             Button(action: cancel) {
                 Label("取消", systemImage: "xmark").font(.system(size: 13, weight: .medium))
-                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .frame(maxWidth: .infinity).frame(height: 44)
                     .background(AppPalette.surface, in: RoundedRectangle(cornerRadius: 12))
             }.buttonStyle(.plain).accessibilityLabel("取消局域网传输")
+                .padding(.leading, layout.cancelLeading).padding(.trailing, layout.cancelTrailing)
         }
     }
 
-    private var percentage: some View {
+    private var queueCount: some View {
+        Text("\(reception.fileIndex)/\(reception.fileCount)")
+            .font(.system(size: 11)).monospacedDigit().foregroundStyle(AppPalette.textSecondary)
+            .accessibilityLabel("第 \(reception.fileIndex) 首，共 \(reception.fileCount) 首")
+    }
+
+    private func percentage(compact: Bool) -> some View {
         Text(reception.isPaused ? "已暂停" : (reception.isSaving ? "保存中" : "\(Int(progress * 100))%"))
-            .font(.system(size: reception.isSaving || reception.isPaused ? 24 : 34, weight: .semibold, design: .rounded))
+            .font(.system(size: reception.isSaving || reception.isPaused ? 23 : (compact ? 34 : 44), weight: .semibold, design: .rounded))
             .monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
             .foregroundStyle(AppPalette.accent)
     }
@@ -61,5 +79,39 @@ struct LANTransferView: View {
     private func fileName(lines: Int) -> some View {
         Text((reception.fileName as NSString).deletingPathExtension)
             .font(.system(size: 13)).lineLimit(lines).truncationMode(.middle)
+    }
+}
+
+/// Clock clearance affects only the header, middle group, or bottom action it
+/// intersects. The transfer canvas keeps the watch's full width and height.
+private struct LANTransferLayout {
+    var headerLeading: CGFloat = 14
+    var headerTrailing: CGFloat = 14
+    var middleLeading: CGFloat = 14
+    var middleTrailing: CGFloat = 14
+    var cancelLeading: CGFloat = 14
+    var cancelTrailing: CGFloat = 14
+    var bottom: CGFloat = 10
+
+    init(size: CGSize, clockFrame: CGRect, landscape: Bool) {
+        guard !clockFrame.isEmpty else { return }
+        let clockOnLeading = clockFrame.midX < size.width / 2
+        let clockOnBottom = clockFrame.midY > size.height / 2
+        let leadingClearance = max(14, clockFrame.maxX + 6)
+        let trailingClearance = max(14, size.width - clockFrame.minX + 6)
+        if clockFrame.intersects(CGRect(x: 0, y: 6, width: size.width, height: 16)) {
+            if clockOnLeading { headerLeading = leadingClearance }
+            else { headerTrailing = trailingClearance }
+        }
+        if landscape {
+            if clockOnLeading { middleLeading = leadingClearance }
+            else { middleTrailing = trailingClearance }
+            if clockOnBottom {
+                if clockOnLeading { cancelLeading = leadingClearance }
+                else { cancelTrailing = trailingClearance }
+            }
+        } else if clockOnBottom {
+            bottom = max(10, size.height - clockFrame.minY + 6)
+        }
     }
 }

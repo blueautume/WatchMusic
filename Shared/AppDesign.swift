@@ -3,10 +3,23 @@ import UIKit
 
 /// Shared visual language for the phone and watch apps.
 enum AppPalette {
-    static let accent = Color(red: 1, green: 0.48, blue: 0.24)
-    static let background = Color(red: 0.05, green: 0.063, blue: 0.082)
-    static let surface = Color(red: 0.098, green: 0.122, blue: 0.157)
-    static let textSecondary = Color(red: 0.60, green: 0.65, blue: 0.71)
+    #if os(watchOS)
+    // watchOS uses a dark system appearance; universal asset luminosity
+    // variants are not resolved consistently on supported Watch runtimes.
+    static let accent = Color(red: 0.25, green: 0.63, blue: 1)
+    static let background = Color(red: 0.035, green: 0.047, blue: 0.07)
+    static let surface = Color(red: 0.075, green: 0.10, blue: 0.15)
+    static let textPrimary = Color.white
+    static let textSecondary = Color(red: 0.64, green: 0.70, blue: 0.79)
+    #else
+    static let accent = Color("AppAccent")
+    static let background = Color("AppBackground")
+    static let surface = Color("AppSurface")
+    static let textPrimary = Color.primary
+    static let textSecondary = Color("AppTextSecondary")
+    #endif
+    static let controlForeground = Color.white
+    static let onAccent = controlForeground
 }
 
 struct MusicArtwork: View {
@@ -20,7 +33,7 @@ struct MusicArtwork: View {
                 if let data, let artwork = UIImage(data: data) {
                     Image(uiImage: artwork).resizable().scaledToFill()
                 } else {
-                    LinearGradient(colors: [Color(red: 0.95, green: 0.36, blue: 0.17), Color(red: 0.35, green: 0.14, blue: 0.13), AppPalette.surface], startPoint: .topLeading, endPoint: .bottomTrailing)
+                    LinearGradient(colors: [AppPalette.accent, Color(red: 0.07, green: 0.18, blue: 0.36), AppPalette.surface], startPoint: .topLeading, endPoint: .bottomTrailing)
                     Circle().fill(Color.black.opacity(0.56)).padding(side * 0.12)
                     ForEach(0..<4) { index in
                         Circle().stroke(.white.opacity(0.09), lineWidth: 1)

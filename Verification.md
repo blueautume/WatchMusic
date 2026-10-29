@@ -2,6 +2,8 @@
 
 日期：2026-10-28。
 
+本文按迭代保留历史验证。当前版本见末尾“恢复双端前台传输”；手机持续后台任务、分段续传、源发送进度和手表显示活动均为已撤回的历史实验，互控功能也已移除。历史安装与真机结论不代表本轮已重新验收。
+
 ## 已完成
 
 - Xcode 27.1：iPhone + 内嵌 Watch app Debug 模拟器完整构建通过，最终增量构建通过。
@@ -142,3 +144,114 @@
 - 最终两端 Debug / Release 模拟器完整构建和真机签名构建通过；安装前确认没有未完成传输，最终构建已安装到配对手机和手表。
 
 队列与库存逻辑测试不代表新功能的真实无线链路验收；本轮未自动发送用户歌曲。当前批仍有暂停任务未结束时，后批继续等待；手机源 App 仍需保持前台。后台或重启后未完成的本地等待项显示失败，可重新开始，发送时再次去重。
+
+## 手机后台传输与移除跨设备播放（2026-10-28）
+
+旧局域网分支已合并并推送主分支 `main`（`54c6da9`），后续修改位于 `experiment/iphone-background-transfer`。
+
+- 移除两端播放状态消息、互控协议/心跳/回调、启动绑定与界面控制条，以及专属测试；保留两端独立本地播放、系统锁屏和耳机控制。播放队列 46,760 项、iOS / watchOS 静音原生播放器集成分别 21 项断言通过。
+- iOS 26+ 用户前台发起队列时以 `.fail` 策略申请 `BGContinuedProcessingTask`，只在实际 launch handler 后认定有后台资格。整个队列共用一次任务，后台可以完成预检并接续批次。系统原生进度包含手表校验保存，收到成功回执前不达到 100%。iOS 27 使用异步提交接口处理拒绝。每次请求先注册唯一具体任务 ID，再用同一 ID 提交；Info.plist 通配符只作为许可范围。真机发现并修正通配符注册被拒绝的问题后，已观察到真实系统 launch handler 授权。
+- 未获后台资格时退后台保留队列等待恢复；系统取消/过期后保留队列并需显式开始，尊重系统进度界面的用户取消。重启持久恢复当前和后续 FIFO、预检选择及暂停意图，重新检查源文件身份并查询手表库存；不恢复手机旧服务凭据。源文件在捕获版本前归一化为首次解锁后可读，覆盖锁屏后逐段重新打开文件。
+- Watch 每次仅有一个最长 4 MiB 的 Range 请求；完整段通过范围、端点和长度验证后才提交持久断点。新会话、文件 ID、URL 与 token 可依据同目标路径/大小/SHA 复用前缀。整首仍经过完整 SHA、解码和原子保存；坏前缀拒绝后清除。用户取消清理本批断点，恢复收尾保留断点，旧匿名缓存按期限和容量淘汰。
+- 持续任务状态与保存进度纯测试 30 项、原生模拟器协调器与具体任务标识注册契约 57 项通过。手机后台队列原生探针 72 项通过，包含真实源预检与实际持久化、授权/拒绝/过期、重启源版本、用户暂停、交接超时、清除后的迟到授权/消息，以及旧准备任务的迟到 status 不停止新会话。
+- 手机去重与追加队列回归 79 项、批量文件操作 32 项、传输控制模型 22 项通过。旧测试中的“后台主动取消选择”已由新的后台授权及恢复场景替代。
+- Watch 断点真实文件 28 项、后台状态规则 131 项通过。watchOS 26.5 真实 HTTP 分段中断/新凭据恢复/坏前缀拒绝及重试共 5 场景，Range 3 场景、串行 6 场景通过；串行峰值始终为一个未结束下载。
+- 最终 iPhone + 内嵌 Watch Debug 和 Release 真机签名构建通过，两端已安装。测试使用独立生成的 MP3 夹具，不播放音频。
+
+手机真实后台调度验收使用普通进程启动（无 Xcode 调试器）与仅 Debug 的 `-lan-record-lifecycle`：手机日志 `Documents/lan-phone-lifecycle.json` 被动记录真实 scene phase、系统后台资格与接收事件，手表沿用真实生命周期及保存日志；不模拟后台资格。模拟器注入授权的测试不能替代这项真机验收。
+
+## 息屏观察与源进度修正（2026-10-28）
+
+- 配对真机实际观察到：手机获得后台资格并进入 background 后继续收到传输进度；手表转 inactive 后即时 WC 可达性中断。手机系统任务随后结束，两首未完成歌曲保留 paused，未误报保存。该回调无法区分用户取消和系统过期，不能仅凭日志断言系统收回任务的唯一原因。
+- 手机源增加基于成功 contentProcessed 的音频发送偏移回调，按文件每秒限流且响应末尾必报；取消/新会话隔离迟到回调。系统任务使用源偏移与手表接收字节的较大值，重复请求不叠加；源发送完毕仍等待手表校验保存回执，歌曲行继续使用接收数据。真实 HTTP 探针 57 项、手机后台队列探针 91 项通过。
+- 手表增加公开 Foundation idleDisplaySleepDisabled 请求，条件为 App 仍显示且充电或接收；结束条件、无重复请求和再次进入等生命周期策略 14 项通过。没有加入假音频、运动会话或私有屏幕 API。
+- Debug / Release 真机签名构建通过，两端已安装。真机日志确认 charging=true 且请求建立；这只证明请求已提出，持续亮屏效果还需一次真实点亮后的独立观察，未把请求日志当作亮屏通过证据。
+
+用户反馈新版本传输正常，但观察到速度不足 300 KB/s。本轮手机诊断进程显式使用 131072 字节/秒限速（约 128 KiB/s），用于延长息屏观察；不据此推断普通启动的实际性能。限速仅在 Debug 测试环境变量存在时启用，未写入 Scheme，Release 无此代码。按用户要求，后续由用户手动安装和真机测试，开发端仅给出操作步骤，不再自动部署、启动或发送真机测试文件。本轮测试音频未播放，测试目录可由用户在 App 中手动删除。
+
+## 恢复双端前台传输（2026-10-28）
+
+按用户要求，以手机后台实验之前的 `main`（`54c6da9`）为局域网功能基线，继续保留移除手机/手表播放同步和互控。两端本地播放、后台音频、系统锁屏与耳机控制保留。
+
+- 网络传输只在手机与手表两端 App 都 active 时运行；任一端 inactive 或 background 自动暂停并保留队列，覆盖控制中心、锁屏、退后台与返回表盘。
+- 两端回到 active 后自动检查连接并重试，进程重建按原 FIFO 恢复并核对源版本和手表实际库存；已保存歌曲跳过，未完成单曲可能重传。手动暂停意图不能被回前台或重连覆盖。
+- 移除 `BGContinuedProcessingTask`、手表显示活动请求、固定 4 MiB 应用级断点缓存和源发送字节进度；采用手表实际接收和保存回执显示传输结果。
+- 安装与真机操作继续由用户手动完成。开发端不自动部署、启动或发送测试文件；可以执行 Release 构建，但不改写共享 Scheme，保留用户已有设置。
+- iOS 26.5 原生前台队列探针 87 项断言通过，使用真实 PhoneLibrary、文件摘要、HTTP 源准备和隔离持久化。覆盖 inactive/background 暂停、active 自动 FIFO 恢复、手动单项/全局暂停、进程恢复、内容变化拒绝与仅元数据变化后重新核验、预检中暂停/恢复、清除迟到响应、暂断重连与重试合并、暂时握手失败，以及手表自动暂停/恢复通知。另覆盖“开始”已点但旧继续回执尚未返回时退出/恢复，以及已清除准备任务的迟到 status 携带新会话 ID 时不能停止新源。
+
+该探针注入对端消息并调用业务生命周期方法，不代表真实设备场景或无线链路验收。最终两端 Debug 模拟器完整构建与 Release 真机签名构建通过；本轮未自动安装或操作真机，实际锁屏/息屏与无线链路由用户手动验收。此前手机后台实验及显示活动的测试数据仅作历史参考。
+
+- Watch 前台生命周期状态 135 项通过。真实 watchOS 26.5 模拟器 HTTP：生命周期两场景（下载中、完整下载后未commit时离开），手动暂停/恢复/取消三场景，串行四场景通过；并发峰值始终为1，旧URL在active-ready后不会被自动请求。
+- 既有手机去重/追加队列79项、批量文件操作32项、传输控制22项通过；LAN协议89项、保存回执36项、列表排序42项、源版本23项、手表库存25项通过。HTTP源45项、方向规则145项通过。
+- 用户自己修改的 Watch Scheme（Release、关闭调试器）保持原样，不纳入本次代码提交。源码中无持续后台任务、显示活动、4 MiB缓存、源端发送进度或播放互控引用；音频后台能力只用于本地真实播放。
+
+手动验收：在Xcode依次Run更新两端，发送未传输的歌曲；手机返回主屏幕/锁屏，或手表息屏/按表冠，应自动暂停且保留队列。再次打开两端App应自动重试，已保存歌曲跳过；未完成单曲可能从头重传。最后验证手动暂停后退出再回来仍保持暂停。
+
+
+## 悬浮播放器、目录操作与局部状态更新（2026-10-28）
+
+先将用户已有的 Watch Release/不附加调试器 Scheme 配置作为 `0ee0df5` 单独提交并推送，再进行本轮调整；原工程与主分支未修改。
+
+- 手机音乐库根页仅目录；新安装及删除末目录不再自动创建默认目录，已有目录保留。导入仅在目录内；原生模拟器已实际长按进入多选并确认右上“操作/完成”顺序和发送、移动、删除菜单，没有底部批量栏。
+- 播放器使用覆盖层悬浮窗，不占用 TabView 或列表布局；模拟器已检查收起、展开和拖动。播放页保留一行模式、倍速、睡眠和系统音频路由图标；移除原输出说明面板。
+- 播放位置直接读取 AVAudioPlayer 时钟，TimelineView 只更新局部进度；睡眠定时采用可取消的单次截止任务。播放器不再每 0.25 秒发布整个模型；更多菜单使用曲目与播放信息快照，播放结束和库扫描仍能正确更新。另修复音频激活失败/服务重置时的迟到回调与假播放状态。
+- 手机传输不再每秒轮询并发布整个音乐库；真实 LAN 字节事件及旧 WC 原生 Progress KVO 更新独立 PhoneTransferProgress。重复值不发布，停滞由一次可取消的失效任务清除过期速度。列表排序在局部进度观察内完成，正在传输仍优先置顶。
+- 总剩余时间聚合串行队列的剩余大小，以实测速率平滑，文案至少间隔 15 秒才调整；暂停、未知文件大小、尚在准备或停滞时隐藏，不伪造保存耗时。传输两个标签均移除多选和更多菜单，以一个原生清扫图标清除当前标签；SF Symbols 在验证 runtime 无 broom 名称，使用 paintbrush。
+- 图标通过内置 image_gen 参考编辑生成，使用蓝色手表与音符，iPhone 浅/深两种外观，Watch 深色圆形裁切；全部 AppIcon 为无 Alpha 的 1024×1024 PNG。iPhone 使用系统动态颜色资产，Watch 保持系统深色高对比。
+
+测试结果：串行总 ETA 20 项、独立观察发布 5 项；真实 iPhone 模型 controls 22、send 85、foreground 87、bulk 35 项，均通过。原生播放器 iOS/watchOS 各 54 项，覆盖无定时全局发布、睡眠截止替换/取消、播放位置保存、音频激活/结束竞态及重置回调失效。Watch 布局 72 项、方向 145 项均通过。既有播放队列 46,760、音频格式 186、内嵌元数据 277、封面 40、列表 42、LAN 协议 89、保存回执 36、库存 25、文件版本 23 项及速度估算测试通过。
+
+界面检查使用 iOS/watchOS 26.5 模拟器，传输截图为模拟布局夹具，不是无线链路速度证据：
+
+- [目录内长按多选](Artifacts/Previews/Redesign/phone-folder-selection-light.png)、[批量操作菜单](Artifacts/Previews/Redesign/phone-selection-menu-light.png)、[拖动后的收起浮窗](Artifacts/Previews/Redesign/phone-floating-collapsed-light.png)。
+- [深色播放器菜单](Artifacts/Previews/Redesign/phone-player-menu-dark.png)、[进行中与总 ETA](Artifacts/Previews/Redesign/phone-transfers-dark.png)、[浅色已传输页](Artifacts/Previews/Redesign/phone-transfers-completed-light.png)。
+- [40mm 横屏接收页](Artifacts/Previews/Redesign/watch-40-transfer-landscape-right.png)、[49mm 竖屏接收页](Artifacts/Previews/Redesign/watch-49-transfer-portrait.png)、[40mm 横屏播放器](Artifacts/Previews/Redesign/watch-40-player-landscape-right.png)、[49mm 横屏设置](Artifacts/Previews/Redesign/watch-49-settings-landscape-right.png)。
+
+手表时间限制：在 watchOS 26.5 的 40/49mm 模拟器，View 与 Scene 的公开 persistentSystemOverlays(.hidden) 组合未能可靠隐藏固定系统时钟。最终移除自绘时钟与无效隐藏尝试，保留单个系统时间并为它预留物理顶部空间；电量与应用内容随充电方向旋转，按键保留 44pt 触控及曲面边距。系统时间方向仍由 watchOS 控制，本轮未实现让系统时间自动跟随充电摆放旋转，未使用私有 API。Apple 论坛亦有 watchOS 26 时钟不再自动避让的报告：[官方论坛讨论](https://developer.apple.com/forums/thread/796142)。最低 watchOS 10 保持不变。
+
+本轮仅模拟器验证，没有安装、启动或操作真机；真实重力、充电状态、无线传输速度及最终菜单体验由用户手动验收。
+
+最终构建：完整 Debug 与 Release 通用 iOS Simulator 构建均成功（含嵌入的 Watch target）；Watch 独立 Debug 构建与最低 watchOS 10 检查通过。仅有工具链 AppIntents 未使用及已签名嵌入二进制不重复 strip 的标准提示，没有源码编译警告。最终 Watch 模拟器实际 HTTP 前台生命周期回归 2 场景通过，覆盖下载中 inactive 取消、保存前 inactive 保留缓存、回 active 新清单重试及最终 SHA 一致。
+
+Watch 重力采样另外改为 Core Motion 原生串行队列回调，移除 0.25 秒手动取样 Timer；停止和重启用 generation 排除迟到回调。相关 Watch 源码通过 Swift 6 严格并发类型检查。电量因 WatchKit 未提供变更通知，保留仅前台的受限采样，值未变时不发布界面更新。
+
+
+## 固定覆盖播放条与 Watch 原生导航（2026-10-29）
+
+- 手机播放条固定叠放在系统标签栏上方，两边 16pt、条高 72pt，保留封面入口和上一首/播放暂停/下一首。删除拖动手势、拖动柄、收起状态和悬浮球；旧 FloatingPlayerView 已删除，改为边界仅覆盖条本身的 PinnedPlayerView。系统 TabBar 上缘通过原生布局回调读取，没有高度轮询。
+- 音乐库根目录、歌曲和传输列表在播放条存在时增加 88pt 可滚动尾部空间。使用 14 个临时空目录在原生 iPhone 26.5 模拟器滚到最底部，确认最后一个目录可完整出现在条上方，播放条不参与列表的纵向排版。测试目录清理只删除本轮创建的空目录。
+- 手机播放页模式、速度、睡眠、系统音频输出统一为四个 44pt 图标入口，没有按钮说明文字，保留可访问性标签与选中状态。
+- Watch 电量移至“随身音乐”标题之后，移除独立电量栏；音乐库、歌曲、管理、表单及信息行统一显式圆角卡片和曲面侧边距。
+- Watch 播放器分为歌曲封面/歌名/歌手、四操作图标、三播放按钮三个纵向区块；四操作顺序与手机一致。移除旧“更多”、设置/队列专用入口及仅供旧页使用的子视图。竖屏使用原生返回，原生导航保留系统时钟所有权，未调用私有 API。
+- 表冠交给 WKInterfaceVolumeControl(origin: .local) 的原生 focus/resignFocus，关闭直接操作弹层或结束音频输出选择后恢复焦点；不模拟系统音量写入，也不通过轮询抢焦点。输出激活增加完成回调，成功、失败、忙碌拒绝或播放器释放后均能返回，旧无参数调用兼容。
+
+路由闪动确认包含两项原因：原先 viewport.center(in:) 用全局 frame 反向抵消 NavigationStack 的动画位移，令新旧页叠在同一位置；另根页隐藏导航栏、目的页显示导航栏，会在进入过程中改变 safeArea，导致内容先上移再下跳。现改为页内局部布局、不透明背景和裁切，并统一导航栏可见性，不增加私有导航参数、固定延时或安全区缓存。录屏调试只使用 Debug 一次性预览延迟，不进入 Release。
+
+验证：完整 Debug、Release 通用 iOS Simulator 构建（包含 Watch）通过，watchOS 最低版本继续为 10。原生 iOS / watchOS 静音播放器集成各 61 项通过，其中新增 7 项输出完成与焦点返回路径；Watch 本地页面布局 384 项、方向规则 145 项通过。模拟器检查包含 iPhone 长目录尾部、40/49mm 播放页、左右充电横屏、根页标题电量、圆角列表、速度与睡眠原生弹层。
+
+截图保存在 [PinnedPlayer 预览目录](Artifacts/Previews/PinnedPlayer)：[目录底部与固定条](Artifacts/Previews/PinnedPlayer/phone-library-last-folder-light.png)、[手机四图标](Artifacts/Previews/PinnedPlayer/phone-four-controls-light.png)、[40mm 播放页](Artifacts/Previews/PinnedPlayer/watch-40-player-portrait.png)。
+
+限制：watchOS 原生确认弹窗仍沿系统方向呈现；模拟器音频服务不能验证真实蓝牙耳机的表冠音量或焦点，需用户手动检查。未安装、启动或操作任何真机。
+
+最终补查：音乐库与目的页统一原生导航栏可见性后，重新安装最终候选到40/49mm模拟器；49mm圆角音乐库、歌曲列表、竖横屏播放器及横屏传输页再次检查通过。最终截图：[标题后电量及圆角目录](Artifacts/Previews/PinnedPlayer/watch-49-library-rounded.png)、[歌曲列表](Artifacts/Previews/PinnedPlayer/watch-49-tracklist-rounded.png)、[竖屏播放器](Artifacts/Previews/PinnedPlayer/watch-49-player-portrait.png)、[横屏播放器](Artifacts/Previews/PinnedPlayer/watch-49-player-landscape-right.png)、[横屏传输页](Artifacts/Previews/PinnedPlayer/watch-49-transfer-landscape-right.png)。固定播放条在浅色长目录中验证尾部留白，另保存[深色固定播放条](Artifacts/Previews/PinnedPlayer/phone-fixed-player-dark.png)。本轮14个临时空目录已清理。
+
+导航录屏逐帧复核：最终40mm真实 NavigationStack push 的播放器首帧出现后，24个采样的封面顶边均为106px，23个完整播放按钮采样的顶/底均为260/342px，未再出现导航栏后补引起的垂直跳位；只保留正常横向入场。供复核：[1.25秒过渡短片](Artifacts/Previews/PinnedPlayer/watch-40-navigation.mp4)、[关键帧对照](Artifacts/Previews/PinnedPlayer/watch-40-navigation-frames.png)。播放器测试及截图使用生成的MP3/FLAC夹具，没有发送用户音乐。
+
+最终代码补齐：音频会话尚未激活时首次表冠 focus 可能无效，因此真实播放从暂停转为开始时，以一次状态事件重新请求系统焦点；弹层期间仍不抢焦点，无轮询。手机尾部空白独立成 section，保留目录卡片最后一行的原生圆角。
+
+
+## Watch 完整画布与边缘滚动（2026-10-29）
+
+用户真机图显示原生返回栏和底部黑条压缩了可见面积。本轮确认三个叠加原因：转屏前扣掉30/38pt的整条物理区域；所有目的页保留原生导航栏占位，根页另有自绘标题；Surface/Page/List祖先多层矩形裁切阻止卡片在安全区边缘继续绘制。
+
+- WatchSurfaceMetrics 的逻辑画布面积现在始终等于完整物理屏，只交换横屏宽高，绕物理中心旋转；不再减去整条时钟区域或移动画布中心。
+- 根页、导航目的页和模态页统一隐藏原生导航栏，采用32pt视觉、44pt点击范围的自定义返回/关闭。播放器横屏将返回叠在歌曲信息行的空位，避免再占一整行。
+- 通过物理时钟角落的四向逆映射，只对元数据、标题、行内文字、底部按钮等真正相交的区域避让；画布和卡片背景不因这些边距缩小或遮盖。系统仍拥有唯一时钟。
+- 去除Surface/Page总画布clip；List明确plain样式、隐藏系统背景、允许滚动内容越过自身clip，末项通过scroll content margin滚回可操作范围。保留卡片/封面自身圆角、曲面侧边距和本地导航坐标。
+- 播放器与接收页继续三段或对应接收布局，局部适配时钟；表冠系统音量focus和真实播放后的重新请求逻辑未改。
+
+验证：Debug与Release完整通用模拟器构建（含Phone宿主和Watch target）通过；1224项完整画布/时钟映射/44pt操作避让/本地导航断言、145项方向规则断言通过。40/49mm分别检查竖屏、左右充电横屏、音乐库长列表和横屏传输。截图已确认卡片或下一行能露到物理屏幕边缘，不再在屏幕内提前矩形截断。真实NavigationStack的Debug延迟push录屏未见原生栏后补或全局坐标抵消引起的跳位；没有给生产路由加延时。
+
+最新截图：[49mm竖屏播放器](Artifacts/Previews/ImmersiveWatch/49-player-portrait.png)、[49mm横屏播放器](Artifacts/Previews/ImmersiveWatch/49-player-landscape-right.png)、[49mm横屏列表](Artifacts/Previews/ImmersiveWatch/49-library-landscape-right.png)、[40mm横屏列表](Artifacts/Previews/ImmersiveWatch/40-library-right.png)、[40mm反向横屏](Artifacts/Previews/ImmersiveWatch/40-player-left.png)、[横屏接收](Artifacts/Previews/ImmersiveWatch/49-transfer-landscape-left.png)。所有截图为模拟器夹具，测试不播放用户音乐。临时空目录按当前沙盒路径清理，未操作任何真机。
+
+[本轮自定义返回与全画布导航过渡短片](Artifacts/Previews/ImmersiveWatch/40-navigation.mp4)。40mm的8个临时空目录与49mm的8个唯一测试目录均已按当前沙盒路径清理。

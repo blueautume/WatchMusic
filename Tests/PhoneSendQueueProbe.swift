@@ -1,3 +1,4 @@
+import Combine
 import Darwin
 import Foundation
 
@@ -280,6 +281,41 @@ struct PhoneSendQueueProbe {
         try check(latePeer.offers.count == 1 && late.latestTransfer(for: b1)?.state == .stored,
                   "Dispatch-time duplicates finish without another offer")
 
+        // Real LAN byte events update the isolated progress model, with no
+        // navigation/menu publication. No repeating timer is needed for a stall.
+        let measuredPeer = QueuePeer()
+        let measured = model(measuredPeer)
+        _ = await send([a1, a2], using: measured)
+        try await ready(1, library: measured, peer: measuredPeer)
+        let measuredOffer = measuredPeer.offers[0]
+        let measuredFile = measuredOffer.files[0]
+        func byteEvent(_ completed: Int64) -> LANTransferEvent {
+            LANTransferEvent(sessionID: measuredOffer.sessionID, fileID: measuredFile.id, kind: .progress,
+                             completedBytes: completed, totalBytes: measuredFile.byteCount, message: nil)
+        }
+        measured.receiveTransferQueueProbeEvent(byteEvent(max(1, measuredFile.byteCount / 10)))
+        var libraryChanges = 0
+        var measurementChanges = 0
+        let libraryObservation = measured.objectWillChange.sink { libraryChanges += 1 }
+        let progressObservation = measured.transferProgress.objectWillChange.sink { measurementChanges += 1 }
+        try await Task.sleep(nanoseconds: 1_100_000_000)
+        let advancing = byteEvent(max(2, measuredFile.byteCount / 5))
+        measured.receiveTransferQueueProbeEvent(advancing)
+        try check(libraryChanges == 0 && measurementChanges == 1,
+                  "Actual byte progress publishes once locally and never invalidates library menus")
+        try check(measured.transferMetrics[measuredFile.id]?.bytesPerSecond != nil && measured.transferRemainingEstimate != nil,
+                  "Measured throughput supplies current speed and a total queue estimate")
+        measured.receiveTransferQueueProbeEvent(advancing)
+        try check(libraryChanges == 0 && measurementChanges == 1, "Duplicate byte events publish nothing")
+        try await Task.sleep(nanoseconds: 4_200_000_000)
+        try check(measured.transferMetrics[measuredFile.id]?.bytesPerSecond == nil && measured.transferRemainingEstimate == nil,
+                  "A one-shot deadline clears stale speed and the queue estimate without polling")
+        try check(libraryChanges == 0 && measurementChanges == 2,
+                  "Stall expiration is also isolated and publishes only once")
+        withExtendedLifetime([libraryObservation, progressObservation]) {}
+        measuredPeer.finish(measuredOffer.files[0], in: measuredOffer, on: measured)
+        measuredPeer.finish(measuredOffer.files[1], in: measuredOffer, on: measured)
+
         // Source version and content are both real, including same-size writes.
         let mutationPeer = QueuePeer()
         try mutationPeer.remember(a1)
@@ -311,7 +347,7 @@ struct PhoneSendQueueProbe {
 
         // Cancellation generations reject a reply that arrives after clear or
         // background, while a newer submission remains able to make progress.
-        for background in [false, true] {
+        for background in [false] {
             let peer = QueuePeer()
             peer.holdNextInventory = true
             let library = model(peer)

@@ -38,6 +38,7 @@ struct LANTransferEvent: Codable {
     let totalBytes: Int64
     let message: String?
     var controlRevision: Int64? = nil
+    var automaticPause: Bool? = nil
 }
 
 struct LANTransferCommand: Codable {
@@ -47,6 +48,7 @@ struct LANTransferCommand: Codable {
     let fileID: String?
     var fileIDs: [String]? = nil
     var controlRevision: Int64? = nil
+    var automaticPause: Bool? = nil
 }
 
 struct LANTransferControlReply: Codable {

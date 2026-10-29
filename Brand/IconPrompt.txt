@@ -1,14 +1,14 @@
-Tool: built-in image_gen, edit mode (no CLI/API fallback).
-Input: Brand/AppIcon-source.png from commit 92a21cc (the original orange icon).
+Tool: built-in image_gen, referenced-image edit mode. No CLI or API fallback.
 
-Final prompt:
-Use case: precise-object-edit. Asset type: production app icon color variant for the experimental iPhone and Apple Watch music player.
-Input image: the local source image is the edit target, not merely a style reference.
-Primary request: change ONLY the orange/gold ribbon symbol to a vivid blue palette so this experimental app is clearly distinguishable from the original orange app. Preserve the original symbol's exact shape, play-triangle opening, loops, proportions, positioning, scale, silhouette, overlapping folds, shading and material texture. Keep the same deep graphite almost-black background and lighting. Use saturated azure/cobalt blue as the main ribbon color, light cyan/ice-blue highlights, and deeper blue shadow folds. No orange, gold, yellow or warm hues in the ribbon. Do not redesign, simplify or add anything. No letters, labels, text, badges, border, rounded external corners, watermark, UI mockup or device. Full-bleed opaque square icon; clean blue recoloring of the same recognizable icon, safe for the existing circular watchOS crop. Output one final square image.
+Reference: user-attached orange smartwatch with ivory music note. Experimental brand retains blue so it remains distinguishable from the original app.
 
-Saved project assets (all opaque RGB PNG):
-- Brand/AppIcon-source.png: generated master, 1254 x 1254.
-- PhoneApp/Assets.xcassets/AppIcon.appiconset/AppIcon.png: 1024 x 1024.
-- WatchApp/Assets.xcassets/AppIcon.appiconset/AppIcon.png: identical 1024 x 1024 export.
-- Shared/Assets.xcassets/BrandMark.imageset/BrandMark.png: 256 x 256.
-Exports use deterministic sips resizing of the generated master. The original app's assets and the Lab in-app palette are unchanged.
+Dark icon final prompt:
+Use case: logo-brand. Asset type: production square app icon for an independent iPhone and Apple Watch offline music player, 1024x1024 opaque raster.
+Reference image: the supplied orange smartwatch silhouette with a cream double musical note. Use its simple recognizable watch-plus-music idea as the reference, create a refined new icon.
+Create ONE centered icon, not a mockup, not an icon grid. Deep midnight navy background edge-to-edge, bold electric cobalt blue watch outline with smoothly rounded corners, elegant solid warm ivory double musical note inside. Small integrated crown on right. Top and bottom watch strap are simple geometric blue shapes, thick clean strokes. The smartwatch silhouette occupies about 78% of the square and has generous symmetric margin. Crisp flat vector-like geometry, very subtle blue luminosity only, excellent small-size readability. Cohesive polished Apple platform app icon.
+Preserve the recognizable watch and musical note arrangement; use blue rather than orange to distinguish the Lab app from its original app. No text, no badge, no letters, no watermark, no outside rounded-square frame, no rendered physical device, no perspective, no drop shadow outside the symbol.
+
+Light icon final prompt (edit of dark generated master):
+Use case: logo-brand. Create the LIGHT APPEARANCE production app-icon variant of the attached blue smartwatch-and-music-note icon. Preserve its silhouette, precise arrangement, scale, padding, crown position, and geometry exactly. Change only its color roles: edge-to-edge warm ivory almost-white opaque square background, bold rich cobalt blue watch outline and blue top/bottom straps, deep midnight navy double musical note. Flat crisp vector-like geometry; very subtle depth at most. No text, no letters, no badges, no watermark, no mockup, no rounded-corner square frame, no perspective. This is one standalone 1024x1024 square app icon. Ensure the complete watch fits with generous margins and a strong silhouette at small icon size.
+
+Project exports: Brand/AppIcon-source.png (dark master) and Brand/AppIcon-light-source.png (light master), both opaque 1254 x 1254 RGB PNG. Deterministic sips export to 1024 x 1024 for iPhone and Watch appicon catalogs and 256 x 256 for BrandMark. iPhone default/light icon and explicit dark appearance are provided; Watch uses the dark icon for its circular system mask.

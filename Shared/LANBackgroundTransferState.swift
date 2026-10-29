@@ -1,7 +1,7 @@
 import Foundation
 
-/// Persisted application bookkeeping, independent of URLSession's daemon-owned
-/// download files. Completed data stays recoverable until its save is recorded.
+/// Persisted queue bookkeeping. Network work is foreground-only; complete
+/// download caches remain recoverable until their save is recorded.
 struct LANBackgroundTransferState: Codable {
     enum Phase: String, Codable {
         case queued, downloading, paused, validating, stored, failed, cancelled
@@ -15,6 +15,7 @@ struct LANBackgroundTransferState: Codable {
         var stagingName: String?
         var addressIndex = 0
         var controlRevision: Int64? = nil
+        var lifecyclePaused: Bool? = nil
     }
 
     let offer: LANTransferOffer
@@ -62,6 +63,7 @@ struct LANBackgroundTransferState: Codable {
                   item.addressIndex >= 0, item.addressIndex < offer.baseURLs.count,
                   item.taskIdentifier.map({ $0 > 0 }) ?? true,
                   item.controlRevision.map({ $0 >= 0 }) ?? true else { throw invalidState() }
+            if item.lifecyclePaused == true, item.phase != .paused { throw invalidState() }
             if let name = item.stagingName {
                 guard Self.isStagingName(name), item.phase == .validating || item.phase == .paused,
                       item.taskIdentifier == nil, item.receivedBytes == file.byteCount else { throw invalidState() }
@@ -127,6 +129,7 @@ struct LANBackgroundTransferState: Codable {
         item.receivedBytes = event.completedBytes
         item.taskIdentifier = nil
         item.stagingName = nil
+        item.lifecyclePaused = nil
         items[event.fileID] = item
         return true
     }
@@ -144,6 +147,7 @@ struct LANBackgroundTransferState: Codable {
         }
         item.taskIdentifier = nil
         item.stagingName = nil
+        item.lifecyclePaused = nil
         items[fileID] = item
         return true
     }
@@ -154,8 +158,25 @@ struct LANBackgroundTransferState: Codable {
         guard revision > 0, var item = items[fileID], item.phase.isPending,
               item.phase != .validating, revision > (item.controlRevision ?? 0) else { return false }
         item.controlRevision = revision
+        item.lifecyclePaused = nil
         if paused { item.phase = .paused }
         else { item.phase = item.stagingName == nil ? .queued : .validating }
+        items[fileID] = item
+        return true
+    }
+
+    /// Lifecycle pause must never overwrite a user's existing manual pause.
+    @discardableResult mutating func setLifecyclePaused(fileID: String, paused: Bool) -> Bool {
+        guard var item = items[fileID], item.phase.isPending else { return false }
+        if paused {
+            guard item.phase != .paused || item.lifecyclePaused == true else { return false }
+            item.lifecyclePaused = true
+            item.phase = .paused
+        } else {
+            guard item.lifecyclePaused == true else { return false }
+            item.lifecyclePaused = nil
+            item.phase = item.stagingName == nil ? .queued : .validating
+        }
         items[fileID] = item
         return true
     }
@@ -207,8 +228,8 @@ struct LANBackgroundReceiptOutbox: Codable {
     private static func key(sessionID: String, fileID: String) -> String { sessionID + "/" + fileID }
 }
 
-/// Finishing a background wake waits for delegate delivery and the validation
-/// work it started, but never for unrelated tasks still owned by the daemon.
+/// Retiring a legacy background wake waits for its delegate/cancellation drain
+/// and any validation worker that is unwinding, without starting new transfers.
 struct LANBackgroundDeliveryBarrier {
     private(set) var eventsDrained = false
     private var validationKeys = Set<String>()

@@ -239,6 +239,38 @@ struct LANBackgroundStateTests {
         try expect(serial.recordDownloaded(fileID: fileA.id, stagingName: UUID().uuidString + ".download"), "legacy first file can also await save")
         try expect(serial.nextRunnableFileID() == fileA.id, "multiple restored caches save in manifest order")
         try expect(serial.nextRunnableFileID(keeping: UUID().uuidString) == fileA.id, "unknown active identity cannot steal or block the lane")
-        print("PASS: \(assertions) LAN background state assertions")
+        var lifecycle = initial()
+        try expect(lifecycle.setPaused(fileID: fileB.id, paused: true, revision: 1), "manual pause precedes lifecycle interruption")
+        lifecycle.items[fileA.id]?.phase = .downloading
+        try expect(lifecycle.setLifecyclePaused(fileID: fileA.id, paused: true), "inactive pauses running intent automatically")
+        try expect(!lifecycle.setLifecyclePaused(fileID: fileB.id, paused: true), "inactive cannot overwrite a manual pause")
+        try expect(lifecycle.items[fileB.id]?.lifecyclePaused != true, "manual pause has no automatic recovery marker")
+        lifecycle = try roundTrip(lifecycle)
+        try lifecycle.validateForRestoration(allowLoopback: false)
+        try expect(lifecycle.items[fileA.id]?.lifecyclePaused == true && lifecycle.items[fileB.id]?.lifecyclePaused != true,
+                   "restart retains automatic and manual pause distinction")
+        try expect(lifecycle.setLifecyclePaused(fileID: fileA.id, paused: false), "only lifecycle pause can be released automatically")
+        try expect(!lifecycle.setLifecyclePaused(fileID: fileB.id, paused: false), "foreground never resumes a manually paused item")
+        try expect(lifecycle.items[fileA.id]?.phase == .queued && lifecycle.items[fileB.id]?.phase == .paused,
+                   "automatic recovery leaves manual pause untouched")
+        try expect(lifecycle.setLifecyclePaused(fileID: fileA.id, paused: true), "intent can pause on another inactive transition")
+        try expect(lifecycle.setPaused(fileID: fileA.id, paused: true, revision: 2), "user can turn automatic wait into a manual pause")
+        try expect(lifecycle.items[fileA.id]?.lifecyclePaused != true, "explicit pause removes automatic recovery permission")
+        try expect(!lifecycle.setLifecyclePaused(fileID: fileA.id, paused: false), "later foreground respects explicit pause")
+        malformed = lifecycle
+        malformed.items[fileA.id]?.phase = .queued
+        malformed.items[fileA.id]?.lifecyclePaused = true
+        try expect(rejected(malformed), "automatic wait marker cannot accompany running persisted state")
+        var saving = initial()
+        let saveName = UUID().uuidString + ".download"
+        try expect(saving.recordDownloaded(fileID: fileA.id, stagingName: saveName), "fully received file enters validation")
+        try expect(saving.setLifecyclePaused(fileID: fileA.id, paused: true), "inactive defers uncommitted validation")
+        saving = try roundTrip(saving)
+        try saving.validateForRestoration(allowLoopback: false)
+        try expect(saving.items[fileA.id]?.stagingName == saveName && saving.items[fileA.id]?.phase == .paused,
+                   "complete uncommitted file remains a paused cache")
+        try expect(saving.recordTerminal(fileID: fileA.id, kind: .cancelled), "explicit clear can discard a lifecycle-paused cache")
+        try expect(saving.items[fileA.id]?.lifecyclePaused == nil, "terminal cancellation clears automatic recovery marker")
+        print("PASS: \(assertions) LAN foreground state assertions")
     }
 }

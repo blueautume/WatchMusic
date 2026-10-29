@@ -10,9 +10,17 @@ final class WatchAppDisplay: ObservableObject {
     @Published private(set) var batteryPercentage: Int?
 
     private let motion = CMMotionManager()
+    private let motionQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.name = "com.lihao.OfflineWatchPlayerLab.orientation"
+        queue.maxConcurrentOperationCount = 1
+        queue.qualityOfService = .utility
+        return queue
+    }()
     private var tracker = WatchTransferOrientationTracker()
     private var batteryTimer: Timer?
-    private var motionTimer: Timer?
+    private var motionGeneration: UInt64 = 0
+    private var activeMotionGeneration: UInt64?
     private var originalBatteryMonitoring: Bool?
     private var isForeground = false
 
@@ -97,18 +105,28 @@ final class WatchAppDisplay: ObservableObject {
         }
         #endif
         guard motion.isDeviceMotionAvailable else { stopMotion(); return }
-        guard motionTimer == nil else { return }
+        guard activeMotionGeneration == nil else { return }
+        motionGeneration &+= 1
+        let generation = motionGeneration
+        activeMotionGeneration = generation
         motion.deviceMotionUpdateInterval = 0.25
-        motion.startDeviceMotionUpdates()
-        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.sampleGravity() }
+        motion.startDeviceMotionUpdates(to: motionQueue) { [weak self] sample, error in
+            // Move plain values between executors, rather than Core Motion's
+            // framework objects. A transient gap interrupts the debounce window.
+            let gravity = error == nil ? sample?.gravity : nil
+            let value = gravity.map { WatchGravitySample(x: $0.x, y: $0.y, z: $0.z) }
+            Task { @MainActor [weak self] in
+                self?.applyMotionSample(value, generation: generation)
+            }
         }
-        RunLoop.main.add(timer, forMode: .common)
-        motionTimer = timer
     }
 
-    private func sampleGravity() {
-        guard isForeground, isCharging, let gravity = motion.deviceMotion?.gravity else { return }
+    private func applyMotionSample(_ gravity: WatchGravitySample?, generation: UInt64) {
+        guard isForeground, isCharging, activeMotionGeneration == generation else { return }
+        guard let gravity else {
+            tracker = WatchTransferOrientationTracker(orientation: orientation)
+            return
+        }
         // Motion axes are hardware-fixed; left-crown UI is upside down.
         let sign = WKInterfaceDevice.current().crownOrientation == .left ? -1.0 : 1.0
         let next = tracker.update(gravityX: gravity.x * sign,
@@ -117,8 +135,16 @@ final class WatchAppDisplay: ObservableObject {
     }
 
     private func stopMotion() {
-        motionTimer?.invalidate(); motionTimer = nil
+        guard activeMotionGeneration != nil else { return }
+        // Already-enqueued MainActor tasks may outlive stopDeviceMotionUpdates.
+        activeMotionGeneration = nil
         motion.stopDeviceMotionUpdates()
         tracker = WatchTransferOrientationTracker(orientation: orientation)
     }
+}
+
+private struct WatchGravitySample: Sendable {
+    let x: Double
+    let y: Double
+    let z: Double
 }

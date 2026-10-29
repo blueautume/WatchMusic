@@ -11,26 +11,24 @@ struct OfflineWatchApp: App {
 
     init() {
         let engine = WatchPlayer()
-        PlaybackControlCenter.shared.configure(player: engine)
         _player = StateObject(wrappedValue: engine)
     }
     var body: some Scene {
         WindowGroup {
             WatchAppSurface { rootView }
                 .environmentObject(library).environmentObject(player).environmentObject(display)
-                .tint(AppPalette.accent).preferredColorScheme(.dark)
+                .tint(AppPalette.accent)
                 .onAppear {
-                    PlaybackControlCenter.shared.configure(player: player)
-                    display.start(foreground: scenePhase != .background)
-                    library.updateLANForeground(scenePhase != .background)
+                    display.start(foreground: scenePhase == .active)
+                    library.updateLANForeground(scenePhase == .active)
                     #if DEBUG
                     library.recordLANScenePhase(scenePhase == .background ? "background" : (scenePhase == .active ? "active" : "inactive"))
                     #endif
                 }
                 .onChange(of: scenePhase) { _, phase in
-                    library.updateLANForeground(phase != .background)
-                    display.setForeground(phase != .background)
-                    if phase == .active { PlaybackControlCenter.shared.connectionDidChange() }
+                    if phase != .active { player.savePlaybackPosition() }
+                    library.updateLANForeground(phase == .active)
+                    display.setForeground(phase == .active)
                     #if DEBUG
                     library.recordLANScenePhase(phase == .background ? "background" : (phase == .active ? "active" : "inactive"))
                     if phase == .active { library.startLANPreviewIfRequested() }
@@ -47,7 +45,7 @@ struct OfflineWatchApp: App {
     @ViewBuilder private var rootView: some View {
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("-preview-player") {
-            NavigationStack { NowPlayingView() }.task {
+            FolderListView().task {
                 let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
                 let fixture = documents.appendingPathComponent("Music/UI预览/测试旋律.flac")
                 if FileManager.default.fileExists(atPath: fixture.path) { player.prepareLayoutPreview(fixture) }
@@ -81,16 +79,16 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate {
 struct FolderListView: View {
     @EnvironmentObject private var library: WatchLibrary
     @EnvironmentObject private var player: WatchPlayer
-    @ObservedObject private var remote = PlaybackControlCenter.shared
     @State private var newFolder = false
     @State private var libraryInfo = false
     @State private var previewTrackList = false
+    @State private var previewPlayer = false
+    #if DEBUG && targetEnvironment(simulator)
+    @State private var previewNavigationApplied = false
+    #endif
     var body: some View {
         NavigationStack {
             List {
-                if remote.hasRemoteItem {
-                    RemotePlaybackControlsView().listRowInsets(EdgeInsets()).listRowBackground(Color.clear)
-                }
                 if player.currentURL != nil {
                     NavigationLink(destination: NowPlayingView()) {
                         HStack(spacing: 9) {
@@ -101,20 +99,20 @@ struct FolderListView: View {
                                 Text(player.title).font(.headline).lineLimit(1)
                             }
                         }
-                    }.listRowBackground(AppPalette.surface)
+                    }.watchCardRow()
                 }
                 NavigationLink(destination: WatchTrackListView(folderName: nil)) {
                     Label("全部歌曲 · \(library.trackCount)", systemImage: "music.note.list").font(.headline)
-                }.listRowBackground(AppPalette.surface)
+                }.watchCardRow()
                 if library.isReceiving && library.lanReception == nil {
-                    HStack { ProgressView().controlSize(.mini); Text("正在保存歌曲…").font(.caption2) }
+                    HStack { ProgressView().controlSize(.mini); Text("正在保存歌曲…").font(.caption2) }.watchCardRow()
                 }
                 if library.folders.isEmpty {
                     VStack(spacing: 10) {
                         Image(systemName: "music.note.house.fill").font(.largeTitle).foregroundStyle(AppPalette.accent)
                         Text("暂无歌曲").font(.headline)
                         Text("从 iPhone 添加歌曲").font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                    }.frame(maxWidth: .infinity).padding(.vertical, 10).listRowBackground(Color.clear)
+                    }.frame(maxWidth: .infinity).padding(.vertical, 10).watchCardRow()
                 }
                 Section("音乐目录") {
                     ForEach(library.folders) { folder in
@@ -126,20 +124,30 @@ struct FolderListView: View {
                                     Text("\(folder.tracks.count) 首").font(.caption2).foregroundStyle(.secondary)
                                 }
                             }.padding(.vertical, 4)
-                        }.listRowBackground(AppPalette.surface)
+                        }.watchCardRow()
                     }
-                    Button { newFolder = true } label: { Label("新建目录", systemImage: "folder.badge.plus") }
+                    Button { newFolder = true } label: { Label("新建目录", systemImage: "folder.badge.plus") }.watchCardRow()
                 }
-                Button { libraryInfo = true } label: { Label("存储与连接", systemImage: "internaldrive") }.font(.caption)
+                Button { libraryInfo = true } label: { Label("存储与连接", systemImage: "internaldrive") }.font(.caption).watchCardRow()
             }
-            .watchPage(title: "随身音乐")
+            .watchPage(title: "随身音乐", showsBattery: true)
             .navigationDestination(isPresented: $previewTrackList) { WatchTrackListView(folderName: nil) }
+            .navigationDestination(isPresented: $previewPlayer) { NowPlayingView() }
             .onAppear {
                 library.refresh()
-                #if DEBUG && targetEnvironment(simulator)
-                if ProcessInfo.processInfo.arguments.contains("-preview-track-list") { previewTrackList = true }
-                #endif
             }
+            #if DEBUG && targetEnvironment(simulator)
+            .task {
+                guard !previewNavigationApplied else { return }
+                previewNavigationApplied = true
+                let arguments = ProcessInfo.processInfo.arguments
+                if arguments.contains("-preview-route-delay") {
+                    do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                }
+                if arguments.contains("-preview-player") { previewPlayer = true }
+                else if arguments.contains("-preview-track-list") { previewTrackList = true }
+            }
+            #endif
             .sheet(isPresented: $newFolder) {
                 WatchAppSurface {
                     WatchNameEntry(title: "新建目录", initial: "", prompt: "目录名称") { name, done in library.createFolder(name, completion: done) }
@@ -168,11 +176,11 @@ private struct WatchTrackListView: View {
     }
     var body: some View {
         List {
-            TextField("搜索歌曲", text: $search)
+            TextField("搜索歌曲", text: $search).watchCardRow()
             if !tracks.isEmpty {
                 Button {
                     if let first = tracks.first { player.play(first, in: tracks); showingPlayer = true }
-                } label: { Label("播放全部 · \(tracks.count)", systemImage: "play.fill").foregroundStyle(AppPalette.accent) }
+                } label: { Label("播放全部 · \(tracks.count)", systemImage: "play.fill").foregroundStyle(AppPalette.accent) }.watchCardRow()
             }
             ForEach(tracks, id: \.self) { track in
                 HStack(spacing: 5) {
@@ -188,11 +196,11 @@ private struct WatchTrackListView: View {
                     }.buttonStyle(.plain)
                     Button { managingTrack = WatchSongSelection(url: track) } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44).contentShape(Rectangle()) }
                         .buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("管理 \(track.deletingPathExtension().lastPathComponent)")
-                }.listRowBackground(AppPalette.surface)
+                }.watchCardRow()
             }
-            if tracks.isEmpty { Text(search.isEmpty ? "此处还没有歌曲" : "没有匹配的歌曲").font(.caption).foregroundStyle(.secondary) }
+            if tracks.isEmpty { Text(search.isEmpty ? "此处还没有歌曲" : "没有匹配的歌曲").font(.caption).foregroundStyle(.secondary).watchCardRow() }
             if folderName != nil {
-                Button { managingFolder = true } label: { Label("管理此目录", systemImage: "folder.badge.gearshape") }.font(.caption)
+                Button { managingFolder = true } label: { Label("管理此目录", systemImage: "folder.badge.gearshape") }.font(.caption).watchCardRow()
             }
         }
         .watchPage(title: folderName ?? "全部歌曲", action: { dismiss() }, symbol: "chevron.left")
@@ -209,204 +217,6 @@ private struct WatchTrackListView: View {
     }
 }
 
-/// A single playback surface keeps every primary action inside the safe area.
-struct NowPlayingView: View {
-    @EnvironmentObject private var player: WatchPlayer
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.watchContentViewport) private var viewport
-    @State private var showingQueue = false
-    @State private var showingSettings = false
-
-    var body: some View {
-        GeometryReader { geometry in
-            let size = viewport?.size ?? geometry.size
-            let compact = size.width < 180 || size.height < 185
-            let controlSize: CGFloat = compact ? 44 : 56
-            VStack(spacing: compact ? 5 : 9) {
-                HStack(spacing: 0) {
-                    Button { dismiss() } label: {
-                        Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold))
-                            .frame(width: 44, height: 44).contentShape(Rectangle())
-                    }.accessibilityLabel("返回音乐库")
-                    Spacer(minLength: 0)
-                    Button { showingQueue = true } label: {
-                        Image(systemName: "list.bullet").font(.system(size: 17, weight: .medium))
-                            .frame(width: 44, height: 44).contentShape(Rectangle())
-                    }.accessibilityLabel("播放队列")
-                    Button { showingSettings = true } label: {
-                        Image(systemName: "ellipsis").font(.system(size: 18, weight: .semibold))
-                            .frame(width: 44, height: 44).contentShape(Rectangle())
-                    }.accessibilityLabel("播放设置")
-                }.foregroundStyle(.secondary)
-
-                HStack(spacing: 9) {
-                    MusicArtwork(title: player.title, data: player.artworkData)
-                        .frame(width: compact ? 34 : 44, height: compact ? 34 : 44)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                        .accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(player.isPreparing ? "正在准备…" : player.title)
-                            .font(.system(size: compact ? 13 : 15, weight: .semibold))
-                            .lineLimit(2).minimumScaleFactor(0.85)
-                        if !compact, !player.artist.isEmpty {
-                            Text(player.artist).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
-                        }
-                    }.frame(maxWidth: .infinity, alignment: .leading)
-                }.frame(maxHeight: .infinity)
-
-                HStack(spacing: compact ? 3 : 8) {
-                    Button { player.previous(); WKInterfaceDevice.current().play(.click) } label: {
-                        Image(systemName: "backward.end.fill").font(.system(size: compact ? 20 : 22))
-                            .frame(maxWidth: .infinity, minHeight: controlSize).contentShape(Rectangle())
-                    }.accessibilityLabel("上一首")
-                    Button(action: player.togglePlayback) {
-                        Group {
-                            if player.isPreparing { ProgressView().tint(.black) }
-                            else { Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.system(size: compact ? 21 : 25, weight: .semibold)) }
-                        }.foregroundStyle(.black).frame(width: controlSize, height: controlSize)
-                            .background(AppPalette.accent, in: Circle()).contentShape(Circle())
-                    }.accessibilityLabel(player.isPlaying ? "暂停" : "播放")
-                    nextButton(size: controlSize, compact: compact)
-                }.disabled(player.currentURL == nil).frame(height: controlSize)
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 12)
-            .padding(.top, 4)
-            .padding(.bottom, compact ? 12 : 16)
-            .frame(width: size.width, height: size.height)
-            .position(viewport?.center(in: geometry) ?? CGPoint(x: size.width / 2, y: size.height / 2))
-        }
-        // The app surface already reserves the clock/battery strip. A hidden
-        // navigation bar still contributes watchOS insets unless ignored here.
-        .ignoresSafeArea()
-        .background(AppPalette.background)
-        .navigationTitle("").toolbar(.hidden, for: .navigationBar)
-        .sheet(isPresented: $showingQueue) { WatchAppSurface { WatchQueueDetailView().modifier(WatchOperationErrorAlert()) } }
-        .sheet(isPresented: $showingSettings) { WatchAppSurface { WatchPlaybackSettingsView().modifier(WatchOperationErrorAlert()) } }
-        #if DEBUG && targetEnvironment(simulator)
-        .onAppear {
-            if ProcessInfo.processInfo.arguments.contains("-preview-player-settings") { showingSettings = true }
-            if ProcessInfo.processInfo.arguments.contains("-preview-player-queue") { showingQueue = true }
-        }
-        #endif
-    }
-
-    @ViewBuilder private func nextButton(size: CGFloat, compact: Bool) -> some View {
-        if #available(watchOS 11.0, *) {
-            nextControl(size: size, compact: compact)
-                .handGestureShortcut(.primaryAction, isEnabled: player.currentURL != nil && !showingQueue && !showingSettings)
-        } else { nextControl(size: size, compact: compact) }
-    }
-    private func nextControl(size: CGFloat, compact: Bool) -> some View {
-        Button { player.next(); WKInterfaceDevice.current().play(.click) } label: {
-            Image(systemName: "forward.end.fill").font(.system(size: compact ? 20 : 22))
-                .frame(maxWidth: .infinity, minHeight: size).contentShape(Rectangle())
-        }.accessibilityLabel("下一首")
-    }
-}
-
-private struct WatchQueueDetailView: View {
-    @EnvironmentObject private var player: WatchPlayer
-    @Environment(\.dismiss) private var dismiss
-    @State private var selectedIndex: Int?
-    var body: some View {
-        NavigationStack {
-            List {
-                ForEach(Array(player.queue.enumerated()), id: \.element) { index, url in
-                    HStack {
-                        Button { player.playQueueItem(at: index); dismiss() } label: {
-                            Text(url.deletingPathExtension().lastPathComponent).lineLimit(2)
-                                .foregroundStyle(player.currentURL == url ? AppPalette.accent : .white)
-                        }.buttonStyle(.plain).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                        Button { selectedIndex = index } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44).contentShape(Rectangle()) }
-                            .buttonStyle(.plain).accessibilityLabel("调整队列")
-                    }
-                }
-                if player.queue.isEmpty { Text("还没有播放队列").font(.caption).foregroundStyle(.secondary) }
-            }.watchPage(title: "播放队列", action: { dismiss() })
-                .confirmationDialog("调整播放队列", isPresented: Binding(get: { selectedIndex != nil }, set: { if !$0 { selectedIndex = nil } }), titleVisibility: .visible) {
-                    Button("移到最前") { if let index = selectedIndex, player.queue.indices.contains(index) { player.moveQueueItems(from: IndexSet(integer: index), to: 0) }; selectedIndex = nil }
-                    Button("从队列移除", role: .destructive) { if let index = selectedIndex { player.removeQueueItem(at: index) }; selectedIndex = nil }
-                    Button("取消", role: .cancel) { selectedIndex = nil }
-                }
-        }
-    }
-}
-
-private struct WatchPlaybackSettingsView: View {
-    @EnvironmentObject private var player: WatchPlayer
-    @ObservedObject private var remote = PlaybackControlCenter.shared
-    @Environment(\.dismiss) private var dismiss
-    @State private var previewRate = false
-    var body: some View {
-        NavigationStack {
-            List {
-                if remote.hasRemoteItem {
-                    RemotePlaybackControlsView().listRowInsets(EdgeInsets()).listRowBackground(Color.clear)
-                }
-                Section("播放方式") {
-                    Button(action: player.cycleMode) { Label(player.mode.title, systemImage: player.mode.symbol) }
-                    NavigationLink(destination: WatchPlaybackRateView()) {
-                        LabeledContent("播放速度", value: String(format: "%g×", player.playbackRate))
-                    }
-                    NavigationLink(destination: WatchQueueDetailView().navigationBarBackButtonHidden()) { Label("播放队列", systemImage: "list.bullet") }
-                }
-                Section("音频输出") {
-                    Button(action: player.requestAudioOutput) { Label("连接音频输出", systemImage: "headphones") }
-                    Text(player.routeDescription).font(.caption2).foregroundStyle(AppPalette.accent)
-                    WatchSystemVolume().frame(height: 44).accessibilityLabel("手表系统音量")
-                }
-                Section("睡眠定时") {
-                    if let remaining = player.sleepRemaining {
-                        Text("将在 \(watchTime(remaining)) 后暂停").foregroundStyle(AppPalette.accent)
-                        Button("取消定时", role: .destructive) { player.setSleepTimer(minutes: nil) }
-                    }
-                    ForEach([15, 30, 45, 60], id: \.self) { minutes in Button("\(minutes) 分钟后暂停") { player.setSleepTimer(minutes: minutes) } }
-                }
-                Section {
-                    Button("停止播放", role: .destructive) { player.stop(); dismiss() }
-                }
-            }.watchPage(title: "播放设置", action: { dismiss() })
-                .navigationDestination(isPresented: $previewRate) { WatchPlaybackRateView() }
-                #if DEBUG && targetEnvironment(simulator)
-                .onAppear { if ProcessInfo.processInfo.arguments.contains("-preview-playback-rate") { previewRate = true } }
-                #endif
-        }
-    }
-}
-
-private struct WatchPlaybackRateView: View {
-    @EnvironmentObject private var player: WatchPlayer
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        List {
-            ForEach([0.75, 1.0, 1.25, 1.5, 2.0], id: \.self) { rate in
-                Button {
-                    player.setRate(rate)
-                    dismiss()
-                } label: {
-                    HStack {
-                        Text(String(format: "%g×", rate))
-                        Spacer()
-                        if player.playbackRate == rate { Image(systemName: "checkmark").foregroundStyle(AppPalette.accent) }
-                    }.frame(minHeight: 44)
-                }
-            }
-        }
-        .watchPage(title: "播放速度", action: { dismiss() }, symbol: "chevron.left")
-    }
-}
-
-private struct WatchSystemVolume: WKInterfaceObjectRepresentable {
-    func makeWKInterfaceObject(context: Context) -> WKInterfaceVolumeControl {
-        let control = WKInterfaceVolumeControl(origin: .local)
-        control.setTintColor(UIColor(AppPalette.accent))
-        return control
-    }
-    func updateWKInterfaceObject(_ object: WKInterfaceVolumeControl, context: Context) {}
-}
-
 private struct WatchTrackActionsView: View {
     @EnvironmentObject private var library: WatchLibrary
     @EnvironmentObject private var player: WatchPlayer
@@ -418,12 +228,12 @@ private struct WatchTrackActionsView: View {
     var body: some View {
         NavigationStack {
             List {
-                Text(track.deletingPathExtension().lastPathComponent).font(.headline)
+                Text(track.deletingPathExtension().lastPathComponent).font(.headline).watchCardRow()
                 Text("\(AudioFileFormat.format(for: track)?.displayName ?? "音频") · \(track.deletingLastPathComponent().lastPathComponent)")
-                    .font(.caption2).foregroundStyle(.secondary)
-                Button { renaming = true } label: { Label("重命名", systemImage: "pencil") }
-                Button { moving = true } label: { Label("移动到目录", systemImage: "folder") }
-                Button(role: .destructive) { deleting = true } label: { Label("删除歌曲", systemImage: "trash") }
+                    .font(.caption2).foregroundStyle(.secondary).watchCardRow()
+                Button { renaming = true } label: { Label("重命名", systemImage: "pencil") }.watchCardRow()
+                Button { moving = true } label: { Label("移动到目录", systemImage: "folder") }.watchCardRow()
+                Button(role: .destructive) { deleting = true } label: { Label("删除歌曲", systemImage: "trash") }.watchCardRow()
             }.watchPage(title: "管理歌曲", action: { dismiss() })
                 .sheet(isPresented: $renaming) {
                     WatchAppSurface { WatchNameEntry(title: "重命名歌曲", initial: track.deletingPathExtension().lastPathComponent, prompt: "歌曲名称") { value, done in
@@ -441,9 +251,9 @@ private struct WatchTrackActionsView: View {
                                     library.moveTrack(track, to: folder.name) { success in
                                         if success { if !FileManager.default.fileExists(atPath: track.path) { player.removeFromQueue(track) }; moving = false; dismiss() }
                                     }
-                                }
+                                }.watchCardRow()
                             }
-                            if library.folders.count < 2 { Text("请先在音乐库中新建另一个目录。").font(.caption).foregroundStyle(.secondary) }
+                            if library.folders.count < 2 { Text("请先在音乐库中新建另一个目录。").font(.caption).foregroundStyle(.secondary).watchCardRow() }
                         }.watchPage(title: "移动到", action: { moving = false })
                     }.modifier(WatchOperationErrorAlert()) }
                 }
@@ -470,9 +280,9 @@ private struct WatchFolderActionsView: View {
     var body: some View {
         NavigationStack {
             List {
-                Text(folderName).font(.headline)
-                Button("重命名目录") { renaming = true }
-                Button("删除目录", role: .destructive) { deleting = true }
+                Text(folderName).font(.headline).watchCardRow()
+                Button("重命名目录") { renaming = true }.watchCardRow()
+                Button("删除目录", role: .destructive) { deleting = true }.watchCardRow()
             }.watchPage(title: "管理目录", action: { dismiss() })
                 .sheet(isPresented: $renaming) {
                     WatchAppSurface { WatchNameEntry(title: "重命名目录", initial: folderName, prompt: "目录名称") { value, done in
@@ -508,11 +318,11 @@ private struct WatchNameEntry: View {
     var body: some View {
         NavigationStack {
             Form {
-                TextField(prompt, text: $value)
+                TextField(prompt, text: $value).watchCardRow()
                 Button(saving ? "正在保存…" : "保存") {
                     saving = true
                     save(value) { success in saving = false; if success { dismiss() } }
-                }.disabled(saving || value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }.disabled(saving || value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).watchCardRow()
             }.watchPage(title: title, action: { dismiss() })
                 .onAppear { value = initial }
                 .alert("无法保存", isPresented: Binding(get: { library.errorMessage != nil }, set: { if !$0 { library.errorMessage = nil } })) {
@@ -529,24 +339,43 @@ private struct WatchLibraryInfoView: View {
         NavigationStack {
             List {
                 Section("手表本地资料") {
-                    Label("\(library.trackCount) 首歌曲", systemImage: "music.note.list")
-                    LabeledContent("音乐占用", value: watchBytes(library.totalBytes))
-                    LabeledContent("设备可用", value: watchBytes(library.availableBytes))
+                    Label("\(library.trackCount) 首歌曲", systemImage: "music.note.list").watchCardRow()
+                    LabeledContent("音乐占用", value: watchBytes(library.totalBytes)).watchCardRow()
+                    LabeledContent("设备可用", value: watchBytes(library.availableBytes)).watchCardRow()
                 }
                 Section("连接") {
-                    Label(library.connectionStatus, systemImage: "iphone.and.arrow.forward").font(.caption)
-                    if let message = library.lastTransferMessage { Text(message).font(.caption2).foregroundStyle(AppPalette.accent) }
+                    Label(library.connectionStatus, systemImage: "iphone.and.arrow.forward").font(.caption).watchCardRow()
+                    if let message = library.lastTransferMessage { Text(message).font(.caption2).foregroundStyle(AppPalette.accent).watchCardRow() }
                 }
             }.watchPage(title: "存储与连接", action: { dismiss() })
         }
     }
 }
 
-private func watchTime(_ value: TimeInterval) -> String {
-    guard value.isFinite else { return "0:00" }
-    let seconds = max(0, Int(value))
-    return seconds >= 3_600 ? String(format: "%d:%02d:%02d", seconds / 3_600, seconds / 60 % 60, seconds % 60) : String(format: "%d:%02d", seconds / 60, seconds % 60)
+/// Plain lists keep predictable navigation geometry. Each row supplies its own
+/// rounded card and curved-screen margins rather than relying on list styling.
+private extension View {
+    func watchCardRow() -> some View {
+        modifier(WatchCardRow())
+    }
 }
+
+private struct WatchCardRow: ViewModifier {
+    @Environment(\.watchPageInsets) private var pageInsets
+
+    func body(content: Content) -> some View {
+        content
+            .listRowBackground(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(AppPalette.surface)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 3)
+            )
+            .listRowInsets(EdgeInsets(top: 8, leading: max(14, pageInsets?.rowLeading ?? 14),
+                                     bottom: 8, trailing: max(14, pageInsets?.rowTrailing ?? 14)))
+    }
+}
+
 private func watchBytes(_ value: Int64) -> String { ByteCountFormatter.string(fromByteCount: value, countStyle: .file) }
 
 private struct WatchSongSelection: Identifiable { let url: URL; var id: String { url.absoluteString } }
