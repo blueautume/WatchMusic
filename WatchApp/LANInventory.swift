@@ -18,6 +18,9 @@ final class LANInventory: @unchecked Sendable {
     private var loaded = false
     private let maximumEntries = 5_000
     private let maximumCacheBytes = 8 * 1_024 * 1_024
+    private let lifecycleLock = NSLock()
+    private var isForeground = false
+    private var foregroundGeneration: UInt64 = 0
 
     init(rootURL: URL, cacheURL: URL? = nil) {
         root = rootURL.standardizedFileURL
@@ -25,16 +28,40 @@ final class LANInventory: @unchecked Sendable {
             .appendingPathComponent("LANInventory-v1", isDirectory: true).appendingPathComponent("fingerprints.json")
     }
 
+    /// Invalidate queued queries and interrupt large legacy-file hashes as soon
+    /// as the app leaves the foreground. Returning must start a fresh query.
+    func setForeground(_ value: Bool) {
+        lifecycleLock.lock()
+        if isForeground && !value { foregroundGeneration &+= 1 }
+        isForeground = value
+        lifecycleLock.unlock()
+    }
+
+    private func queryGeneration() -> UInt64? {
+        lifecycleLock.lock(); defer { lifecycleLock.unlock() }
+        return isForeground ? foregroundGeneration : nil
+    }
+
+    private func checkForeground(_ generation: UInt64?) throws {
+        lifecycleLock.lock()
+        let allowed = isForeground && generation == foregroundGeneration
+        lifecycleLock.unlock()
+        guard allowed else { throw CancellationError() }
+    }
+
     func matching(_ request: LANInventoryRequest,
                   completion: @escaping (Result<LANInventoryReply, Error>) -> Void) {
+        let generation = queryGeneration()
         queue.async { [self] in
             let result = Result {
+                try checkForeground(generation)
                 try LANInventoryWire.validate(request)
                 loadIfNeeded()
                 var matches: [String] = []
                 var changed = false
                 defer { if changed { persist() } }
                 for file in request.files {
+                    try checkForeground(generation)
                     let key = LANInventoryWire.pathKey(folder: file.folder, fileName: file.fileName)
                     guard let url = try libraryURL(for: file) else {
                         changed = entries.removeValue(forKey: key) != nil || changed
@@ -50,7 +77,8 @@ final class LANInventory: @unchecked Sendable {
                        LANInventoryWire.validDigest(cached.sha256) {
                         digest = cached.sha256
                     } else {
-                        digest = try LANFileDigest.sha256(of: url)
+                        digest = try LANFileDigest.sha256(of: url) { try self.checkForeground(generation) }
+                        try checkForeground(generation)
                         let after = try TransferSourceVersion.read(url)
                         guard before == after, try libraryURL(for: file) == url else {
                             entries.removeValue(forKey: key); changed = true
@@ -66,7 +94,10 @@ final class LANInventory: @unchecked Sendable {
                 }
                 return LANInventoryReply(requestID: request.requestID, matchedFileIDs: matches)
             }
-            DispatchQueue.main.async { completion(result) }
+            DispatchQueue.main.async { [self] in
+                do { try checkForeground(generation); completion(result) }
+                catch { completion(.failure(error)) }
+            }
         }
     }
 

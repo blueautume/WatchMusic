@@ -323,6 +323,8 @@ struct MusicPlayerIntegrationProbe {
         try check(outputCompletions == 4, "late output completion returns focus even after the player is released")
         print("OUTPUT_FOCUS_COMPLETION_PASS")
 
+        try await runEnergyLifecycleTests(tracks: [a, b, c], snapshot: snapshot)
+
         // Optional real fixtures verify bounded embedded artwork on both platforms.
         for argument in arguments.dropFirst() {
             let fixture = URL(fileURLWithPath: argument)
@@ -330,7 +332,9 @@ struct MusicPlayerIntegrationProbe {
             try manager.copyItem(at: fixture, to: audio)
             let embeddedSnapshot = Session(paths: [relative(audio)], current: relative(audio), elapsed: 5)
             defaults.set(try JSONEncoder().encode(embeddedSnapshot), forKey: "player.session")
-            player = MusicPlayer()
+            var embeddedSystemInfo: [String: Any]?
+            player = MusicPlayer(makeAudioPlayer: { try AVAudioPlayer(contentsOf: $0) },
+                                 publishNowPlayingInfo: { embeddedSystemInfo = $0 })
             guard let embedded = player else { throw ProbeError.failure("embedded fixture player") }
             try await waitUntil("embedded \(fixture.pathExtension) title and artwork load", timeout: 10) {
                 embedded.artworkData != nil && embedded.title != audio.deletingPathExtension().lastPathComponent
@@ -342,10 +346,341 @@ struct MusicPlayerIntegrationProbe {
                   let source = CGImageSourceCreateWithData(imageData as CFData, nil),
                   let cover = CGImageSourceCreateImageAtIndex(source, 0, nil) else { throw ProbeError.failure("embedded cover is not an image") }
             try check(cover.width <= 1_024 && cover.height <= 1_024, "embedded cover is bounded for watch memory")
+            guard let artwork = embeddedSystemInfo?[MPMediaItemPropertyArtwork] as? MPMediaItemArtwork else {
+                throw ProbeError.failure("embedded system artwork")
+            }
+            embedded.seek(to: 6)
+            try check((embeddedSystemInfo?[MPMediaItemPropertyArtwork] as? MPMediaItemArtwork) === artwork,
+                      "seeking reuses the unchanged system artwork object")
+            embedded.setRate(1.5)
+            try check((embeddedSystemInfo?[MPMediaItemPropertyArtwork] as? MPMediaItemArtwork) === artwork,
+                      "speed updates reuse the unchanged system artwork object")
+            embedded.savePlaybackPosition()
+            try check((embeddedSystemInfo?[MPMediaItemPropertyArtwork] as? MPMediaItemArtwork) === artwork,
+                      "lifecycle publishing reuses the unchanged system artwork object")
             print("EMBEDDED_ARTWORK_PASS \(fixture.pathExtension)")
             embedded.stop()
             player = nil
         }
+    }
+
+    @MainActor
+    private static func runEnergyLifecycleTests(tracks: [URL], snapshot: Session) async throws {
+        let defaults = UserDefaults.standard
+        let a = tracks[0], b = tracks[1]
+        func fixture() throws -> (MusicPlayer, PlayerEnergyState) {
+            defaults.set(try JSONEncoder().encode(snapshot), forKey: "player.session")
+            defaults.set(1.25, forKey: "player.rate")
+            defaults.set(PlaybackMode.repeatAll.rawValue, forKey: "player.mode")
+            let state = PlayerEnergyState()
+            let engine = MusicPlayer(makeAudioPlayer: { url in
+                if state.rejectDecoderCreation { throw NSError(domain: "EnergyProbe", code: 1) }
+                let decoder = try SilentCompletionDecoder(contentsOf: url)
+                state.decoders.append(decoder)
+                return decoder
+            }, activateAudioSession: { state.activations.append($0) },
+               deactivateAudioSession: {
+                   state.deactivations += 1
+                   if state.failedDeactivationsRemaining > 0 {
+                       state.failedDeactivationsRemaining -= 1
+                       throw NSError(domain: "EnergyProbe", code: 2)
+                   }
+                   state.sessionIsActive = false
+               }, publishNowPlayingInfo: { state.systemInfo = $0 })
+            return (engine, state)
+        }
+        func finish(_ state: PlayerEnergyState, at index: Int = 0, success: Bool = true) throws {
+            try check(state.activations.indices.contains(index), "expected held audio activation")
+            let callback = state.activations.remove(at: index)
+            if success { state.sessionIsActive = true }
+            callback(success, success ? nil : "Energy probe activation failure")
+        }
+        func pausedMedia(_ engine: MusicPlayer, _ state: PlayerEnergyState, position: Double = 6) throws {
+            try check(engine.currentURL == a && engine.queue == tracks,
+                      "energy cleanup preserves the selected song and queue")
+            try check(abs(engine.elapsed - position) < 0.15 && engine.playbackRate == 1.25,
+                      "energy cleanup preserves position and playback speed")
+            try check(state.systemInfo?[MPNowPlayingInfoPropertyPlaybackQueueCount] as? Int == tracks.count
+                      && (state.systemInfo?[MPNowPlayingInfoPropertyPlaybackRate] as? NSNumber)?.doubleValue == 0,
+                      "energy cleanup retains a paused system media card and queue")
+            try check(abs((state.systemInfo?[MPNowPlayingInfoPropertyElapsedPlaybackTime] as? Double ?? -1) - position) < 0.15,
+                      "energy cleanup retains the system media position")
+            try check(MPRemoteCommandCenter.shared().playCommand.isEnabled,
+                      "released background audio remains available to system play controls")
+        }
+
+        // Foreground pause remains ready for Crown/output interaction. Entering
+        // the background releases buffers/session while retaining resumable media.
+        do {
+            let (engine, state) = try fixture()
+            defer { engine.stop() }
+            guard let decoder = state.decoders.first else { throw ProbeError.failure("energy decoder") }
+            engine.resume()
+            try finish(state)
+            engine.seek(to: 6)
+            let prepared = decoder.prepareCount
+            let stops = decoder.stopCount
+            engine.pause()
+            try check(decoder.stopCount == stops && state.deactivations == 0 && state.sessionIsActive,
+                      "foreground short pause retains prepared audio and session")
+            try pausedMedia(engine, state)
+            engine.setApplicationInBackground(true)
+            try check(decoder.stopCount == stops + 1 && state.deactivations == 1 && !state.sessionIsActive,
+                      "paused background transition releases player hardware and session")
+            try pausedMedia(engine, state)
+            let saved = defaults.data(forKey: "player.session").flatMap { try? JSONDecoder().decode(Session.self, from: $0) }
+            try check(abs((saved?.elapsed ?? 0) - 6) < 0.15, "background cleanup persists the resumable position")
+            engine.setApplicationInBackground(true)
+            engine.savePlaybackPosition()
+            try check(decoder.stopCount == stops + 1 && state.deactivations == 1,
+                      "repeated idle background cleanup is idempotent")
+            engine.setApplicationInBackground(false)
+            try check(!engine.isPlaying && state.activations.isEmpty && decoder.prepareCount == prepared,
+                      "returning to the foreground does not prepare or automatically resume audio")
+            engine.resume()
+            try finish(state)
+            try check(engine.isPlaying && state.decoders.count == 1 && abs(engine.elapsed - 6) < 0.15
+                      && decoder.prepareCount == prepared + 1 && decoder.rate == 1.25,
+                      "released decoder resumes the same position and speed without rebuilding the queue")
+            engine.setApplicationInBackground(true)
+            try check(engine.isPlaying && state.sessionIsActive && state.deactivations == 1,
+                      "entering the background preserves real playback")
+            engine.pause()
+            try check(!state.sessionIsActive && state.deactivations == 2 && decoder.stopCount == stops + 2,
+                      "pausing already-background playback immediately releases audio resources")
+            try pausedMedia(engine, state)
+        }
+
+        // A valid route picker/activation must survive a lifecycle transition.
+        do {
+            let (engine, state) = try fixture()
+            defer { engine.stop() }
+            engine.resume()
+            engine.setApplicationInBackground(true)
+            try check(engine.isPreparing && state.deactivations == 0,
+                      "background transition does not cancel a valid playback activation")
+            try finish(state)
+            try check(engine.isPlaying && state.sessionIsActive && state.deactivations == 0,
+                      "valid pending playback starts normally after the transition")
+        }
+
+        do {
+            let (engine, state) = try fixture()
+            defer { engine.stop() }
+            engine.resume()
+            try finish(state)
+            engine.pause()
+            state.failedDeactivationsRemaining = 1
+            engine.setApplicationInBackground(true)
+            try check(state.sessionIsActive && state.deactivations == 1 && state.decoders.first?.stopCount == 1,
+                      "failed session deactivation still releases player buffers and retains pending cleanup")
+            engine.setApplicationInBackground(true)
+            try check(!state.sessionIsActive && state.deactivations == 2 && state.decoders.first?.stopCount == 1,
+                      "the next lifecycle event retries failed deactivation without stopping buffers twice")
+            engine.setApplicationInBackground(true)
+            try await Task.sleep(for: .milliseconds(100))
+            try check(state.deactivations == 2, "successful cleanup does not create a periodic deactivation retry")
+        }
+
+        // Cancellation cannot cancel the system's in-flight activation. Its late
+        // success must release the newly activated session without starting audio.
+        do {
+            let (engine, state) = try fixture()
+            defer { engine.stop() }
+            engine.setApplicationInBackground(true)
+            engine.resume()
+            engine.pause()
+            let beforeLateSuccess = state.deactivations
+            try finish(state)
+            try check(!engine.isPlaying && !engine.isPreparing && !state.sessionIsActive
+                      && state.deactivations > beforeLateSuccess,
+                      "late success after background pause is cleaned up without playing")
+            try check(state.decoders.first?.playCount == 0,
+                      "cancelled activation never starts the decoder")
+        }
+
+        // A stale activation must not deactivate the session belonging to a newer
+        // request, whichever order the two native callbacks arrive in.
+        for staleCompletesFirst in [true, false] {
+            let (engine, state) = try fixture()
+            defer { engine.stop() }
+            engine.setApplicationInBackground(true)
+            engine.resume()
+            engine.pause()
+            engine.resume()
+            try check(state.activations.count == 2, "race fixture retains old and current activations")
+            let beforeCallbacks = state.deactivations
+            if staleCompletesFirst {
+                try finish(state)
+                try check(engine.isPreparing && !engine.isPlaying && state.deactivations == beforeCallbacks,
+                          "stale completion cannot release a newer pending playback session")
+                try finish(state)
+            } else {
+                try finish(state, at: 1)
+                try check(engine.isPlaying, "newer activation may complete before the stale request")
+                try finish(state)
+            }
+            try check(engine.isPlaying && state.sessionIsActive && state.deactivations == beforeCallbacks,
+                      "activation callback order cannot stop newer background playback")
+        }
+
+        do {
+            let (engine, state) = try fixture()
+            engine.resume()
+            engine.stop()
+            let beforeLateSuccess = state.deactivations
+            try finish(state)
+            try check(engine.currentURL == nil && !engine.isPlaying && state.systemInfo == nil
+                      && !state.sessionIsActive && state.deactivations > beforeLateSuccess,
+                      "stop cleans a late activation even while the app remains foreground")
+        }
+
+        do {
+            let (engine, state) = try fixture()
+            defer { engine.stop() }
+            var outputCompletions = 0
+            engine.requestAudioOutput { outputCompletions += 1 }
+            engine.setApplicationInBackground(true)
+            try check(state.deactivations == 0 && outputCompletions == 0,
+                      "background cleanup waits for an open output selector")
+            try finish(state)
+            try check(outputCompletions == 1 && !engine.isPlaying && !state.sessionIsActive,
+                      "paused background output selection completes once then releases its session")
+
+            engine.requestAudioOutput { outputCompletions += 1 }
+            engine.resume()
+            let beforeCallbacks = state.deactivations
+            try finish(state)
+            try check(outputCompletions == 2 && engine.isPreparing && state.deactivations == beforeCallbacks,
+                      "output completion cannot deactivate a newer pending playback request")
+            try finish(state)
+            engine.requestAudioOutput { outputCompletions += 1 }
+            try finish(state)
+            try check(outputCompletions == 3 && engine.isPlaying && state.sessionIsActive
+                      && state.deactivations == beforeCallbacks,
+                      "output selection during background playback preserves active audio")
+        }
+
+        do {
+            let (engine, state) = try fixture()
+            defer { engine.stop() }
+            var outputCompletions = 0
+            engine.requestAudioOutput { outputCompletions += 1 }
+            engine.requestAudioOutput { outputCompletions += 1 }
+            engine.setApplicationInBackground(true)
+            try finish(state)
+            try check(outputCompletions == 1 && state.deactivations == 0 && state.sessionIsActive,
+                      "one output completion does not close another outstanding output selector")
+            try finish(state)
+            try check(outputCompletions == 2 && !state.sessionIsActive && state.deactivations == 1,
+                      "the last pending output completion releases idle background audio once")
+        }
+
+        // Failed activation/preparation/playback must leave idle background audio
+        // released, but a failed track switch must not silence the old song.
+        do {
+            let (engine, state) = try fixture()
+            defer { engine.stop() }
+            engine.setApplicationInBackground(true)
+            engine.resume()
+            // A failed native activation may still need cleanup. Model a
+            // partially acquired session instead of assuming failure is atomic.
+            state.sessionIsActive = true
+            let beforeFailure = state.deactivations
+            try finish(state, success: false)
+            try check(!engine.isPlaying && !engine.isPreparing && !state.sessionIsActive
+                      && state.deactivations > beforeFailure,
+                      "failed background activation releases any partially acquired audio session")
+        }
+        for failure in ["prepare", "play", "decode"] {
+            let (engine, state) = try fixture()
+            defer { engine.stop() }
+            engine.setApplicationInBackground(true)
+            state.decoders.first?.allowsPreparation = failure != "prepare"
+            state.decoders.first?.allowsPlayback = failure != "play"
+            if failure == "decode" {
+                state.rejectDecoderCreation = true
+                engine.play(b, in: tracks)
+            } else {
+                engine.resume()
+            }
+            try finish(state)
+            try check(!engine.isPlaying && !engine.isPreparing && !state.sessionIsActive,
+                      "failed background \(failure) releases a successful activation")
+            try check(engine.currentURL == a && engine.queue == tracks && state.systemInfo != nil,
+                      "failed \(failure) preserves resumable media and system controls")
+        }
+        do {
+            let (engine, state) = try fixture()
+            defer { engine.stop() }
+            engine.resume()
+            try finish(state)
+            engine.setApplicationInBackground(true)
+            let beforeFailure = state.deactivations
+            engine.play(b, in: tracks)
+            try finish(state, success: false)
+            try check(engine.isPlaying && engine.currentURL == a && state.sessionIsActive
+                      && state.deactivations == beforeFailure,
+                      "failed track activation preserves the old song when it is still playing")
+        }
+
+        do {
+            let (engine, state) = try fixture()
+            defer { engine.stop() }
+            engine.resume()
+            try finish(state)
+            engine.seek(to: 6)
+            engine.setApplicationInBackground(true)
+            engine.setSleepTimer(until: Date().addingTimeInterval(0.05))
+            try await waitUntil("background sleep deadline pauses playback", timeout: 1) {
+                engine.sleepTimerDeadline == nil && !engine.isPlaying
+            }
+            try check(!state.sessionIsActive && state.decoders.first?.stopCount == 1,
+                      "sleep timer releases background player hardware and session")
+            try pausedMedia(engine, state)
+            engine.resume()
+            try finish(state)
+            NotificationCenter.default.post(name: AVAudioSession.routeChangeNotification, object: nil,
+                                            userInfo: [AVAudioSessionRouteChangeReasonKey:
+                                                AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue])
+            try await waitUntil("headphone disconnection pauses background playback", timeout: 1) { !engine.isPlaying }
+            try check(!state.sessionIsActive && state.decoders.first?.stopCount == 2,
+                      "headphone disconnection releases background audio resources")
+            try pausedMedia(engine, state)
+            engine.resume()
+            try finish(state)
+            try check(engine.isPlaying && abs(engine.elapsed - 6) < 0.15,
+                      "background system-play path can resume after timer and route cleanup")
+        }
+
+        do {
+            let (engine, state) = try fixture()
+            defer { engine.stop() }
+            engine.resume()
+            try finish(state)
+            engine.setApplicationInBackground(true)
+            func interruption(_ type: AVAudioSession.InterruptionType, shouldResume: Bool = false) {
+                NotificationCenter.default.post(name: AVAudioSession.interruptionNotification, object: nil,
+                    userInfo: [AVAudioSessionInterruptionTypeKey: type.rawValue,
+                               AVAudioSessionInterruptionOptionKey: shouldResume ? AVAudioSession.InterruptionOptions.shouldResume.rawValue : 0])
+            }
+            interruption(.began)
+            try await waitUntil("interruption pauses background playback", timeout: 1) { !engine.isPlaying }
+            try check(!state.sessionIsActive, "background interruption releases idle audio")
+            interruption(.ended, shouldResume: true)
+            try await waitUntil("eligible interruption requests playback restoration", timeout: 1) { engine.isPreparing }
+            try finish(state)
+            try check(engine.isPlaying && state.sessionIsActive,
+                      "eligible interruption recovery still plays after resource cleanup")
+            interruption(.began)
+            try await waitUntil("second interruption pauses playback", timeout: 1) { !engine.isPlaying }
+            engine.pause()
+            interruption(.ended, shouldResume: true)
+            try await Task.sleep(for: .milliseconds(100))
+            try check(!engine.isPlaying && !engine.isPreparing && state.activations.isEmpty,
+                      "explicit pause during an interruption cancels automatic recovery")
+        }
+        print("BACKGROUND_AUDIO_ENERGY_PASS")
     }
 
     private enum ProbeError: LocalizedError {
@@ -357,9 +692,25 @@ struct MusicPlayerIntegrationProbe {
 /// Deterministic delegate fixture: real duration/seeking, no audio-device use.
 private final class SilentCompletionDecoder: AVAudioPlayer, @unchecked Sendable {
     private var playbackActive = false
+    var prepareCount = 0
+    var playCount = 0
+    var stopCount = 0
+    var allowsPreparation = true
+    var allowsPlayback = true
     override var isPlaying: Bool { playbackActive }
-    override func prepareToPlay() -> Bool { true }
-    override func play() -> Bool { playbackActive = true; return true }
+    override func prepareToPlay() -> Bool { prepareCount += 1; return allowsPreparation }
+    override func play() -> Bool { playCount += 1; playbackActive = allowsPlayback; return playbackActive }
     override func pause() { playbackActive = false }
-    override func stop() { playbackActive = false }
+    override func stop() { stopCount += 1; playbackActive = false }
+}
+
+@MainActor
+private final class PlayerEnergyState {
+    var activations: [@MainActor (Bool, String?) -> Void] = []
+    var decoders: [SilentCompletionDecoder] = []
+    var deactivations = 0
+    var failedDeactivationsRemaining = 0
+    var sessionIsActive = false
+    var rejectDecoderCreation = false
+    var systemInfo: [String: Any]?
 }

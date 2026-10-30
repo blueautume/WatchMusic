@@ -311,6 +311,27 @@ struct PhoneForegroundQueueProbe {
         preflightPeer.finish(preflightPeer.offers[0].files[0], in: preflightPeer.offers[0], on: preflight)
         preflight.clearAllTasks()
 
+        // A Watch lifecycle cancellation is a temporary connection condition.
+        // Keep the selected files and retry through the existing queue rather
+        // than treating the new optional refusal marker as a version mismatch.
+        let inventoryPauseDirectory = try directory("watch-inventory-pause")
+        let inventoryPausePeer = ForegroundQueuePeer()
+        let inventoryPause = model(inventoryPausePeer, at: inventoryPauseDirectory)
+        inventoryPausePeer.rejectNextInventoryTemporarily = true
+        var inventoryPauseCallbacks = 0
+        inventoryPause.send([a1]) { _ in inventoryPauseCallbacks += 1 }
+        try await wait("Watch inventory lifecycle refusal") { inventoryPausePeer.inventoryRefusals == 1 }
+        try check(inventoryPause.errorMessage == nil && inventoryPauseCallbacks == 0,
+                  "Temporary Watch inventory cancellation does not complete the selection or show an upgrade error")
+        try check(try snapshot(inventoryPauseDirectory).submissions.flatMap { $0 }.contains {
+            $0.folder == a1.folder && $0.fileName == a1.fileName
+        }, "Watch inventory cancellation preserves the persisted submission")
+        try await ready(1, on: inventoryPause, peer: inventoryPausePeer)
+        try check(inventoryPauseCallbacks == 1 && inventoryPause.pendingCount == 1,
+                  "Automatic retry after Watch inventory cancellation produces one offer and one completion")
+        inventoryPausePeer.finish(inventoryPausePeer.offers[0].files[0], in: inventoryPausePeer.offers[0], on: inventoryPause)
+        inventoryPause.clearAllTasks()
+
         // Clearing an unfinished preflight cancels its completion once and
         // cannot be undone by lifecycle changes or its late Watch response.
         let clearPeer = ForegroundQueuePeer()
@@ -511,6 +532,8 @@ private final class ForegroundQueuePeer {
     var stops: [LANTransferCommand] = []
     var automaticPauses: [LANTransferCommand] = []
     var holdNextInventory = false
+    var rejectNextInventoryTemporarily = false
+    var inventoryRefusals = 0
     var hasHeldInventory: Bool { heldInventory != nil }
     var holdNextStatus = false
     var hasHeldStatus: Bool { heldStatus != nil }
@@ -525,6 +548,11 @@ private final class ForegroundQueuePeer {
 
     func request(_ message: [String: Any]) async throws -> [String: Any] {
         if let request = LANTransferWire.decode(LANInventoryRequest.self, from: message, type: LANInventoryWire.requestType) {
+            if rejectNextInventoryTemporarily {
+                rejectNextInventoryTemporarily = false
+                inventoryRefusals += 1
+                return ["accepted": false, "retryable": true, "message": "等待手表 App 打开后继续"]
+            }
             if holdNextInventory {
                 holdNextInventory = false
                 return try await withCheckedThrowingContinuation { heldInventory = (request, $0) }

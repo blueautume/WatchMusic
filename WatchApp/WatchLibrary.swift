@@ -324,6 +324,7 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
 
     func updateLANForeground(_ foreground: Bool) {
         lanAppForeground = foreground
+        lanInventory.setForeground(foreground)
         lanReceiver.setForeground(foreground)
         // Inactive/blank-screen states pause LAN work until a fresh phone offer.
     }
@@ -372,7 +373,12 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
                     switch result {
                     case .success(let reply):
                         replyHandler((try? LANTransferWire.message(reply, type: LANInventoryWire.replyType)) ?? ["accepted": false])
-                    case .failure: replyHandler(["accepted": false, "message": "无法检查手表已存歌曲，请重试。"])
+                    case .failure(let error):
+                        if error is CancellationError {
+                            replyHandler(["accepted": false, "retryable": true, "message": "等待手表 App 打开后继续"])
+                        } else {
+                            replyHandler(["accepted": false, "message": "无法检查手表已存歌曲，请重试。"])
+                        }
                     }
                 }
             } else if let offer = LANTransferWire.decode(LANTransferOffer.self, from: message, type: LANTransferWire.offerType) {

@@ -144,11 +144,13 @@ private struct PhonePlayerPageLayout: Layout {
 /// The audio clock redraws only this subtree; menus never subscribe to a ticking publisher.
 private struct PlaybackProgress: View {
     @ObservedObject var player: MusicPlayer
+    @Environment(\.scenePhase) private var scenePhase
     @State private var isScrubbing = false
     @State private var scrubValue: Double = 0
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 0.5, paused: !player.isPlaying || isScrubbing)) { _ in
+        TimelineView(.animation(minimumInterval: 0.5,
+                                paused: scenePhase != .active || !player.isPlaying || isScrubbing)) { _ in
             let position = isScrubbing ? scrubValue : player.elapsed
             VStack(spacing: 7) {
                 Slider(value: Binding(get: { position }, set: { value in
@@ -179,9 +181,10 @@ private struct PlaybackProgress: View {
 
 private struct SleepTimerCountdown: View {
     let deadline: Date
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
+        TimelineView(.animation(minimumInterval: 1, paused: scenePhase != .active)) { context in
             Label("将在 \(phoneTime(max(0, deadline.timeIntervalSince(context.date)))) 后暂停", systemImage: "moon.zzz.fill")
                 .font(.footnote)
                 .foregroundStyle(AppPalette.accent)

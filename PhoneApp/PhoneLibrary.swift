@@ -937,6 +937,10 @@ final class PhoneLibrary: NSObject, ObservableObject {
         try LANInventoryWire.validate(request)
         let message = try LANTransferWire.message(request, type: LANInventoryWire.requestType)
         let response = try await requestLiveMessage(message)
+        if response["accepted"] as? Bool == false, response["retryable"] as? Bool == true {
+            throw NSError(domain: "LANConnection", code: 3,
+                userInfo: [NSLocalizedDescriptionKey: response["message"] as? String ?? "等待手表 App 打开后继续"])
+        }
         guard let reply = LANTransferWire.decode(LANInventoryReply.self, from: response, type: LANInventoryWire.replyType) else {
             throw lanError("请更新手表 App 后再试。")
         }

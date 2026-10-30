@@ -28,8 +28,8 @@ final class WatchAppDisplay: ObservableObject {
         guard originalBatteryMonitoring == nil else { setForeground(foreground); return }
         let device = WKInterfaceDevice.current()
         originalBatteryMonitoring = device.isBatteryMonitoringEnabled
-        device.isBatteryMonitoringEnabled = true
         isForeground = foreground
+        updateBatteryMonitoring()
         refreshPower()
         updateBatteryTimer()
     }
@@ -47,8 +47,21 @@ final class WatchAppDisplay: ObservableObject {
     func setForeground(_ value: Bool) {
         isForeground = value
         guard originalBatteryMonitoring != nil else { return }
+        if !value { stopMotion() }
+        updateBatteryMonitoring()
         refreshPower()
         updateBatteryTimer()
+    }
+
+    private func updateBatteryMonitoring() {
+        guard let originalBatteryMonitoring else { return }
+        let device = WKInterfaceDevice.current()
+        // Release only the monitoring this display requested. Another owner may
+        // already have enabled it before this display started.
+        let enabled = isForeground || originalBatteryMonitoring
+        if device.isBatteryMonitoringEnabled != enabled {
+            device.isBatteryMonitoringEnabled = enabled
+        }
     }
 
     private func updateBatteryTimer() {
@@ -68,6 +81,9 @@ final class WatchAppDisplay: ObservableObject {
     }
 
     private func refreshPower() {
+        // A main-actor timer task can already be queued when the timer stops.
+        // Keep the last visible values until foreground monitoring resumes.
+        guard isForeground else { return }
         let device = WKInterfaceDevice.current()
         let state = device.batteryState
         var charging = state == .charging || state == .full

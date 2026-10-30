@@ -72,6 +72,7 @@ struct LibraryView: View {
         } message: { Text(library.errorMessage ?? "") }
         .onChange(of: scenePhase, initial: true) { previous, phase in
             if previous == .active && phase != .active { player?.savePlaybackPosition() }
+            player?.setApplicationInBackground(phase == .background)
             switch phase {
             case .active:
                 library.sceneDidBecomeActive()

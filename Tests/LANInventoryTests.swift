@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 @main
@@ -28,10 +29,12 @@ struct LANInventoryTests {
         let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         let file = LANTransferFile(id: UUID().uuidString, folder: "Test", fileName: "Song.flac", byteCount: 3, sha256: abc)
         let inventory = LANInventory(rootURL: root, cacheURL: cache)
+        inventory.setForeground(true)
         try Data("abc".utf8).write(to: url)
         try check(try await matching(inventory, [file]).matchedFileIDs == [file.id], "Legacy file is detected by actual content")
         try check(manager.fileExists(atPath: cache.path), "Successful hash persists a derived cache")
         let restarted = LANInventory(rootURL: root, cacheURL: cache)
+        restarted.setForeground(true)
         try check(try await matching(restarted, [file]).matchedFileIDs == [file.id], "Inventory survives app restart independently of phone history")
         let wrong = LANTransferFile(id: UUID().uuidString, folder: file.folder, fileName: file.fileName, byteCount: 3, sha256: String(repeating: "0", count: 64))
         try check(try await matching(inventory, [wrong]).matchedFileIDs.isEmpty, "Same path and size do not substitute for matching content")
@@ -81,6 +84,7 @@ struct LANInventoryTests {
         try manager.createSymbolicLink(at: linkedRoot, withDestinationURL: root)
         try Data("abc".utf8).write(to: url)
         let badRoot = LANInventory(rootURL: linkedRoot, cacheURL: temp.appendingPathComponent("OtherCache/cache.json"))
+        badRoot.setForeground(true)
         try check(try await matching(badRoot, [file]).matchedFileIDs.isEmpty, "A symlinked library root is rejected even for a matching regular song")
         var invalid = false
         do { _ = try await matching(inventory, [LANTransferFile(id: UUID().uuidString, folder: "..", fileName: "Song.flac", byteCount: 3, sha256: abc)]) }
@@ -106,6 +110,62 @@ struct LANInventoryTests {
         let wire = try LANTransferWire.message(request, type: LANInventoryWire.requestType)
         let decoded = LANTransferWire.decode(LANInventoryRequest.self, from: wire, type: LANInventoryWire.requestType)
         try check(decoded?.files == request.files && decoded?.requestID == request.requestID, "Inventory wire round trip preserves only candidate fingerprints")
+
+        let cancellationCache = temp.appendingPathComponent("CancellationCache/fingerprints.json")
+        let cancellable = LANInventory(rootURL: root, cacheURL: cancellationCache)
+        do {
+            _ = try await matching(cancellable, [file])
+            throw Failure.failed("A background query must not read the music library")
+        } catch is CancellationError {
+            try check(!manager.fileExists(atPath: cancellationCache.path), "Background queries do not populate a fingerprint cache")
+        }
+        cancellable.setForeground(true)
+        let largeURL = folder.appendingPathComponent("Cancel.flac")
+        guard manager.createFile(atPath: largeURL.path, contents: nil) else { throw Failure.failed("Could not create cancellation fixture") }
+        let largeHandle = try FileHandle(forWritingTo: largeURL)
+        try largeHandle.truncate(atOffset: 8 * 1_024 * 1_024 * 1_024); try largeHandle.close()
+        let large = LANTransferFile(id: UUID().uuidString, folder: "Test", fileName: "Cancel.flac",
+                                   byteCount: 8 * 1_024 * 1_024 * 1_024, sha256: String(repeating: "0", count: 64))
+        var activeResult: Result<LANInventoryReply, Error>?
+        var queuedResult: Result<LANInventoryReply, Error>?
+        cancellable.matching(LANInventoryRequest(requestID: UUID().uuidString, files: [large])) { activeResult = $0 }
+        let readDeadline = Date().addingTimeInterval(3)
+        var observedOffset: off_t = 0
+        while Date() < readDeadline, observedOffset == 0 {
+            try await Task.sleep(nanoseconds: 2_000_000)
+            observedOffset = currentReadOffset(for: largeURL)
+        }
+        try check(observedOffset > 0, "A real legacy-file hash is reading before foreground cancellation")
+        cancellable.matching(request) { queuedResult = $0 }
+        let cancelledAt = Date()
+        cancellable.setForeground(false)
+        cancellable.setForeground(true)
+        while (activeResult == nil || queuedResult == nil), Date().timeIntervalSince(cancelledAt) < 1 {
+            try await Task.sleep(nanoseconds: 2_000_000)
+        }
+        func isCancelled(_ result: Result<LANInventoryReply, Error>?) -> Bool {
+            if case .failure(let error) = result { return error is CancellationError }
+            return false
+        }
+        try check(isCancelled(activeResult), "Leaving foreground interrupts an active hash within one second")
+        try check(isCancelled(queuedResult), "Returning foreground cannot revive a query from the old lifecycle")
+        try check(!manager.fileExists(atPath: cancellationCache.path), "Canceled and queued queries do not cache an unfinished digest")
+        try check(try await matching(cancellable, [file]).matchedFileIDs == [file.id], "A fresh query succeeds after foregrounding without changing the reply format")
+    }
+
+    /// Observe only the sparse fixture's descriptor; no test hooks are added to
+    /// the production hashing path and no unrelated file contents are read.
+    private static func currentReadOffset(for url: URL) -> off_t {
+        var expected = stat()
+        guard url.path.withCString({ fstatat(AT_FDCWD, $0, &expected, 0) }) == 0 else { return 0 }
+        var maximum: off_t = 0
+        for descriptor: Int32 in 3..<256 {
+            var actual = stat()
+            guard fstat(descriptor, &actual) == 0,
+                  actual.st_dev == expected.st_dev, actual.st_ino == expected.st_ino else { continue }
+            maximum = max(maximum, lseek(descriptor, 0, SEEK_CUR))
+        }
+        return maximum
     }
     enum Failure: LocalizedError { case failed(String); var errorDescription: String? { if case .failed(let message) = self { return message }; return nil } }
 }
