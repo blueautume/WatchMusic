@@ -24,7 +24,7 @@ struct PhoneTrack: Identifiable, Hashable, Sendable {
 enum TransferMethod: String, Codable, CaseIterable, Identifiable {
     case localNetwork, system
     var id: String { rawValue }
-    var title: String { self == .system ? "普通" : "局域网" }
+    var title: String { L10n.text(self == .system ? "普通" : "局域网") }
 }
 
 struct TransferRecord: Identifiable, Codable, TransferListRecord {
@@ -34,6 +34,7 @@ struct TransferRecord: Identifiable, Codable, TransferListRecord {
     let fileName: String
     let createdAt: Date
     var state: State
+    /// Stable legacy copy is translated only when presented, not when persisted.
     var message: String
     var totalBytes: Int64 = 0
     var transport: TransferMethod? = nil
@@ -191,7 +192,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
             refreshFolders()
             restoreLANQueue()
             saveTransfers()
-        } catch { errorMessage = "无法打开音乐目录：\(error.localizedDescription)" }
+        } catch { errorMessage = L10n.format("无法打开音乐目录：%@", error.localizedDescription) }
         if WCSession.isSupported() {
             WCSession.default.delegate = self
             WCSession.default.activate()
@@ -257,7 +258,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
             }
             trackIndex = index
             loadDurations()
-        } catch { errorMessage = "读取音乐目录失败：\(error.localizedDescription)" }
+        } catch { errorMessage = L10n.format("读取音乐目录失败：%@", error.localizedDescription) }
     }
 
     private func loadDurations() {
@@ -294,7 +295,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
         let url = root.appendingPathComponent(name, isDirectory: true)
         guard !fileManager.fileExists(atPath: url.path) else { errorMessage = "该目录已存在。"; return false }
         do { try fileManager.createDirectory(at: url, withIntermediateDirectories: false); refreshFolders(); return true }
-        catch { errorMessage = "创建目录失败：\(error.localizedDescription)"; return false }
+        catch { errorMessage = L10n.format("创建目录失败：%@", error.localizedDescription); return false }
     }
 
     @discardableResult func renameFolder(_ folder: PhoneFolder, to input: String) -> Bool {
@@ -303,7 +304,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
         let destination = root.appendingPathComponent(name, isDirectory: true)
         guard !fileManager.fileExists(atPath: destination.path) else { errorMessage = "该目录已存在。"; return false }
         do { try fileManager.moveItem(at: root.appendingPathComponent(folder.name), to: destination); refreshFolders(); return true }
-        catch { errorMessage = "重命名失败：\(error.localizedDescription)"; return false }
+        catch { errorMessage = L10n.format("重命名失败：%@", error.localizedDescription); return false }
     }
 
     @discardableResult func deleteFolder(_ folder: PhoneFolder) -> Bool {
@@ -312,13 +313,13 @@ final class PhoneLibrary: NSObject, ObservableObject {
             try fileManager.removeItem(at: root.appendingPathComponent(folder.name))
             refreshFolders()
             return true
-        } catch { errorMessage = "删除目录失败：\(error.localizedDescription)"; return false }
+        } catch { errorMessage = L10n.format("删除目录失败：%@", error.localizedDescription); return false }
     }
 
     @discardableResult func deleteTrack(_ track: PhoneTrack) -> Bool {
         guard canChange([track]) else { return false }
         do { try fileManager.removeItem(at: track.url); refreshFolders(); return true }
-        catch { errorMessage = "删除歌曲失败：\(error.localizedDescription)"; return false }
+        catch { errorMessage = L10n.format("删除歌曲失败：%@", error.localizedDescription); return false }
     }
 
     @discardableResult func renameTrack(_ track: PhoneTrack, to input: String) -> Bool {
@@ -328,7 +329,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
         if destination == track.url { return true }
         guard !fileManager.fileExists(atPath: destination.path) else { errorMessage = "该名称的歌曲已存在。"; return false }
         do { try fileManager.moveItem(at: track.url, to: destination); refreshFolders(); return true }
-        catch { errorMessage = "重命名歌曲失败：\(error.localizedDescription)"; return false }
+        catch { errorMessage = L10n.format("重命名歌曲失败：%@", error.localizedDescription); return false }
     }
 
     @discardableResult func moveTrack(_ track: PhoneTrack, to folder: PhoneFolder) -> Bool {
@@ -338,7 +339,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
         let destination = directory.appendingPathComponent(track.fileName)
         guard !fileManager.fileExists(atPath: destination.path) else { errorMessage = "目标目录中存在同名歌曲，请先重命名。"; return false }
         do { try fileManager.moveItem(at: track.url, to: destination); refreshFolders(); return true }
-        catch { errorMessage = "移动歌曲失败：\(error.localizedDescription)"; return false }
+        catch { errorMessage = L10n.format("移动歌曲失败：%@", error.localizedDescription); return false }
     }
 
     private func hasOutstandingTransfer(for track: PhoneTrack) -> Bool {
@@ -364,7 +365,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
         guard !isShutDown, !isImporting else { return }
         isImporting = true
         importProgress = 0
-        importMessage = "正在准备…"
+        importMessage = L10n.text("正在准备…")
         let directory = root.appendingPathComponent(folder.name, isDirectory: true)
         let cancellation = PhoneImportCancellation()
         importCancellation = cancellation
@@ -383,9 +384,9 @@ final class PhoneLibrary: NSObject, ObservableObject {
                     }
                     guard !Task.isCancelled, !self.isShutDown else { return }
                     if case .failure(let error) = result {
-                        failures.append("\(source.lastPathComponent)：\(error.localizedDescription)")
+                        failures.append(L10n.format("%@：%@", source.lastPathComponent, L10n.message(error.localizedDescription)))
                     }
-                } else { failures.append("\(source.lastPathComponent)：请选择 MP3 或 FLAC") }
+                } else { failures.append(L10n.format("%@：请选择 MP3 或 FLAC", source.lastPathComponent)) }
                 self.importProgress = Double(index + 1) / Double(max(urls.count, 1))
             }
             self.importTask = nil
@@ -445,7 +446,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
                         }
                         return true
                     }
-                    self.transferSummary = candidates.isEmpty ? "已在队列中" : "正在检查 \(candidates.count) 首"
+                    self.transferSummary = candidates.isEmpty ? "已在队列中" : L10n.format("正在检查 %lld 首", Int64(candidates.count))
                     let prepared = try await LANSendPreparation.prepare(candidates)
                     var matched = Set<String>()
                     for offset in stride(from: 0, to: prepared.count, by: LANInventoryWire.maximumFiles) {
@@ -483,7 +484,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
                         handled.insert(candidate.track.id)
                     }
                     self.saveTransfers(); self.refreshProgress()
-                    self.transferSummary = added == 0 ? "已跳过 \(skipped) 首" : (skipped == 0 ? "已加入 \(added) 首" : "已加入 \(added) 首，跳过 \(skipped) 首")
+                    self.transferSummary = added == 0 ? L10n.format("已跳过 %lld 首", Int64(skipped)) : (skipped == 0 ? L10n.format("已加入 %lld 首", Int64(added)) : L10n.format("已加入 %lld 首，跳过 %lld 首", Int64(added), Int64(skipped)))
                     self.startNextLANBatch()
                 } catch {
                     guard !Task.isCancelled, self.submissionGeneration == generation else { break }
@@ -492,7 +493,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
                         needsRetry = true
                         break
                     }
-                    self.errorMessage = "检查歌曲失败：\(error.localizedDescription)"
+                    self.errorMessage = L10n.format("检查歌曲失败：%@", L10n.message(error.localizedDescription))
                 }
                 guard !Task.isCancelled, self.submissionGeneration == generation else { break }
                 submission.completion.finish(handled)
@@ -914,7 +915,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
                         self.parkLANQueue(message: "等待连接后继续")
                         self.scheduleAutomaticRetry()
                     } else {
-                        self.errorMessage = "未收到手表确认：\(error.localizedDescription)"
+                        self.errorMessage = L10n.format("未收到手表确认：%@", L10n.message(error.localizedDescription))
                     }
                 }
             }
@@ -1057,7 +1058,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
                 try fileManager.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: url.path)
             }
         }
-        catch { errorMessage = "无法保存传输记录：\(error.localizedDescription)" }
+        catch { errorMessage = L10n.format("无法保存传输记录：%@", error.localizedDescription) }
     }
 
     private func updateTransfer(id: String, state: TransferRecord.State, message: String, onlyIfPending: Bool = false,
@@ -1703,7 +1704,7 @@ extension PhoneLibrary: WCSessionDelegate {
             if activationState == .activated {
                 self.reconcileTransfers(); self.refreshTransferControlState(); self.watchConnectionChanged()
             }
-            if let error { self.errorMessage = "连接手表失败：\(error.localizedDescription)" }
+            if let error { self.errorMessage = L10n.format("连接手表失败：%@", error.localizedDescription) }
         }
     }
     nonisolated func sessionDidBecomeInactive(_ session: WCSession) {

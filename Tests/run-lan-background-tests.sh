@@ -3,5 +3,5 @@ set -eu
 test_root="$(cd "$(dirname "$0")/.." && pwd)"
 test_output_dir="$(mktemp -d "${TMPDIR:-/tmp}/watch-lan-background.XXXXXX")"
 trap 'rm -rf "$test_output_dir"' EXIT
-xcrun swiftc "$test_root/Shared/AudioFileFormat.swift" "$test_root/Shared/LANTransferProtocol.swift" "$test_root/Shared/LANBackgroundTransferState.swift" "$test_root/Tests/LANBackgroundStateTests.swift" -o "$test_output_dir/LANBackgroundStateTests"
+xcrun swiftc "$test_root/Shared/Localization.swift" "$test_root/Shared/AudioFileFormat.swift" "$test_root/Shared/LANTransferProtocol.swift" "$test_root/Shared/LANBackgroundTransferState.swift" "$test_root/Tests/LANBackgroundStateTests.swift" -o "$test_output_dir/LANBackgroundStateTests"
 "$test_output_dir/LANBackgroundStateTests"

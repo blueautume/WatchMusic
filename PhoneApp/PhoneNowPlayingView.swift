@@ -14,7 +14,7 @@ struct PhoneNowPlayingView: View {
                 ScrollView {
                     PhonePlayerPageLayout(viewport: geometry.size) {
                         HStack {
-                            Text(player.currentURL?.deletingLastPathComponent().lastPathComponent ?? "本地音乐")
+                            Text(player.currentURL?.deletingLastPathComponent().lastPathComponent ?? L10n.text("本地音乐"))
                                 .font(.caption).foregroundStyle(AppPalette.textSecondary).lineLimit(1)
                             Spacer()
                             PlaybackMoreMenu(library: library,
@@ -25,7 +25,7 @@ struct PhoneNowPlayingView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 32))
                             .shadow(color: AppPalette.accent.opacity(0.1), radius: 30, y: 16)
                         VStack(alignment: .leading, spacing: 10) {
-                            Text(player.title.isEmpty ? "未选择歌曲" : player.title)
+                            Text(player.title.isEmpty ? L10n.text("未选择歌曲") : player.title)
                                 .font(.system(.title, design: .rounded).weight(.bold))
                                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 3)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -43,28 +43,36 @@ struct PhoneNowPlayingView: View {
                         }
                     }
                 }
+                #if DEBUG && targetEnvironment(simulator)
+                .defaultScrollAnchor(ProcessInfo.processInfo.arguments.contains("-preview-player-bottom") ? .bottom : .top)
+                #endif
                 .scrollBounceBehavior(.basedOnSize)
             }
             .background(AppPalette.background)
             .foregroundStyle(AppPalette.textPrimary)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button { dismiss() } label: { Image(systemName: "chevron.down").font(.body.weight(.semibold)).frame(width: 44, height: 44) }.accessibilityLabel("收起播放器") }
-                ToolbarItem(placement: .principal) { Text("正在播放").font(.footnote.weight(.semibold)).foregroundStyle(AppPalette.textSecondary) }
-                ToolbarItem(placement: .topBarTrailing) { Button { showingQueue = true } label: { Image(systemName: "list.bullet").frame(width: 44, height: 44) }.accessibilityLabel("播放队列") }
+                ToolbarItem(placement: .topBarLeading) { Button { dismiss() } label: { Image(systemName: "chevron.down").font(.body.weight(.semibold)).frame(width: 44, height: 44) }.accessibilityLabel(L10n.text("收起播放器")) }
+                ToolbarItem(placement: .principal) { Text(L10n.text("正在播放")).font(.footnote.weight(.semibold)).foregroundStyle(AppPalette.textSecondary) }
+                ToolbarItem(placement: .topBarTrailing) { Button { showingQueue = true } label: { Image(systemName: "list.bullet").frame(width: 44, height: 44) }.accessibilityLabel(L10n.text("播放队列")) }
             }
             .navigationBarTitleDisplayMode(.inline)
             .sheet(isPresented: $showingQueue) { QueueSheet().presentationDragIndicator(.visible) }
         }
-        .alert("播放提示", isPresented: Binding(get: { library.errorMessage != nil || player.errorMessage != nil }, set: { if !$0 { library.errorMessage = nil; player.errorMessage = nil } })) {
-            Button("好", role: .cancel) { library.errorMessage = nil; player.errorMessage = nil }
-        } message: { Text(library.errorMessage ?? player.errorMessage ?? "") }
+        .alert(L10n.text("播放提示"), isPresented: Binding(get: { library.errorMessage != nil || player.errorMessage != nil }, set: { if !$0 { library.errorMessage = nil; player.errorMessage = nil } })) {
+            Button(L10n.text("好"), role: .cancel) { library.errorMessage = nil; player.errorMessage = nil }
+        } message: { Text(L10n.message(library.errorMessage ?? player.errorMessage ?? "")) }
+        #if DEBUG && targetEnvironment(simulator)
+        .task {
+            if ProcessInfo.processInfo.arguments.contains("-preview-queue") { showingQueue = true }
+        }
+        #endif
     }
 
     private var transportControls: some View {
         HStack(spacing: 0) {
-            Button(action: player.previous) { Image(systemName: "backward.end.fill").font(.system(size: 24)).frame(maxWidth: .infinity, minHeight: 48) }.accessibilityLabel("上一首")
-            Button(action: player.togglePlayback) { Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.system(size: 30, weight: .semibold)).offset(x: player.isPlaying ? 0 : 2).foregroundStyle(AppPalette.controlForeground).frame(width: 80, height: 80).background(AppPalette.accent, in: Circle()) }.accessibilityLabel(player.isPlaying ? "暂停" : "播放")
-            Button(action: player.next) { Image(systemName: "forward.end.fill").font(.system(size: 24)).frame(maxWidth: .infinity, minHeight: 48) }.accessibilityLabel("下一首")
+            Button(action: player.previous) { Image(systemName: "backward.end.fill").font(.system(size: 24)).frame(maxWidth: .infinity, minHeight: 48) }.accessibilityLabel(L10n.text("上一首"))
+            Button(action: player.togglePlayback) { Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.system(size: 30, weight: .semibold)).offset(x: player.isPlaying ? 0 : 2).foregroundStyle(AppPalette.controlForeground).frame(width: 80, height: 80).background(AppPalette.accent, in: Circle()) }.accessibilityLabel(player.isPlaying ? L10n.text("暂停") : L10n.text("播放"))
+            Button(action: player.next) { Image(systemName: "forward.end.fill").font(.system(size: 24)).frame(maxWidth: .infinity, minHeight: 48) }.accessibilityLabel(L10n.text("下一首"))
         }.buttonStyle(.plain).disabled(player.currentURL == nil)
     }
 
@@ -74,12 +82,12 @@ struct PhoneNowPlayingView: View {
                 Image(systemName: player.mode.symbol).font(.system(size: 20)).frame(width: 44, height: 44)
             }
             .frame(maxWidth: .infinity)
-            .accessibilityLabel("播放模式，轻点切换").accessibilityValue(player.mode.title)
+            .accessibilityLabel(L10n.text("播放模式，轻点切换")).accessibilityValue(player.mode.title)
             Menu {
                 ForEach([0.75, 1.0, 1.25, 1.5, 2.0], id: \.self) { rate in
                     Button { player.setRate(rate) } label: {
                         HStack {
-                            Text(rate == 1 ? "正常速度" : "\(rate.formatted()) 倍速")
+                            Text(rate == 1 ? L10n.text("正常速度") : L10n.format("%@ 倍速", rate.formatted()))
                             if player.playbackRate == rate { Image(systemName: "checkmark") }
                         }
                     }
@@ -89,13 +97,13 @@ struct PhoneNowPlayingView: View {
             }
             .frame(maxWidth: .infinity)
             .foregroundStyle(player.playbackRate == 1 ? AppPalette.textSecondary : AppPalette.accent)
-            .accessibilityLabel("播放速度").accessibilityValue("\(player.playbackRate.formatted()) 倍")
+            .accessibilityLabel(L10n.text("播放速度")).accessibilityValue(L10n.format("%@ 倍", player.playbackRate.formatted()))
             Menu {
                 ForEach([15, 30, 45, 60], id: \.self) { minutes in
-                    Button("\(minutes) 分钟后暂停") { player.setSleepTimer(minutes: minutes) }
+                    Button(L10n.format("%lld 分钟后暂停", minutes)) { player.setSleepTimer(minutes: minutes) }
                 }
                 if player.sleepTimerDeadline != nil {
-                    Button("关闭定时", role: .destructive) { player.setSleepTimer(minutes: nil) }
+                    Button(L10n.text("关闭定时"), role: .destructive) { player.setSleepTimer(minutes: nil) }
                 }
             } label: {
                 Image(systemName: player.sleepTimerDeadline == nil ? "moon" : "moon.zzz.fill")
@@ -103,11 +111,11 @@ struct PhoneNowPlayingView: View {
             }
             .frame(maxWidth: .infinity)
             .foregroundStyle(player.sleepTimerDeadline == nil ? AppPalette.textSecondary : AppPalette.accent)
-            .accessibilityLabel("睡眠定时")
-            .accessibilityValue(player.sleepTimerDeadline == nil ? "未开启" : "已开启")
+            .accessibilityLabel(L10n.text("睡眠定时"))
+            .accessibilityValue(player.sleepTimerDeadline == nil ? L10n.text("未开启") : L10n.text("已开启"))
             AudioRoutePicker()
                 .frame(width: 44, height: 44).frame(maxWidth: .infinity)
-                .accessibilityLabel("选择音频输出设备")
+                .accessibilityLabel(L10n.text("选择音频输出设备"))
         }
         .buttonStyle(.plain).foregroundStyle(AppPalette.textSecondary).padding(.top, 2)
     }
@@ -166,8 +174,8 @@ private struct PlaybackProgress: View {
                     if direction == .increment { player.skip(seconds: 5) }
                     else if direction == .decrement { player.skip(seconds: -5) }
                 }
-                .accessibilityLabel("播放进度")
-                .accessibilityValue("\(phoneTime(position))，共 \(phoneTime(player.duration))")
+                .accessibilityLabel(L10n.text("播放进度"))
+                .accessibilityValue(L10n.format("%@，共 %@", phoneTime(position), phoneTime(player.duration)))
                 HStack {
                     Text(phoneTime(position))
                     Spacer()
@@ -185,7 +193,7 @@ private struct SleepTimerCountdown: View {
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1, paused: scenePhase != .active)) { context in
-            Label("将在 \(phoneTime(max(0, deadline.timeIntervalSince(context.date)))) 后暂停", systemImage: "moon.zzz.fill")
+            Label(L10n.format("将在 %@ 后暂停", phoneTime(max(0, deadline.timeIntervalSince(context.date)))), systemImage: "moon.zzz.fill")
                 .font(.footnote)
                 .foregroundStyle(AppPalette.accent)
                 .padding(.vertical, 12)
@@ -230,7 +238,7 @@ private struct PlaybackMoreMenu: View, Equatable {
     var body: some View {
         Menu {
             if let track {
-                Button("发送到 Apple Watch", systemImage: "applewatch.and.arrow.forward") {
+                Button(L10n.text("发送到 Apple Watch"), systemImage: "applewatch.and.arrow.forward") {
                     // Read current file metadata when the action runs, keeping
                     // an open menu independent of asynchronous duration scans.
                     if let current = library.allTracks.first(where: { $0.id == track.id && $0.url == track.url }) {
@@ -238,7 +246,7 @@ private struct PlaybackMoreMenu: View, Equatable {
                     }
                 }
             }
-            Button("歌曲信息", systemImage: "info.circle") { showingInfo = true }
+            Button(L10n.text("歌曲信息"), systemImage: "info.circle") { showingInfo = true }
         } label: {
             Image(systemName: "ellipsis")
                 .font(.title3)
@@ -246,9 +254,9 @@ private struct PlaybackMoreMenu: View, Equatable {
                 .frame(width: 44, height: 44)
                 .background(AppPalette.surface, in: Circle())
         }
-        .accessibilityLabel("更多播放选项")
-        .alert("歌曲信息", isPresented: $showingInfo) { Button("好", role: .cancel) {} } message: {
-            Text("\(info.title)\n艺术家：\(info.artist.isEmpty ? "未知" : info.artist)\n专辑：\(info.album.isEmpty ? "未知" : info.album)\n时长：\(phoneTime(info.duration))\n格式：\(info.format)\n\(info.route)")
+        .accessibilityLabel(L10n.text("更多播放选项"))
+        .alert(L10n.text("歌曲信息"), isPresented: $showingInfo) { Button(L10n.text("好"), role: .cancel) {} } message: {
+            Text(L10n.format("%@\n艺术家：%@\n专辑：%@\n时长：%@\n格式：%@\n%@", info.title, info.artist.isEmpty ? L10n.text("未知") : info.artist, info.album.isEmpty ? L10n.text("未知") : info.album, phoneTime(info.duration), info.format, info.route))
         }
     }
 }
@@ -269,9 +277,9 @@ private struct QueueSheet: View {
                             }.padding(.vertical, 4)
                         }.listRowBackground(AppPalette.surface)
                     }
-                } header: { Text("\(player.queue.count) 首 · \(player.mode.title)") }
-            }.scrollContentBackground(.hidden).background(AppPalette.background).navigationTitle("播放队列").navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("完成") { dismiss() } } }
+                } header: { Text(L10n.format("%lld 首 · %@", player.queue.count, player.mode.title)) }
+            }.scrollContentBackground(.hidden).background(AppPalette.background).navigationTitle(L10n.text("播放队列")).navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L10n.text("完成")) { dismiss() } } }
         }
     }
 }

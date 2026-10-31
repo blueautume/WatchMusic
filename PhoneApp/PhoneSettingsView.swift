@@ -13,7 +13,7 @@ extension EnvironmentValues {
 
 enum PhoneAppInformation {
     static var displayName: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "随身音乐"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? L10n.text("随身音乐")
     }
 
     static var version: String {
@@ -26,15 +26,41 @@ enum PhoneAppInformation {
 }
 
 struct PhoneSettingsView: View {
+    #if DEBUG && targetEnvironment(simulator)
+    @State private var previewDestination: String?
+    #endif
+
     var body: some View {
         List {
-            NavigationLink("隐私协议") { PrivacyAgreementsView() }
+            NavigationLink(L10n.text("隐私协议")) { PrivacyAgreementsView() }
                 .listRowBackground(AppPalette.surface)
-            NavigationLink("关于") { PhoneAboutView() }
+            NavigationLink(L10n.text("关于")) { PhoneAboutView() }
                 .listRowBackground(AppPalette.surface)
         }
         .scrollContentBackground(.hidden).background(AppPalette.background)
-        .navigationTitle("设置").navigationBarTitleDisplayMode(.inline)
+        .navigationTitle(L10n.text("设置")).navigationBarTitleDisplayMode(.inline)
+        #if DEBUG && targetEnvironment(simulator)
+        .navigationDestination(isPresented: Binding(
+            get: { previewDestination != nil }, set: { if !$0 { previewDestination = nil } }
+        )) {
+            switch previewDestination {
+            case "about": PhoneAboutView()
+            case "agreements": PrivacyAgreementsView()
+            case "privacy": LegalDocumentView(document: .privacy)
+            case "terms": LegalDocumentView(document: .terms)
+            case "support": LegalDocumentView(document: .support)
+            default: EmptyView()
+            }
+        }
+        .task {
+            let arguments = ProcessInfo.processInfo.arguments
+            if arguments.contains("-preview-about") { previewDestination = "about" }
+            else if arguments.contains("-preview-agreements") { previewDestination = "agreements" }
+            else if arguments.contains("-preview-privacy-document") { previewDestination = "privacy" }
+            else if arguments.contains("-preview-terms-document") { previewDestination = "terms" }
+            else if arguments.contains("-preview-support-document") { previewDestination = "support" }
+        }
+        #endif
     }
 }
 
@@ -50,17 +76,17 @@ private struct PrivacyAgreementsView: View {
             }.listRowBackground(AppPalette.surface)
             if withdrawConsent != nil {
                 Section {
-                    Button("撤回同意", role: .destructive) { confirmingWithdrawal = true }
+                    Button(L10n.text("撤回同意"), role: .destructive) { confirmingWithdrawal = true }
                 }.listRowBackground(AppPalette.surface)
             }
         }
         .scrollContentBackground(.hidden).background(AppPalette.background)
-        .navigationTitle("隐私协议").navigationBarTitleDisplayMode(.inline)
-        .confirmationDialog("撤回协议同意？", isPresented: $confirmingWithdrawal, titleVisibility: .visible) {
-            Button("撤回同意并停用", role: .destructive) { withdrawConsent?() }
-            Button("取消", role: .cancel) {}
+        .navigationTitle(L10n.text("隐私协议")).navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog(L10n.text("撤回协议同意？"), isPresented: $confirmingWithdrawal, titleVisibility: .visible) {
+            Button(L10n.text("撤回同意并停用"), role: .destructive) { withdrawConsent?() }
+            Button(L10n.text("取消"), role: .cancel) {}
         } message: {
-            Text("将停止播放和传输并返回协议页面。设备上的音乐会保留。")
+            Text(L10n.text("将停止播放和传输并返回协议页面。设备上的音乐会保留。"))
         }
     }
 }
@@ -71,20 +97,21 @@ private struct PhoneAboutView: View {
             VStack(spacing: 16) {
                 PhoneBrandMark(side: 88)
                 Text(PhoneAppInformation.displayName).font(.title2.weight(.semibold))
-                Text("版本 \(PhoneAppInformation.version)")
+                Text(L10n.format("版本 %@", PhoneAppInformation.version))
                     .font(.subheadline).foregroundStyle(AppPalette.textSecondary)
-                Text("把喜欢的音乐放进手表，随时离线聆听。")
+                Text(L10n.text("把喜欢的音乐放进手表，随时离线聆听。"))
                     .font(.subheadline).multilineTextAlignment(.center)
                     .foregroundStyle(AppPalette.textSecondary).padding(.top, 4)
-                Text("李浩（个人开发者）")
+                Text(L10n.text("李浩（个人开发者）"))
                     .font(.footnote).foregroundStyle(AppPalette.textSecondary)
-                Link("技术支持", destination: PhoneAppInformation.supportURL)
+                    .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                Link(L10n.text("技术支持"), destination: PhoneAppInformation.supportURL)
                     .padding(.top, 8)
             }
             .frame(maxWidth: .infinity).padding(28).padding(.top, 28)
         }
         .background(AppPalette.background)
-        .navigationTitle("关于").navigationBarTitleDisplayMode(.inline)
+        .navigationTitle(L10n.text("关于")).navigationBarTitleDisplayMode(.inline)
     }
 }
 

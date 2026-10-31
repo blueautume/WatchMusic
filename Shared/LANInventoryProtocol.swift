@@ -50,6 +50,6 @@ enum LANInventoryWire {
 
     private static func invalidRequest() -> NSError {
         NSError(domain: "LANInventory", code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "歌曲检查信息无效，请重新选择。"])
+                userInfo: [NSLocalizedDescriptionKey: L10n.text("歌曲检查信息无效，请重新选择。")])
     }
 }

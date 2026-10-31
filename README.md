@@ -11,6 +11,14 @@ open WatchMusic.xcodeproj
 
 功能开发从 `main` 新建分支。应用采用双端前台局域网传输，两端播放独立，不同步或互相控制播放。
 
+## 界面语言
+
+iPhone 和 Apple Watch 均支持简体中文与英文，跟随各自设备的系统语言或系统中的 App 语言设置；其他语言在没有匹配资源时使用英文。中文应用名称为“随身音乐”，英文为“WatchMusic”。音乐库、播放与队列、传输状态、设置、错误提示、权限说明和无障碍标签均提供双语文案；iPhone 的隐私协议、用户协议和支持页也可离线阅读英文版本。
+
+歌曲标题、艺术家、专辑、目录名和文件名保留原始内容。历史传输状态与另一台设备发来的消息在显示时转换为本机语言，无需改写既有队列。短屏幕上的长标题使用适当的短标题，正文可以换行或滚动；辅助功能大字下的协议操作按钮改为纵向排列。
+
+双语资源位于 `Shared/en.lproj` 和 `Shared/zh-Hans.lproj`，两端权限与应用名分别位于各 target 的 `InfoPlist.strings`。运行 `Tests/run-localization-tests.sh` 检查翻译覆盖、格式参数、英文回退、跨语言历史消息和离线协议；构建后可运行 `python3 Tests/check-localization.py --bundle /path/to/WatchMusic.app`，同时检查手机与内嵌手表的实际资源。
+
 ## 打开与运行
 
 打开 `WatchMusic.xcodeproj`：

@@ -144,7 +144,7 @@ enum LANTransferValidation {
     }
 
     private static func invalidOffer() -> NSError {
-        NSError(domain: "LANTransfer", code: 1, userInfo: [NSLocalizedDescriptionKey: "局域网传输信息无效或已过期。"])
+        NSError(domain: "LANTransfer", code: 1, userInfo: [NSLocalizedDescriptionKey: L10n.text("局域网传输信息无效或已过期。")])
     }
 }
 

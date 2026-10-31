@@ -183,7 +183,7 @@ struct LANBackgroundTransferState: Codable {
 
     private func invalidState() -> NSError {
         NSError(domain: "LANBackgroundTransferState", code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "局域网后台接收记录无效，请重新发送。"])
+                userInfo: [NSLocalizedDescriptionKey: L10n.text("局域网后台接收记录无效，请重新发送。")])
     }
 }
 

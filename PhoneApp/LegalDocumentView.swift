@@ -8,14 +8,18 @@ enum LegalDocument: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .privacy: "隐私协议"
-        case .terms: "用户协议"
-        case .support: "技术支持"
+        case .privacy: L10n.text("隐私协议")
+        case .terms: L10n.text("用户协议")
+        case .support: L10n.text("技术支持")
         }
     }
 
     var fileURL: URL? {
-        Bundle.main.url(forResource: rawValue, withExtension: "html", subdirectory: "Legal")
+        if Bundle.main.preferredLocalizations.first?.hasPrefix("zh") != true {
+            return Bundle.main.url(forResource: rawValue + "-en", withExtension: "html", subdirectory: "Legal/en")
+                ?? Bundle.main.url(forResource: rawValue + "-en", withExtension: "html")
+        }
+        return Bundle.main.url(forResource: rawValue, withExtension: "html", subdirectory: "Legal")
             ?? Bundle.main.url(forResource: rawValue, withExtension: "html")
     }
 }
@@ -31,8 +35,8 @@ struct LegalDocumentView: View {
                 LegalWebView(fileURL: fileURL, openExternalURL: { openURL($0) },
                              updateTitle: { displayedTitle = $0 })
             } else {
-                ContentUnavailableView("暂时无法打开协议", systemImage: "doc.text",
-                                       description: Text("请重新打开应用后重试。"))
+                ContentUnavailableView(L10n.text("暂时无法打开协议"), systemImage: "doc.text",
+                                       description: Text(L10n.text("请重新打开应用后重试。")))
             }
         }
         .background(AppPalette.background)
@@ -96,8 +100,9 @@ private struct LegalWebView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            guard let file = webView.url?.deletingPathExtension().lastPathComponent,
-                  let document = LegalDocument(rawValue: file) else { return }
+            guard let file = webView.url?.deletingPathExtension().lastPathComponent else { return }
+            let name = file.hasSuffix("-en") ? String(file.dropLast(3)) : file
+            guard let document = LegalDocument(rawValue: name) else { return }
             updateTitle(document.title)
         }
 

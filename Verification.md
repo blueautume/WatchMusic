@@ -395,3 +395,26 @@ Debug / Release 完整通用模拟器构建通过（含Watch）。40mm的竖屏�
 - 未安装或操作真机，未播放用户歌曲。仅为本轮启动的 watchOS 27 模拟器测试后关闭，原有已启动模拟器保留。
 
 真机验收由用户手动安装两端后进行：先检查播放后暂停并回表盘，等待约一小时，记录起止电量；再验证持续后台播放、耳机播放/暂停、原位置续播、倍速、输出选择和睡眠定时。查重期间退出手表 App，应及时停止读取，重新打开后手机队列能自动继续。对照主分支时保持相近电量、佩戴、连接和屏幕设置；本轮不承诺具体省电百分比，也不以模拟器断言代替真实续航观察。
+
+## iPhone / Watch 中英双语适配（2026-10-31）
+
+将 `feature/energy-efficiency` 快进合并到本地 `main`（`84e6225`），从该提交创建 `feature/bilingual-localization`。既有 PhoneInfo.plist、Watch Scheme 修改及未跟踪的网页解压目录保留，不纳入本次提交。
+
+两端共用 381 条简体中文 / 英文资源，覆盖音乐库、目录与歌曲操作、播放器与队列、传输、设置、协议、错误提示和无障碍标签。英文应用名为 WatchMusic；InfoPlist.strings 同时翻译本地网络及运动权限说明。开发语言设为英文，其他语言没有匹配资源时回退英文。iPhone 新增三份离线英文 HTML，保持中文协议的数据范围、用户权利、HTTP 非 TLS 说明、删除范围、日期和协议版本，页面链接仍受文件白名单限制。
+
+传输队列和协议保留原状态及标识，显示层识别旧中英消息和带参数的错误，用查看设备的语言显示。嵌套错误只在明确错误包装内转换；歌曲名、目录名、文件名及元数据不翻译，即使歌曲恰好叫“播放”或“Paused”。英文计数采用 Songs / Tasks 等标签加数量，避免单复数不一致。导入和批量操作错误按整句格式化，不拼接中文动词。
+
+视觉检查使用本轮新建的 iPhone SE（375pt，iOS 26.5）、40mm / 49mm Watch（watchOS 26.5）模拟器和独立音频夹具，不操作用户原有模拟器资料或真机。52 张实际页面截图保存在 `Artifacts/Previews/Localization`，其中 iPhone 英文 16 个页面/状态、Watch 英文每种尺寸 12 个页面/状态，另含中文回归图。预览播放器只准备暂停状态，不播放音频。
+
+- iPhone：检查音乐库、目录、多选、播放器、滚动到底后的控制区、队列、进行中/已完成传输、设置、关于、协议入口及三份英文文档。长标题、状态和错误允许自然换行；总 ETA 和任务操作在空间不足时纵排。正常及最大辅助功能字号的同意页均检查，后者将按钮纵排，文字完整且正文可滚动。
+- Watch：检查首页、歌曲列表、播放器、倍速、睡眠定时、存储、新建与重命名目录、目录管理、接收/暂停/保存。修复实际截图中 40mm 的管理标题及 Receiving 截断：窄屏选用 Folder / Song / Rename / Storage 短标题，接收顶栏空间不足时省去图标，保留完整文字；避免系统时钟和按钮遮挡。长歌曲元数据仍按可用空间省略。
+- 部分首轮启动截图停留在加载或导航过渡画面，未作为验收证据。延长等待，并使用仅 Debug 模拟器的实际页面预览入口复拍；提交的对应图片均已重新目视检查。
+
+验证通过：
+
+- Xcode 27.1：Debug 通用 iOS Simulator 完整构建及 Release 通用 iOS 真机架构完整构建，均包含 Watch，使用 `CODE_SIGNING_ALLOWED=NO`。实际手机和内嵌手表产品的两套文案、应用名、权限文案及六份协议资源与源码一致。构建仅出现未使用 AppIntents 的元数据提取提示，不代表签名安装或真机验收。
+- `Tests/run-localization-tests.sh`：381 个 key、527 处源码文字、两 target 资源归属、格式参数、离线文档版本与链接检查；真实临时 Bundle 在英文、简体中文、德语优先后英文、仅法语回退英文四种环境各 42 项断言通过，共 168 项。覆盖旧状态、混合语言历史、嵌套错误、空参数及用户歌曲名保留。
+- 静音播放器集成：iOS / watchOS 各 186 项；手机批量文件操作 35 项；手机播放布局 2,137 项、Watch 画布与时钟避让 1,224 项、协议同意与撤回 25 项通过。
+- 既有回归：播放队列 46,760、总 ETA 20、独立进度观察 5、LAN 协议 89、保存回执 36、前台状态 135、传输列表 42、真实 HTTP 源 45、音频格式 186、元数据 277、封面 40、源文件版本 23，以及传输指标测试通过。完整 diff 空白检查通过。
+
+关键截图：[iPhone 英文传输](Artifacts/Previews/Localization/iPhoneSE/en/transfers.png)、[小屏播放器底部](Artifacts/Previews/Localization/iPhoneSE/en/player-bottom.png)、[最大字号同意页](Artifacts/Previews/Localization/iPhoneSE/en/consent-accessibility.png)、[40mm 接收页](Artifacts/Previews/Localization/40mm/en/receiving.png)、[40mm 目录管理](Artifacts/Previews/Localization/40mm/en/folder-actions.png)、[49mm 播放器](Artifacts/Previews/Localization/49mm/en/player.png)。

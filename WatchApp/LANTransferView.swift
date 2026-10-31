@@ -26,9 +26,14 @@ struct LANTransferView: View {
     private func content(size: CGSize, landscape: Bool, layout: LANTransferLayout) -> some View {
         let compact = size.height < 215
         return VStack(spacing: 6) {
-            HStack(spacing: 6) {
-                Image(systemName: "wifi").foregroundStyle(AppPalette.accent)
-                Text("接收中").fontWeight(.medium).lineLimit(1).minimumScaleFactor(0.8)
+            HStack(spacing: 0) {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "wifi").foregroundStyle(AppPalette.accent)
+                        Text(L10n.text("接收中")).fontWeight(.medium)
+                    }.fixedSize()
+                    Text(L10n.text("接收中")).fontWeight(.medium).fixedSize()
+                }
                 Spacer(minLength: 0)
             }.font(.system(size: 11)).frame(height: 16)
                 .padding(.leading, layout.headerLeading).padding(.trailing, layout.headerTrailing)
@@ -50,15 +55,15 @@ struct LANTransferView: View {
                         }
                     }
                 }
-                ProgressView(value: progress).tint(AppPalette.accent).frame(height: 4).accessibilityLabel("接收进度")
+                ProgressView(value: progress).tint(AppPalette.accent).frame(height: 4).accessibilityLabel(L10n.text("接收进度"))
             }
             .padding(.leading, layout.middleLeading).padding(.trailing, layout.middleTrailing)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             Button(action: cancel) {
-                Label("取消", systemImage: "xmark").font(.system(size: 13, weight: .medium))
+                Label(L10n.text("取消"), systemImage: "xmark").font(.system(size: 13, weight: .medium))
                     .frame(maxWidth: .infinity).frame(height: 44)
                     .background(AppPalette.surface, in: RoundedRectangle(cornerRadius: 12))
-            }.buttonStyle(.plain).accessibilityLabel("取消局域网传输")
+            }.buttonStyle(.plain).accessibilityLabel(L10n.text("取消局域网传输"))
                 .padding(.leading, layout.cancelLeading).padding(.trailing, layout.cancelTrailing)
         }
     }
@@ -66,11 +71,11 @@ struct LANTransferView: View {
     private var queueCount: some View {
         Text("\(reception.fileIndex)/\(reception.fileCount)")
             .font(.system(size: 11)).monospacedDigit().foregroundStyle(AppPalette.textSecondary)
-            .accessibilityLabel("第 \(reception.fileIndex) 首，共 \(reception.fileCount) 首")
+            .accessibilityLabel(L10n.format("第 %@ 首，共 %@ 首", String(describing: reception.fileIndex), String(describing: reception.fileCount)))
     }
 
     private func percentage(compact: Bool) -> some View {
-        Text(reception.isPaused ? "已暂停" : (reception.isSaving ? "保存中" : "\(Int(progress * 100))%"))
+        Text(reception.isPaused ? L10n.text("已暂停") : (reception.isSaving ? L10n.text("保存中") : "\(Int(progress * 100))%"))
             .font(.system(size: reception.isSaving || reception.isPaused ? 23 : (compact ? 34 : 44), weight: .semibold, design: .rounded))
             .monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
             .foregroundStyle(AppPalette.accent)

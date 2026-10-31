@@ -47,6 +47,6 @@ struct MusicArtwork: View {
             .frame(width: geometry.size.width, height: geometry.size.height)
             .clipped()
         }
-        .accessibilityLabel(title.isEmpty ? "音乐封面" : "\(title) 的封面")
+        .accessibilityLabel(title.isEmpty ? L10n.text("音乐封面") : L10n.format("%@ 的封面", title))
     }
 }

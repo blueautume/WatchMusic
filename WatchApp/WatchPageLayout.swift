@@ -1,8 +1,8 @@
 import SwiftUI
 
 extension View {
-    func watchPage(title: String, action: (() -> Void)? = nil, symbol: String = "xmark", showsBattery: Bool = false) -> some View {
-        modifier(WatchPageLayout(title: title, action: action, symbol: symbol, showsBattery: showsBattery))
+    func watchPage(title: String, compactTitle: String? = nil, action: (() -> Void)? = nil, symbol: String = "xmark", showsBattery: Bool = false) -> some View {
+        modifier(WatchPageLayout(title: title, compactTitle: compactTitle, action: action, symbol: symbol, showsBattery: showsBattery))
     }
 }
 
@@ -11,6 +11,7 @@ extension View {
 private struct WatchPageLayout: ViewModifier {
     @Environment(\.watchContentViewport) private var viewport
     let title: String
+    let compactTitle: String?
     let action: (() -> Void)?
     let symbol: String
     let showsBattery: Bool
@@ -56,8 +57,12 @@ private struct WatchPageLayout: ViewModifier {
             let labelY: CGFloat = portrait ? metrics.clockFrame.maxY : (action != nil ? 12 : 5)
             ZStack(alignment: .topLeading) {
                 HStack(spacing: 6) {
-                    Text(title).font(.system(size: 14, weight: .semibold))
-                        .lineLimit(1).minimumScaleFactor(0.8).layoutPriority(1)
+                    ViewThatFits(in: .horizontal) {
+                        Text(title).fixedSize()
+                        Text(compactTitle ?? title).lineLimit(1).minimumScaleFactor(0.8)
+                    }
+                    .font(.system(size: 14, weight: .semibold))
+                    .layoutPriority(1)
                     if showsBattery { WatchTitleBattery() }
                 }
                 .padding(.horizontal, 5).padding(.vertical, 2)
@@ -81,7 +86,7 @@ private struct WatchPageLayout: ViewModifier {
                 .frame(width: 44, height: 44).contentShape(Circle())
         }
         .buttonStyle(.plain).foregroundStyle(AppPalette.textPrimary)
-        .accessibilityLabel(symbol == "chevron.left" ? "返回" : "关闭")
+        .accessibilityLabel(symbol == "chevron.left" ? L10n.text("返回") : L10n.text("关闭"))
     }
 }
 
@@ -101,7 +106,7 @@ struct WatchTitleBattery: View {
         .foregroundStyle(display.isCharging ? Color.green : AppPalette.textSecondary)
         .background(AppPalette.surface, in: Capsule())
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(display.batteryPercentage.map { "电量百分之\($0)" } ?? "电量暂不可用")
-        .accessibilityValue(display.isCharging ? "正在充电" : "未充电")
+        .accessibilityLabel(display.batteryPercentage.map { L10n.format("电量百分之%@", String(describing: $0)) } ?? L10n.text("电量暂不可用"))
+        .accessibilityValue(display.isCharging ? L10n.text("正在充电") : L10n.text("未充电"))
     }
 }

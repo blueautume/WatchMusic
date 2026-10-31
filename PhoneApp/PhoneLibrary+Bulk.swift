@@ -5,7 +5,7 @@ extension PhoneLibrary {
     /// them to remove stale entries from the local player's queue.
     @discardableResult
     func deleteTracks(_ tracks: [PhoneTrack]) -> [URL] {
-        performBulkTrackOperation(tracks, verb: "删除") { deleteTrack($0) }
+        performBulkTrackOperation(tracks, completionKey: "已删除，但%@") { deleteTrack($0) }
     }
 
     /// Moving onto the current folder is a no-op. Existing destination files
@@ -18,13 +18,13 @@ extension PhoneLibrary {
         }
         let candidates = tracks.filter { $0.folder != folder.name }
         guard !candidates.isEmpty else { errorMessage = nil; return [] }
-        return performBulkTrackOperation(candidates, verb: "移动") {
+        return performBulkTrackOperation(candidates, completionKey: "已移动，但%@") {
             moveTrack($0, to: folder)
         }
     }
 
     private func performBulkTrackOperation(
-        _ tracks: [PhoneTrack], verb: String, operation: (PhoneTrack) -> Bool
+        _ tracks: [PhoneTrack], completionKey: String, operation: (PhoneTrack) -> Bool
     ) -> [URL] {
         guard !tracks.isEmpty else { return [] }
         guard !isImporting else {
@@ -46,15 +46,16 @@ extension PhoneLibrary {
                 let reason = detail ?? "操作未完成，请刷新后重试。"
                 // File mutation can succeed while its subsequent refresh fails.
                 // Keep the success result, and report that warning accurately.
-                issues.append("\(track.title)：\(succeeded ? "已\(verb)，但" : "")\(reason)")
+                let detail = succeeded ? L10n.format(completionKey, L10n.message(reason)) : L10n.message(reason)
+                issues.append(L10n.format("%@：%@", track.title, detail))
             }
         }
         if issues.isEmpty {
             errorMessage = nil
         } else {
             let visible = issues.prefix(3).joined(separator: "\n")
-            let remainder = issues.count > 3 ? "\n另有 \(issues.count - 3) 项，请分别重试。" : ""
-            errorMessage = "有 \(issues.count) 项需要处理：\n\(visible)\(remainder)"
+            let remainder = issues.count > 3 ? L10n.format("\n另有 %lld 项，请分别重试。", Int64(issues.count - 3)) : ""
+            errorMessage = L10n.format("有 %lld 项需要处理：\n%@%@", Int64(issues.count), visible, remainder)
         }
         return removedURLs
     }

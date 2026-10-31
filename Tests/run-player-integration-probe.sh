@@ -17,7 +17,7 @@ esac
 test_root="$(cd "$(dirname "$0")/.." && pwd)"
 test_output_dir="$(mktemp -d "${TMPDIR:-/tmp}/watch-player-integration.XXXXXX")"
 trap 'rm -rf "$test_output_dir"' EXIT
-xcrun swiftc -parse-as-library -sdk "$test_sdk" -target "$test_target" \
+xcrun swiftc "$test_root/Shared/Localization.swift" -parse-as-library -sdk "$test_sdk" -target "$test_target" \
   "$test_root/Shared/AudioFileFormat.swift" "$test_root/Shared/PlaybackQueueLogic.swift" \
   "$test_root/Shared/ArtworkDecoder.swift" "$test_root/Shared/AudioMetadataReader.swift" "$test_root/Shared/MusicPlayer.swift" \
   "$test_root/Tests/MusicPlayerIntegrationProbe.swift" -o "$test_output_dir/MusicPlayerIntegrationProbe"

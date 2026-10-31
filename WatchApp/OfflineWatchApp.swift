@@ -45,7 +45,19 @@ struct OfflineWatchApp: App {
     }
 
     @ViewBuilder private var rootView: some View {
-        #if DEBUG
+        #if DEBUG && targetEnvironment(simulator)
+        if ProcessInfo.processInfo.arguments.contains("-preview-track-list-direct") {
+            NavigationStack { WatchTrackListView(folderName: nil) }
+        } else { debugRootView }
+        #elseif DEBUG
+        debugRootView
+        #else
+        applicationView
+        #endif
+    }
+
+    #if DEBUG
+    @ViewBuilder private var debugRootView: some View {
         if ProcessInfo.processInfo.arguments.contains("-preview-player") {
             FolderListView().task {
                 let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -53,13 +65,21 @@ struct OfflineWatchApp: App {
                 if FileManager.default.fileExists(atPath: fixture.path) { player.prepareLayoutPreview(fixture) }
             }
         } else if ProcessInfo.processInfo.arguments.contains("-preview-lan-transfer") {
-            LANTransferView(reception: LANReceptionStatus(fileName: "夜空中的旋律 · 夜跑歌单.flac", completedBytes: 6_300_000,
-                                                        totalBytes: 10_000_000, fileIndex: 2, fileCount: 12, isSaving: false), cancel: {})
+            LANTransferView(reception: LANReceptionStatus(fileName: "Midnight Melody · Evening Run Playlist.flac", completedBytes: 6_300_000,
+                                                        totalBytes: 10_000_000, fileIndex: 2, fileCount: 12,
+                                                        isSaving: ProcessInfo.processInfo.arguments.contains("-preview-lan-saving"),
+                                                        isPaused: ProcessInfo.processInfo.arguments.contains("-preview-lan-paused")), cancel: {})
+        } else if ProcessInfo.processInfo.arguments.contains("-preview-watch-info") {
+            WatchLibraryInfoView()
+        } else if ProcessInfo.processInfo.arguments.contains("-preview-watch-new-folder") {
+            WatchNameEntry(title: L10n.text("新建目录"), initial: "", prompt: L10n.text("目录名称")) { _, done in done(false) }
+        } else if ProcessInfo.processInfo.arguments.contains("-preview-watch-folder-actions") {
+            WatchFolderActionsView(folderName: "Evening Run Playlist")
+        } else if ProcessInfo.processInfo.arguments.contains("-preview-watch-rename-folder") {
+            WatchNameEntry(title: L10n.text("重命名目录"), initial: "Evening Run Playlist", prompt: L10n.text("目录名称"), compactTitle: L10n.text("重命名")) { _, done in done(false) }
         } else { applicationView }
-        #else
-        applicationView
-        #endif
     }
+    #endif
 
     @ViewBuilder private var applicationView: some View {
         if let reception = library.lanReception {
@@ -97,42 +117,42 @@ struct FolderListView: View {
                             MusicArtwork(title: player.title, data: player.artworkData)
                                 .frame(width: 38, height: 38).clipShape(RoundedRectangle(cornerRadius: 10))
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(player.isPlaying ? "正在聆听" : "继续聆听").font(.caption2).foregroundStyle(AppPalette.accent)
+                                Text(player.isPlaying ? L10n.text("正在聆听") : L10n.text("继续聆听")).font(.caption2).foregroundStyle(AppPalette.accent)
                                 Text(player.title).font(.headline).lineLimit(1)
                             }
                         }
                     }.watchCardRow()
                 }
                 NavigationLink(destination: WatchTrackListView(folderName: nil)) {
-                    Label("全部歌曲 · \(library.trackCount)", systemImage: "music.note.list").font(.headline)
+                    Label(L10n.format("全部歌曲 · %@", String(describing: library.trackCount)), systemImage: "music.note.list").font(.headline)
                 }.watchCardRow()
                 if library.isReceiving && library.lanReception == nil {
-                    HStack { ProgressView().controlSize(.mini); Text("正在保存歌曲…").font(.caption2) }.watchCardRow()
+                    HStack { ProgressView().controlSize(.mini); Text(L10n.text("正在保存歌曲…")).font(.caption2) }.watchCardRow()
                 }
                 if library.folders.isEmpty {
                     VStack(spacing: 10) {
                         Image(systemName: "music.note.house.fill").font(.largeTitle).foregroundStyle(AppPalette.accent)
-                        Text("暂无歌曲").font(.headline)
-                        Text("从 iPhone 添加歌曲").font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                        Text(L10n.text("暂无歌曲")).font(.headline)
+                        Text(L10n.text("从 iPhone 添加歌曲")).font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     }.frame(maxWidth: .infinity).padding(.vertical, 10).watchCardRow()
                 }
-                Section("音乐目录") {
+                Section(L10n.text("音乐目录")) {
                     ForEach(library.folders) { folder in
                         NavigationLink(destination: WatchTrackListView(folderName: folder.name)) {
                             HStack(spacing: 9) {
                                 Image(systemName: "folder.fill").foregroundStyle(AppPalette.accent)
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(folder.name).font(.headline).lineLimit(2)
-                                    Text("\(folder.tracks.count) 首").font(.caption2).foregroundStyle(.secondary)
+                                    Text(L10n.format("%@ 首", String(describing: folder.tracks.count))).font(.caption2).foregroundStyle(.secondary)
                                 }
                             }.padding(.vertical, 4)
                         }.watchCardRow()
                     }
-                    Button { newFolder = true } label: { Label("新建目录", systemImage: "folder.badge.plus") }.watchCardRow()
+                    Button { newFolder = true } label: { Label(L10n.text("新建目录"), systemImage: "folder.badge.plus") }.watchCardRow()
                 }
-                Button { libraryInfo = true } label: { Label("存储与连接", systemImage: "internaldrive") }.font(.caption).watchCardRow()
+                Button { libraryInfo = true } label: { Label(L10n.text("存储与连接"), systemImage: "internaldrive") }.font(.caption).watchCardRow()
             }
-            .watchPage(title: "随身音乐", showsBattery: true)
+            .watchPage(title: L10n.text("随身音乐"), showsBattery: true)
             .navigationDestination(isPresented: $previewTrackList) { WatchTrackListView(folderName: nil) }
             .navigationDestination(isPresented: $previewPlayer) { NowPlayingView() }
             .onAppear {
@@ -152,14 +172,14 @@ struct FolderListView: View {
             #endif
             .sheet(isPresented: $newFolder) {
                 WatchAppSurface {
-                    WatchNameEntry(title: "新建目录", initial: "", prompt: "目录名称") { name, done in library.createFolder(name, completion: done) }
+                    WatchNameEntry(title: L10n.text("新建目录"), initial: "", prompt: L10n.text("目录名称")) { name, done in library.createFolder(name, completion: done) }
                 }
             }
             .sheet(isPresented: $libraryInfo) { WatchAppSurface { WatchLibraryInfoView() } }
         }
-        .alert("音乐提示", isPresented: Binding(get: { library.errorMessage != nil || player.errorMessage != nil }, set: { if !$0 { library.errorMessage = nil; player.errorMessage = nil } })) {
-            Button("好", role: .cancel) { library.errorMessage = nil; player.errorMessage = nil }
-        } message: { Text(library.errorMessage ?? player.errorMessage ?? "") }
+        .alert(L10n.text("音乐提示"), isPresented: Binding(get: { library.errorMessage != nil || player.errorMessage != nil }, set: { if !$0 { library.errorMessage = nil; player.errorMessage = nil } })) {
+            Button(L10n.text("好"), role: .cancel) { library.errorMessage = nil; player.errorMessage = nil }
+        } message: { Text(L10n.message(library.errorMessage ?? player.errorMessage ?? "")) }
     }
 }
 
@@ -178,11 +198,11 @@ private struct WatchTrackListView: View {
     }
     var body: some View {
         List {
-            TextField("搜索歌曲", text: $search).watchCardRow()
+            TextField(L10n.text("搜索歌曲"), text: $search).watchCardRow()
             if !tracks.isEmpty {
                 Button {
                     if let first = tracks.first { player.play(first, in: tracks); showingPlayer = true }
-                } label: { Label("播放全部 · \(tracks.count)", systemImage: "play.fill").foregroundStyle(AppPalette.accent) }.watchCardRow()
+                } label: { Label(L10n.format("播放全部 · %@", String(describing: tracks.count)), systemImage: "play.fill").foregroundStyle(AppPalette.accent) }.watchCardRow()
             }
             ForEach(tracks, id: \.self) { track in
                 HStack(spacing: 5) {
@@ -192,20 +212,20 @@ private struct WatchTrackListView: View {
                                 .foregroundStyle(player.currentURL == track ? AppPalette.accent : .secondary).frame(width: 17)
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(track.deletingPathExtension().lastPathComponent).font(.body).lineLimit(2)
-                                Text(AudioFileFormat.format(for: track)?.displayName ?? "音频").font(.system(size: 10)).foregroundStyle(.secondary)
+                                Text(AudioFileFormat.format(for: track)?.displayName ?? L10n.text("音频")).font(.system(size: 10)).foregroundStyle(.secondary)
                             }.frame(maxWidth: .infinity, alignment: .leading)
                         }.frame(minHeight: 44)
                     }.buttonStyle(.plain)
                     Button { managingTrack = WatchSongSelection(url: track) } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44).contentShape(Rectangle()) }
-                        .buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("管理 \(track.deletingPathExtension().lastPathComponent)")
+                        .buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel(L10n.format("管理 %@", String(describing: track.deletingPathExtension().lastPathComponent)))
                 }.watchCardRow()
             }
-            if tracks.isEmpty { Text(search.isEmpty ? "此处还没有歌曲" : "没有匹配的歌曲").font(.caption).foregroundStyle(.secondary).watchCardRow() }
+            if tracks.isEmpty { Text(search.isEmpty ? L10n.text("此处还没有歌曲") : L10n.text("没有匹配的歌曲")).font(.caption).foregroundStyle(.secondary).watchCardRow() }
             if folderName != nil {
-                Button { managingFolder = true } label: { Label("管理此目录", systemImage: "folder.badge.gearshape") }.font(.caption).watchCardRow()
+                Button { managingFolder = true } label: { Label(L10n.text("管理此目录"), systemImage: "folder.badge.gearshape") }.font(.caption).watchCardRow()
             }
         }
-        .watchPage(title: folderName ?? "全部歌曲", action: { dismiss() }, symbol: "chevron.left")
+        .watchPage(title: folderName ?? L10n.text("全部歌曲"), action: { dismiss() }, symbol: "chevron.left")
         .navigationDestination(isPresented: $showingPlayer) { NowPlayingView() }
         .sheet(item: $managingTrack) { item in WatchAppSurface { WatchTrackActionsView(track: item.url).modifier(WatchOperationErrorAlert()) } }
         .sheet(isPresented: $managingFolder) {
@@ -231,14 +251,14 @@ private struct WatchTrackActionsView: View {
         NavigationStack {
             List {
                 Text(track.deletingPathExtension().lastPathComponent).font(.headline).watchCardRow()
-                Text("\(AudioFileFormat.format(for: track)?.displayName ?? "音频") · \(track.deletingLastPathComponent().lastPathComponent)")
+                Text("\(AudioFileFormat.format(for: track)?.displayName ?? L10n.text("音频")) · \(track.deletingLastPathComponent().lastPathComponent)")
                     .font(.caption2).foregroundStyle(.secondary).watchCardRow()
-                Button { renaming = true } label: { Label("重命名", systemImage: "pencil") }.watchCardRow()
-                Button { moving = true } label: { Label("移动到目录", systemImage: "folder") }.watchCardRow()
-                Button(role: .destructive) { deleting = true } label: { Label("删除歌曲", systemImage: "trash") }.watchCardRow()
-            }.watchPage(title: "管理歌曲", action: { dismiss() })
+                Button { renaming = true } label: { Label(L10n.text("重命名"), systemImage: "pencil") }.watchCardRow()
+                Button { moving = true } label: { Label(L10n.text("移动到目录"), systemImage: "folder") }.watchCardRow()
+                Button(role: .destructive) { deleting = true } label: { Label(L10n.text("删除歌曲"), systemImage: "trash") }.watchCardRow()
+            }.watchPage(title: L10n.text("管理歌曲"), compactTitle: L10n.text("歌曲"), action: { dismiss() })
                 .sheet(isPresented: $renaming) {
-                    WatchAppSurface { WatchNameEntry(title: "重命名歌曲", initial: track.deletingPathExtension().lastPathComponent, prompt: "歌曲名称") { value, done in
+                    WatchAppSurface { WatchNameEntry(title: L10n.text("重命名歌曲"), initial: track.deletingPathExtension().lastPathComponent, prompt: L10n.text("歌曲名称"), compactTitle: L10n.text("重命名")) { value, done in
                         library.renameTrack(track, to: value) { success in
                             done(success)
                             if success { if !FileManager.default.fileExists(atPath: track.path) { player.removeFromQueue(track) }; dismiss() }
@@ -255,18 +275,18 @@ private struct WatchTrackActionsView: View {
                                     }
                                 }.watchCardRow()
                             }
-                            if library.folders.count < 2 { Text("请先在音乐库中新建另一个目录。").font(.caption).foregroundStyle(.secondary).watchCardRow() }
-                        }.watchPage(title: "移动到", action: { moving = false })
+                            if library.folders.count < 2 { Text(L10n.text("请先在音乐库中新建另一个目录。")).font(.caption).foregroundStyle(.secondary).watchCardRow() }
+                        }.watchPage(title: L10n.text("移动到"), action: { moving = false })
                     }.modifier(WatchOperationErrorAlert()) }
                 }
-                .confirmationDialog("从手表删除歌曲？", isPresented: $deleting, titleVisibility: .visible) {
-                    Button("删除", role: .destructive) {
+                .confirmationDialog(L10n.text("从手表删除歌曲？"), isPresented: $deleting, titleVisibility: .visible) {
+                    Button(L10n.text("删除"), role: .destructive) {
                         library.deleteTrack(track) { success in
                             if success { if !FileManager.default.fileExists(atPath: track.path) { player.removeFromQueue(track) }; dismiss() }
                         }
                     }
-                    Button("取消", role: .cancel) {}
-                } message: { Text("手机副本会保留。") }
+                    Button(L10n.text("取消"), role: .cancel) {}
+                } message: { Text(L10n.text("手机副本会保留。")) }
         }
     }
 }
@@ -283,11 +303,11 @@ private struct WatchFolderActionsView: View {
         NavigationStack {
             List {
                 Text(folderName).font(.headline).watchCardRow()
-                Button("重命名目录") { renaming = true }.watchCardRow()
-                Button("删除目录", role: .destructive) { deleting = true }.watchCardRow()
-            }.watchPage(title: "管理目录", action: { dismiss() })
+                Button(L10n.text("重命名目录")) { renaming = true }.watchCardRow()
+                Button(L10n.text("删除目录"), role: .destructive) { deleting = true }.watchCardRow()
+            }.watchPage(title: L10n.text("管理目录"), compactTitle: L10n.text("目录"), action: { dismiss() })
                 .sheet(isPresented: $renaming) {
-                    WatchAppSurface { WatchNameEntry(title: "重命名目录", initial: folderName, prompt: "目录名称") { value, done in
+                    WatchAppSurface { WatchNameEntry(title: L10n.text("重命名目录"), initial: folderName, prompt: L10n.text("目录名称"), compactTitle: L10n.text("重命名")) { value, done in
                         let affectedTracks = tracks
                         library.renameFolder(folderName, to: value) { success in
                             done(success)
@@ -295,14 +315,14 @@ private struct WatchFolderActionsView: View {
                         }
                     } }
                 }
-                .confirmationDialog("删除此目录及全部歌曲？", isPresented: $deleting, titleVisibility: .visible) {
-                    Button("删除目录", role: .destructive) {
+                .confirmationDialog(L10n.text("删除此目录及全部歌曲？"), isPresented: $deleting, titleVisibility: .visible) {
+                    Button(L10n.text("删除目录"), role: .destructive) {
                         let affectedTracks = tracks
                         library.deleteFolder(folderName) { success in
                             if success { affectedTracks.filter { !FileManager.default.fileExists(atPath: $0.path) }.forEach { player.removeFromQueue($0) }; dismiss() }
                         }
                     }
-                    Button("取消", role: .cancel) {}
+                    Button(L10n.text("取消"), role: .cancel) {}
                 }
         }
     }
@@ -314,6 +334,7 @@ private struct WatchNameEntry: View {
     let title: String
     let initial: String
     let prompt: String
+    var compactTitle: String? = nil
     let save: (String, @escaping (Bool) -> Void) -> Void
     @State private var value = ""
     @State private var saving = false
@@ -321,15 +342,15 @@ private struct WatchNameEntry: View {
         NavigationStack {
             Form {
                 TextField(prompt, text: $value).watchCardRow()
-                Button(saving ? "正在保存…" : "保存") {
+                Button(saving ? L10n.text("正在保存…") : L10n.text("保存")) {
                     saving = true
                     save(value) { success in saving = false; if success { dismiss() } }
                 }.disabled(saving || value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).watchCardRow()
-            }.watchPage(title: title, action: { dismiss() })
+            }.watchPage(title: title, compactTitle: compactTitle, action: { dismiss() })
                 .onAppear { value = initial }
-                .alert("无法保存", isPresented: Binding(get: { library.errorMessage != nil }, set: { if !$0 { library.errorMessage = nil } })) {
-                    Button("好", role: .cancel) { library.errorMessage = nil }
-                } message: { Text(library.errorMessage ?? "") }
+                .alert(L10n.text("无法保存"), isPresented: Binding(get: { library.errorMessage != nil }, set: { if !$0 { library.errorMessage = nil } })) {
+                    Button(L10n.text("好"), role: .cancel) { library.errorMessage = nil }
+                } message: { Text(L10n.message(library.errorMessage ?? "")) }
         }
     }
 }
@@ -340,17 +361,24 @@ private struct WatchLibraryInfoView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("手表本地资料") {
-                    Label("\(library.trackCount) 首歌曲", systemImage: "music.note.list").watchCardRow()
-                    LabeledContent("音乐占用", value: watchBytes(library.totalBytes)).watchCardRow()
-                    LabeledContent("设备可用", value: watchBytes(library.availableBytes)).watchCardRow()
+                Section(L10n.text("手表本地资料")) {
+                    Label(L10n.format("%@ 首歌曲", String(describing: library.trackCount)), systemImage: "music.note.list").watchCardRow()
+                    storageRow(title: L10n.text("音乐占用"), value: watchBytes(library.totalBytes))
+                    storageRow(title: L10n.text("设备可用"), value: watchBytes(library.availableBytes))
                 }
-                Section("连接") {
-                    Label(library.connectionStatus, systemImage: "iphone.and.arrow.forward").font(.caption).watchCardRow()
-                    if let message = library.lastTransferMessage { Text(message).font(.caption2).foregroundStyle(AppPalette.accent).watchCardRow() }
+                Section(L10n.text("连接")) {
+                    Label(L10n.message(library.connectionStatus), systemImage: "iphone.and.arrow.forward").font(.caption).watchCardRow()
+                    if let message = library.lastTransferMessage { Text(L10n.message(message)).font(.caption2).foregroundStyle(AppPalette.accent).watchCardRow() }
                 }
-            }.watchPage(title: "存储与连接", action: { dismiss() })
+            }.watchPage(title: L10n.text("存储与连接"), compactTitle: L10n.text("存储"), action: { dismiss() })
         }
+    }
+
+    private func storageRow(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.caption2).foregroundStyle(.secondary)
+            Text(value).font(.body).monospacedDigit()
+        }.watchCardRow()
     }
 }
 
@@ -367,6 +395,8 @@ private struct WatchCardRow: ViewModifier {
 
     func body(content: Content) -> some View {
         content
+            .lineLimit(nil)
+            .multilineTextAlignment(.leading)
             .listRowBackground(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .fill(AppPalette.surface)
@@ -386,8 +416,8 @@ private struct WatchOperationErrorAlert: ViewModifier {
     @EnvironmentObject private var library: WatchLibrary
     @EnvironmentObject private var player: WatchPlayer
     func body(content: Content) -> some View {
-        content.alert("操作提示", isPresented: Binding(get: { library.errorMessage != nil || player.errorMessage != nil }, set: { if !$0 { library.errorMessage = nil; player.errorMessage = nil } })) {
-            Button("好", role: .cancel) { library.errorMessage = nil; player.errorMessage = nil }
-        } message: { Text(library.errorMessage ?? player.errorMessage ?? "") }
+        content.alert(L10n.text("操作提示"), isPresented: Binding(get: { library.errorMessage != nil || player.errorMessage != nil }, set: { if !$0 { library.errorMessage = nil; player.errorMessage = nil } })) {
+            Button(L10n.text("好"), role: .cancel) { library.errorMessage = nil; player.errorMessage = nil }
+        } message: { Text(L10n.message(library.errorMessage ?? player.errorMessage ?? "")) }
     }
 }

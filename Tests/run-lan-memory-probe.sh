@@ -27,6 +27,7 @@ done
 test_output_dir="$(mktemp -d "${TMPDIR:-/tmp}/watch-lan-memory-probe.XXXXXX")"
 trap 'rm -rf "$test_output_dir"' EXIT
 test_sources=(
+  "$test_root/Shared/Localization.swift"
   "$test_source_root/Shared/AudioFileFormat.swift"
   "$test_source_root/Shared/LANTransferProtocol.swift"
   "$test_source_root/Shared/LANHTTPParsing.swift"

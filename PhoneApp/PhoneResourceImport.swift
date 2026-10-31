@@ -5,14 +5,14 @@ import Foundation
 enum PhoneResourceImport {
     static func audio(_ source: URL, into directory: URL, cancellation: PhoneImportCancellation? = nil) throws -> URL {
         try checkCancellation(cancellation)
-        guard let format = AudioFileFormat.format(for: source) else { throw importError("仅支持 MP3 或 FLAC 音频") }
+        guard let format = AudioFileFormat.format(for: source) else { throw importError(L10n.text("仅支持 MP3 或 FLAC 音频")) }
         let manager = FileManager.default
         let staging = directory.appendingPathComponent(".import-\(UUID().uuidString).\(format.rawValue)")
         defer { try? manager.removeItem(at: staging) }
         try withCoordinatedURL(source, cancellation: cancellation) { coordinated in
             try checkCancellation(cancellation)
             let values = try coordinated.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-            guard values.isRegularFile == true, (values.fileSize ?? 0) > 0 else { throw importError("音频文件为空或不可读取") }
+            guard values.isRegularFile == true, (values.fileSize ?? 0) > 0 else { throw importError(L10n.text("音频文件为空或不可读取")) }
             let available = try directory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage ?? Int64.max
             guard available > Int64(values.fileSize ?? 0) + 1_048_576 else { throw CocoaError(.fileWriteOutOfSpace) }
             guard manager.createFile(atPath: staging.path, contents: nil) else { throw CocoaError(.fileWriteUnknown) }
@@ -33,10 +33,10 @@ enum PhoneResourceImport {
         }
         try checkCancellation(cancellation)
         let probe = try AVAudioPlayer(contentsOf: staging)
-        guard probe.duration.isFinite, probe.duration > 0 else { throw importError("音频无法解码") }
+        guard probe.duration.isFinite, probe.duration > 0 else { throw importError(L10n.text("音频无法解码")) }
         var stem = source.deletingPathExtension().lastPathComponent.replacingOccurrences(of: ":", with: "_").replacingOccurrences(of: "\\", with: "_").trimmingCharacters(in: .whitespacesAndNewlines)
         while stem.hasPrefix(".") { stem.removeFirst() }
-        if stem.isEmpty { stem = "未命名歌曲" }
+        if stem.isEmpty { stem = L10n.text("未命名歌曲") }
         while stem.utf8.count > 170 { stem.removeLast() }
         var destination = directory.appendingPathComponent(AudioFileFormat.fileName(stem: stem, format: format))
         var suffix = 2
@@ -63,7 +63,7 @@ enum PhoneResourceImport {
         }
         try checkCancellation(cancellation)
         if let coordinationError { throw coordinationError }
-        guard let result else { throw importError("无法协调读取所选文件") }
+        guard let result else { throw importError(L10n.text("无法协调读取所选文件")) }
         return try result.get()
     }
 

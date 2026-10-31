@@ -81,13 +81,13 @@ struct TransferQueueEstimate {
     }
 
     private static func format(_ seconds: TimeInterval) -> String {
-        if seconds < 60 { return "剩余不到 1 分钟" }
-        if seconds >= 86_400 { return "剩余超过 1 天" }
+        if seconds < 60 { return L10n.text("剩余不到 1 分钟") }
+        if seconds >= 86_400 { return L10n.text("剩余超过 1 天") }
         let unit = seconds <= 300 ? 60.0 : (seconds <= 3_600 ? 300.0 : 900.0)
         let minutes = Int(ceil(seconds / unit) * unit / 60)
-        if minutes < 60 { return "剩余约 \(minutes) 分钟" }
+        if minutes < 60 { return L10n.format("剩余约 %lld 分钟", Int64(minutes)) }
         let hours = minutes / 60
         let remainder = minutes % 60
-        return remainder == 0 ? "剩余约 \(hours) 小时" : "剩余约 \(hours) 小时 \(remainder) 分钟"
+        return remainder == 0 ? L10n.format("剩余约 %lld 小时", Int64(hours)) : L10n.format("剩余约 %lld 小时 %lld 分钟", Int64(hours), Int64(remainder))
     }
 }

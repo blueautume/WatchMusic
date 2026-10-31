@@ -4,13 +4,13 @@ enum TransferRecordState: String, Codable {
     case queued, paused, awaitingReceipt, stored, failed, cancelled, outdated
     var title: String {
         switch self {
-        case .queued: return "等待传输"
-        case .paused: return "已暂停"
-        case .awaitingReceipt: return "等待手表确认"
-        case .stored: return "已保存到手表"
-        case .failed: return "传输失败"
-        case .cancelled: return "已取消"
-        case .outdated: return "本地已更新，需重新发送"
+        case .queued: return L10n.text("等待传输")
+        case .paused: return L10n.text("已暂停")
+        case .awaitingReceipt: return L10n.text("等待手表确认")
+        case .stored: return L10n.text("已保存到手表")
+        case .failed: return L10n.text("传输失败")
+        case .cancelled: return L10n.text("已取消")
+        case .outdated: return L10n.text("本地已更新，需重新发送")
         }
     }
     var symbol: String {

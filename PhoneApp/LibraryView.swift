@@ -31,13 +31,13 @@ struct LibraryView: View {
             NavigationStack {
                 LibraryHome(openPlayer: { showingPlayer = true })
             }
-            .tabItem { Label("音乐库", systemImage: "music.note.list") }.tag(0)
+            .tabItem { Label(L10n.text("音乐库"), systemImage: "music.note.list") }.tag(0)
 
             NavigationStack {
                 TransfersView(openSettings: { showingSettings = true })
                     .navigationDestination(isPresented: $showingSettings) { PhoneSettingsView() }
             }
-                .tabItem { Label("传输", systemImage: "applewatch.and.arrow.forward") }
+                .tabItem { Label(L10n.text("传输"), systemImage: "applewatch.and.arrow.forward") }
                 .badge(library.pendingCount).tag(1)
         }
         .toolbarBackground(AppPalette.background, for: .tabBar)
@@ -64,12 +64,12 @@ struct LibraryView: View {
         .sheet(isPresented: $showingPlayer) {
             PhoneNowPlayingView().presentationDragIndicator(.visible)
         }
-        .alert("提示", isPresented: Binding(
+        .alert(L10n.text("提示"), isPresented: Binding(
             get: { !showingPlayer && library.errorMessage != nil },
             set: { if !$0 { library.errorMessage = nil } }
         )) {
-            Button("好", role: .cancel) { library.errorMessage = nil }
-        } message: { Text(library.errorMessage ?? "") }
+            Button(L10n.text("好"), role: .cancel) { library.errorMessage = nil }
+        } message: { Text(L10n.message(library.errorMessage ?? "")) }
         .onChange(of: scenePhase, initial: true) { previous, phase in
             if previous == .active && phase != .active { player?.savePlaybackPosition() }
             player?.setApplicationInBackground(phase == .background)
@@ -95,8 +95,13 @@ struct LibraryView: View {
             if arguments.contains("-preview-transfers-in-progress") || arguments.contains("-preview-transfers-completed") {
                 tab = 1
             }
+            if ["-preview-settings", "-preview-about", "-preview-agreements",
+                "-preview-privacy-document", "-preview-terms-document", "-preview-support-document"]
+                .contains(where: arguments.contains) {
+                tab = 1; showingSettings = true
+            }
             #endif
-            if arguments.contains("-preview-player"), let track = library.allTracks.first {
+            if arguments.contains("-preview-player") || arguments.contains("-preview-queue") || arguments.contains("-preview-player-bottom"), let track = library.allTracks.first {
                 player?.prepareLayoutPreview(track.url)
                 showingPlayer = true
             } else if arguments.contains("-preview-pinned-player"), let track = library.allTracks.first {
@@ -121,8 +126,9 @@ private struct TransferSummaryToast: View {
     var body: some View {
         Group {
             if let summary {
-                Text(summary)
+                Text(L10n.message(summary))
                     .font(.caption.weight(.medium))
+                    .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
                     .foregroundStyle(AppPalette.textPrimary)
                     .padding(.horizontal, 16).padding(.vertical, 12)
                     .background(.regularMaterial, in: Capsule())
@@ -146,12 +152,12 @@ private struct PhonePlayerErrorPresenter: View {
 
     var body: some View {
         Color.clear.allowsHitTesting(false)
-            .alert("提示", isPresented: Binding(
+            .alert(L10n.text("提示"), isPresented: Binding(
                 get: { !isShowingPlayer && player.errorMessage != nil },
                 set: { if !$0 { player.errorMessage = nil } }
             )) {
-                Button("好", role: .cancel) { player.errorMessage = nil }
-            } message: { Text(player.errorMessage ?? "") }
+                Button(L10n.text("好"), role: .cancel) { player.errorMessage = nil }
+            } message: { Text(L10n.message(player.errorMessage ?? "")) }
     }
 }
 

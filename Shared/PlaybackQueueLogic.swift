@@ -4,10 +4,10 @@ enum PlaybackMode: String, Codable, CaseIterable {
     case sequential, repeatAll, repeatOne, shuffle
     var title: String {
         switch self {
-        case .sequential: return "顺序播放"
-        case .repeatAll: return "列表循环"
-        case .repeatOne: return "单曲循环"
-        case .shuffle: return "随机播放"
+        case .sequential: return L10n.text("顺序播放")
+        case .repeatAll: return L10n.text("列表循环")
+        case .repeatOne: return L10n.text("单曲循环")
+        case .shuffle: return L10n.text("随机播放")
         }
     }
     var symbol: String {

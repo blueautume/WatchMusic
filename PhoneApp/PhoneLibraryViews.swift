@@ -19,7 +19,7 @@ struct LibraryHome: View {
     var body: some View {
         List {
             if folders.isEmpty {
-                ContentUnavailableView(search.isEmpty ? "还没有目录" : "没有找到目录", systemImage: "folder")
+                ContentUnavailableView(search.isEmpty ? L10n.text("还没有目录") : L10n.text("没有找到目录"), systemImage: "folder")
                 .listRowBackground(Color.clear)
             }
             ForEach(folders) { folder in
@@ -28,13 +28,13 @@ struct LibraryHome: View {
                 }
                 .listRowBackground(AppPalette.surface)
                 .contextMenu {
-                    Button("发送目录到手表", systemImage: "applewatch.and.arrow.forward") {
+                    Button(L10n.text("发送目录到手表"), systemImage: "applewatch.and.arrow.forward") {
                         library.send(library.tracks(in: folder))
                     }.disabled(library.isImporting || library.tracks(in: folder).isEmpty)
-                    Button("重命名", systemImage: "pencil") {
+                    Button(L10n.text("重命名"), systemImage: "pencil") {
                         folderName = folder.name; editingFolder = folder
                     }
-                    Button("删除目录", systemImage: "trash", role: .destructive) {
+                    Button(L10n.text("删除目录"), systemImage: "trash", role: .destructive) {
                         deletingFolder = folder
                     }.disabled(library.isImporting)
                 }
@@ -43,52 +43,52 @@ struct LibraryHome: View {
         }
         .foregroundStyle(AppPalette.textPrimary)
         .scrollContentBackground(.hidden).background(AppPalette.background)
-        .navigationTitle("音乐库")
+        .navigationTitle(L10n.text("音乐库"))
         .navigationDestination(for: PhoneFolder.self) { folder in
             FolderDetailView(folder: folder, openPlayer: openPlayer)
         }
         .navigationDestination(item: $previewFolder) { folder in
             FolderDetailView(folder: folder, openPlayer: openPlayer)
         }
-        .searchable(text: $search, prompt: "搜索目录")
+        .searchable(text: $search, prompt: L10n.text("搜索目录"))
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     folderName = ""; showCreate = true
                 } label: { Image(systemName: "folder.badge.plus") }
-                .accessibilityLabel("新建目录")
+                .accessibilityLabel(L10n.text("新建目录"))
             }
         }
-        .alert("新建目录", isPresented: $showCreate) {
-            TextField("目录名称", text: $folderName)
-            Button("创建") { _ = library.createFolder(folderName) }
-            Button("取消", role: .cancel) {}
+        .alert(L10n.text("新建目录"), isPresented: $showCreate) {
+            TextField(L10n.text("目录名称"), text: $folderName)
+            Button(L10n.text("创建")) { _ = library.createFolder(folderName) }
+            Button(L10n.text("取消"), role: .cancel) {}
         }
-        .alert("重命名目录", isPresented: Binding(
+        .alert(L10n.text("重命名目录"), isPresented: Binding(
             get: { editingFolder != nil }, set: { if !$0 { editingFolder = nil } }
         )) {
-            TextField("目录名称", text: $folderName)
-            Button("保存") {
+            TextField(L10n.text("目录名称"), text: $folderName)
+            Button(L10n.text("保存")) {
                 if let folder = editingFolder {
                     let tracks = library.tracks(in: folder)
                     if library.renameFolder(folder, to: folderName) { cleanPlayerQueue(tracks) }
                 }
                 editingFolder = nil
             }
-            Button("取消", role: .cancel) { editingFolder = nil }
+            Button(L10n.text("取消"), role: .cancel) { editingFolder = nil }
         }
-        .confirmationDialog("删除“\(deletingFolder?.name ?? "")”？", isPresented: Binding(
+        .confirmationDialog(L10n.format("删除“%@”？", deletingFolder?.name ?? ""), isPresented: Binding(
             get: { deletingFolder != nil }, set: { if !$0 { deletingFolder = nil } }
         ), titleVisibility: .visible) {
-            Button("删除手机中的目录和歌曲", role: .destructive) {
+            Button(L10n.text("删除手机中的目录和歌曲"), role: .destructive) {
                 if let folder = deletingFolder {
                     let tracks = library.tracks(in: folder)
                     if library.deleteFolder(folder) { cleanPlayerQueue(tracks) }
                 }
                 deletingFolder = nil
             }
-            Button("取消", role: .cancel) { deletingFolder = nil }
-        } message: { Text("手表上的歌曲会保留。") }
+            Button(L10n.text("取消"), role: .cancel) { deletingFolder = nil }
+        } message: { Text(L10n.text("手表上的歌曲会保留。")) }
         #if DEBUG && targetEnvironment(simulator)
         .task {
             let arguments = ProcessInfo.processInfo.arguments
@@ -116,7 +116,7 @@ private struct FolderRow: View {
                 .frame(width: 44, height: 48)
             Text(folder.name).font(.headline).lineLimit(2)
             Spacer(minLength: 8)
-            Text("\(count) 首").font(.caption).foregroundStyle(AppPalette.textSecondary)
+            Text(L10n.format("%lld 首", count)).font(.caption).foregroundStyle(AppPalette.textSecondary)
         }.padding(.vertical, 4)
     }
 }
@@ -146,7 +146,7 @@ struct FolderDetailView: View {
                             guard let first = tracks.first else { return }
                             player?.play(first.url, in: tracks.map(\.url)); openPlayer()
                         } label: {
-                            Label("播放全部", systemImage: "play.fill")
+                            Label(L10n.text("播放全部"), systemImage: "play.fill")
                                 .font(.subheadline.weight(.semibold))
                                 .frame(maxWidth: .infinity, minHeight: 48)
                         }
@@ -158,14 +158,14 @@ struct FolderDetailView: View {
                         }
                         .buttonStyle(.plain).foregroundStyle(AppPalette.accent)
                         .background(AppPalette.surface, in: RoundedRectangle(cornerRadius: 14))
-                        .disabled(library.isImporting).accessibilityLabel("发送此目录到手表")
+                        .disabled(library.isImporting).accessibilityLabel(L10n.text("发送此目录到手表"))
                     }
                     .listRowInsets(EdgeInsets()).listRowBackground(Color.clear)
                 }
             }
             Section {
                 if tracks.isEmpty {
-                    ContentUnavailableView(search.isEmpty ? "还没有音乐" : "没有找到歌曲", systemImage: "music.note")
+                    ContentUnavailableView(search.isEmpty ? L10n.text("还没有音乐") : L10n.text("没有找到歌曲"), systemImage: "music.note")
                         .listRowBackground(Color.clear)
                 }
                 ForEach(tracks) { track in
@@ -180,7 +180,7 @@ struct FolderDetailView: View {
                         beginSelection: { isSelecting = true; selectedIDs.insert(track.id) }
                     )
                 }
-            } header: { Text("\(tracks.count) 首") }
+            } header: { Text(L10n.format("%lld 首", tracks.count)) }
                 .listRowBackground(AppPalette.surface)
             if library.isImporting {
                 ProgressView(library.importMessage, value: library.importProgress)
@@ -191,12 +191,12 @@ struct FolderDetailView: View {
         .foregroundStyle(AppPalette.textPrimary)
         .scrollContentBackground(.hidden).background(AppPalette.background)
         .navigationTitle(folder.name).navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $search, prompt: "搜索此目录")
+        .searchable(text: $search, prompt: L10n.text("搜索此目录"))
         .onChange(of: tracks.map(\.id)) { _, ids in selectedIDs.formIntersection(ids) }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 if isSelecting {
-                    Button(selectedIDs.count == tracks.count ? "取消全选" : "全选") {
+                    Button(selectedIDs.count == tracks.count ? L10n.text("取消全选") : L10n.text("全选")) {
                         selectedIDs = selectedIDs.count == tracks.count ? [] : Set(tracks.map(\.id))
                     }.disabled(tracks.isEmpty)
                 }
@@ -211,17 +211,17 @@ struct FolderDetailView: View {
                         selectedIDs.subtract(processed)
                         if selectedIDs.isEmpty { isSelecting = false }
                     }
-                    Button("完成") { isSelecting = false; selectedIDs.removeAll() }
+                    Button(L10n.text("完成")) { isSelecting = false; selectedIDs.removeAll() }
                 } else {
                     Button { importing = true } label: { Image(systemName: "plus") }
-                        .disabled(library.isImporting).accessibilityLabel("导入音乐")
+                        .disabled(library.isImporting).accessibilityLabel(L10n.text("导入音乐"))
                 }
             }
         }
         .fileImporter(isPresented: $importing, allowedContentTypes: AudioFileFormat.importContentTypes, allowsMultipleSelection: true) { result in
             switch result {
             case .success(let urls): library.importFiles(urls, into: folder)
-            case .failure(let error): library.errorMessage = "选择文件失败：\(error.localizedDescription)"
+            case .failure(let error): library.errorMessage = L10n.format("选择文件失败：%@", error.localizedDescription)
             }
         }
         #if DEBUG && targetEnvironment(simulator)
@@ -254,32 +254,32 @@ private struct TrackSelectionMenu: View {
 
     var body: some View {
         Menu {
-            Button("发送到手表", systemImage: "applewatch.and.arrow.forward") {
+            Button(L10n.text("发送到手表"), systemImage: "applewatch.and.arrow.forward") {
                 isSending = true
                 library.send(tracks, retryPending: true) { ids in
                     isSending = false; processed(ids)
                 }
             }
-            Button("移动到目录", systemImage: "folder") { moving = true }
+            Button(L10n.text("移动到目录"), systemImage: "folder") { moving = true }
                 .disabled(isUpdatingTransferControls || folders.isEmpty)
-            Button("删除手机副本", systemImage: "trash", role: .destructive) { deleting = true }
+            Button(L10n.text("删除手机副本"), systemImage: "trash", role: .destructive) { deleting = true }
                 .disabled(isUpdatingTransferControls)
         } label: {
             if isSending { ProgressView().controlSize(.small) }
-            else { Text("操作") }
+            else { Text(L10n.text("操作")) }
         }
         .disabled(tracks.isEmpty || isImporting || isSending)
-        .accessibilityLabel("操作所选 \(tracks.count) 首歌曲")
-        .confirmationDialog("移动所选歌曲", isPresented: $moving, titleVisibility: .visible) {
+        .accessibilityLabel(L10n.format("操作所选 %lld 首歌曲", tracks.count))
+        .confirmationDialog(L10n.text("移动所选歌曲"), isPresented: $moving, titleVisibility: .visible) {
             ForEach(folders) { folder in
                 Button(folder.name) { finish(library.moveTracks(tracks, to: folder)) }
             }
-            Button("取消", role: .cancel) {}
+            Button(L10n.text("取消"), role: .cancel) {}
         }
-        .confirmationDialog("删除所选 \(tracks.count) 首歌曲？", isPresented: $deleting, titleVisibility: .visible) {
-            Button("删除手机副本", role: .destructive) { finish(library.deleteTracks(tracks)) }
-            Button("取消", role: .cancel) {}
-        } message: { Text("手表上的歌曲会保留。") }
+        .confirmationDialog(L10n.format("删除所选 %lld 首歌曲？", tracks.count), isPresented: $deleting, titleVisibility: .visible) {
+            Button(L10n.text("删除手机副本"), role: .destructive) { finish(library.deleteTracks(tracks)) }
+            Button(L10n.text("取消"), role: .cancel) {}
+        } message: { Text(L10n.text("手表上的歌曲会保留。")) }
     }
 
     private func finish(_ removedURLs: [URL]) {
@@ -310,7 +310,7 @@ private struct MusicTrackRow: View {
             if !isSelecting {
                 if isTransferred {
                     Image(systemName: "applewatch").font(.caption).foregroundStyle(.green)
-                        .accessibilityLabel("已保存到手表")
+                        .accessibilityLabel(L10n.text("已保存到手表"))
                 }
                 TrackActionsMenu(track: track, library: library, folders: folders,
                                  isImporting: isImporting, isUpdatingTransferControls: isUpdatingTransferControls)
@@ -352,8 +352,8 @@ private struct TrackPlaybackButton: View {
         }
         .buttonStyle(.plain)
         .highPriorityGesture(LongPressGesture(minimumDuration: 0.45).onEnded { _ in beginSelection() })
-        .accessibilityAction(named: "选择歌曲", beginSelection)
-        .accessibilityValue(isSelecting ? (isSelected ? "已选择" : "未选择") : (isCurrent ? "当前歌曲" : ""))
+        .accessibilityAction(named: L10n.text("选择歌曲"), beginSelection)
+        .accessibilityValue(isSelecting ? (isSelected ? L10n.text("已选择") : L10n.text("未选择")) : (isCurrent ? L10n.text("当前歌曲") : ""))
     }
 }
 
@@ -371,39 +371,39 @@ private struct TrackActionsMenu: View {
 
     var body: some View {
         Menu {
-            Button("发送到手表", systemImage: "applewatch.and.arrow.forward") {
+            Button(L10n.text("发送到手表"), systemImage: "applewatch.and.arrow.forward") {
                 library.send([track], retryPending: true)
             }.disabled(isImporting)
-            Button("重命名", systemImage: "pencil") { name = track.title; renaming = true }
+            Button(L10n.text("重命名"), systemImage: "pencil") { name = track.title; renaming = true }
                 .disabled(isImporting || isUpdatingTransferControls)
-            Button("移动到目录", systemImage: "folder") { moving = true }
+            Button(L10n.text("移动到目录"), systemImage: "folder") { moving = true }
                 .disabled(isImporting || isUpdatingTransferControls || folders.allSatisfy { $0.name == track.folder })
-            Button("删除手机副本", systemImage: "trash", role: .destructive) { deleting = true }
+            Button(L10n.text("删除手机副本"), systemImage: "trash", role: .destructive) { deleting = true }
                 .disabled(isImporting || isUpdatingTransferControls)
         } label: {
             Image(systemName: "ellipsis").font(.headline).foregroundStyle(AppPalette.textSecondary)
                 .frame(width: 44, height: 48).contentShape(Rectangle())
         }
-        .accessibilityLabel("歌曲操作：\(track.title)")
-        .alert("重命名歌曲", isPresented: $renaming) {
-            TextField("歌曲名称", text: $name)
-            Button("保存") {
+        .accessibilityLabel(L10n.format("歌曲操作：%@", track.title))
+        .alert(L10n.text("重命名歌曲"), isPresented: $renaming) {
+            TextField(L10n.text("歌曲名称"), text: $name)
+            Button(L10n.text("保存")) {
                 if library.renameTrack(track, to: name) { cleanPlayerQueue() }
             }
-            Button("取消", role: .cancel) {}
+            Button(L10n.text("取消"), role: .cancel) {}
         }
-        .confirmationDialog("移动到目录", isPresented: $moving, titleVisibility: .visible) {
+        .confirmationDialog(L10n.text("移动到目录"), isPresented: $moving, titleVisibility: .visible) {
             ForEach(folders.filter { $0.name != track.folder }) { folder in
                 Button(folder.name) { if library.moveTrack(track, to: folder) { cleanPlayerQueue() } }
             }
-            Button("取消", role: .cancel) {}
+            Button(L10n.text("取消"), role: .cancel) {}
         }
-        .confirmationDialog("删除“\(track.title)”？", isPresented: $deleting, titleVisibility: .visible) {
-            Button("删除手机副本", role: .destructive) {
+        .confirmationDialog(L10n.format("删除“%@”？", track.title), isPresented: $deleting, titleVisibility: .visible) {
+            Button(L10n.text("删除手机副本"), role: .destructive) {
                 if library.deleteTrack(track) { player?.removeFromQueue(track.url) }
             }
-            Button("取消", role: .cancel) {}
-        } message: { Text("手表上的歌曲会保留。") }
+            Button(L10n.text("取消"), role: .cancel) {}
+        } message: { Text(L10n.text("手表上的歌曲会保留。")) }
     }
 
     private func cleanPlayerQueue() {

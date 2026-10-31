@@ -19,7 +19,7 @@ test_target="$(uname -m)-apple-watchos10.0-simulator"
 test_root="$(cd "$(dirname "$0")/.." && pwd)"
 test_output_dir="$(mktemp -d "${TMPDIR:-/tmp}/watch-volume-feedback.XXXXXX")"
 trap 'rm -rf "$test_output_dir"' EXIT
-xcrun swiftc -parse-as-library -sdk "$test_sdk" -target "$test_target" \
+xcrun swiftc "$test_root/Shared/Localization.swift" -parse-as-library -sdk "$test_sdk" -target "$test_target" \
   "$test_root/WatchApp/WatchVolumeFeedback.swift" \
   "$test_root/Tests/WatchVolumeFeedbackProbe.swift" -o "$test_output_dir/WatchVolumeFeedbackProbe"
 xcrun simctl spawn "$test_device" "$test_output_dir/WatchVolumeFeedbackProbe"

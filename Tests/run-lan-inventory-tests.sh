@@ -8,6 +8,7 @@ test_root="$(cd "$(dirname "$0")/.." && pwd)"
 test_output_dir="$(mktemp -d "${TMPDIR:-/tmp}/watch-lan-inventory.XXXXXX")"
 trap 'rm -rf "$test_output_dir"' EXIT
 test_sources=(
+  "$test_root/Shared/Localization.swift"
   "$test_root/Shared/AudioFileFormat.swift"
   "$test_root/Shared/LANTransferProtocol.swift"
   "$test_root/Shared/TransferSourceVersion.swift"

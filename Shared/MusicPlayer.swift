@@ -16,18 +16,18 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
     // changes publish; views that display its clock redraw locally with TimelineView.
     @Published private var playbackPosition: TimeInterval = 0
     @Published private(set) var duration: TimeInterval = 0
-    @Published private(set) var title = "未选择歌曲"
-    @Published private(set) var artist = "本地音乐"
+    @Published private(set) var title = L10n.text("未选择歌曲")
+    @Published private(set) var artist = L10n.text("本地音乐")
     @Published private(set) var album = ""
     @Published private(set) var artworkData: Data?
-    @Published private(set) var routeDescription = "选择音频输出"
+    @Published private(set) var routeDescription = L10n.text("选择音频输出")
     @Published private(set) var playbackRate: Double = 1
     @Published private(set) var mode: PlaybackMode = .sequential
     @Published private(set) var sleepTimerDeadline: Date?
     @Published var errorMessage: String?
 
     var formatName: String {
-        currentURL.flatMap { AudioFileFormat.format(for: $0) }?.displayName ?? "音频"
+        currentURL.flatMap { AudioFileFormat.format(for: $0) }?.displayName ?? L10n.text("音频")
     }
 
     var elapsed: TimeInterval {
@@ -111,7 +111,7 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 self.isPlaying = false
                 self.savePlayback()
                 self.updateNowPlaying()
-                self.errorMessage = "音频服务已重启，请重新选择歌曲播放。"
+                self.errorMessage = L10n.text("音频服务已重启，请重新选择歌曲播放。")
             }
         })
         configureRemoteCommands()
@@ -133,7 +133,7 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private func startPlayback(_ url: URL, in tracks: [URL], recordHistory: Bool) {
         let validTracks = tracks.filter { FileManager.default.fileExists(atPath: $0.path) }
         guard validTracks.contains(url) else {
-            errorMessage = "歌曲文件已被移动或删除，请刷新音乐库。"
+            errorMessage = L10n.text("歌曲文件已被移动或删除，请刷新音乐库。")
             return
         }
         let requestID = UUID()
@@ -144,7 +144,7 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
             guard let self, self.activationID == requestID else { return }
             self.isPreparing = false
             guard success else {
-                self.errorMessage = message ?? "无法连接音频输出，请连接耳机后重试。"
+                self.errorMessage = message ?? L10n.text("无法连接音频输出，请连接耳机后重试。")
                 self.capturePlaybackState()
                 self.updateRoute()
                 return
@@ -163,7 +163,7 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 self.duration = nextPlayer.duration
                 self.isPlaying = true
                 self.title = url.deletingPathExtension().lastPathComponent
-                self.artist = "本地音乐"
+                self.artist = L10n.text("本地音乐")
                 self.album = url.deletingLastPathComponent().lastPathComponent
                 self.artworkData = nil
                 self.loadMetadata(url)
@@ -171,7 +171,7 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 self.updateNowPlaying()
                 self.savePlayback()
             } catch {
-                self.errorMessage = "无法播放此文件：\(error.localizedDescription)"
+                self.errorMessage = L10n.format("无法播放此文件：%@", error.localizedDescription)
                 self.capturePlaybackState()
             }
         }
@@ -200,7 +200,7 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         guard let url = currentURL else { return }
         guard let audioPlayer else {
             if loadPaused(url, in: queue, position: elapsed) { resume() }
-            else { errorMessage = "无法恢复此文件，请重新选择歌曲。" }
+            else { errorMessage = L10n.text("无法恢复此文件，请重新选择歌曲。") }
             return
         }
         let requestID = UUID()
@@ -211,7 +211,7 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
             guard let self, self.activationID == requestID else { return }
             self.isPreparing = false
             guard success else {
-                self.errorMessage = message ?? "恢复播放失败，请检查耳机连接。"
+                self.errorMessage = message ?? L10n.text("恢复播放失败，请检查耳机连接。")
                 self.capturePlaybackState()
                 self.updateRoute()
                 return
@@ -221,7 +221,7 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
             audioPlayer.rate = Float(self.playbackRate)
             self.hasPreparedAudioResources = true
             self.isPlaying = audioPlayer.prepareToPlay() && audioPlayer.play()
-            if !self.isPlaying { self.errorMessage = "恢复播放失败，请重新选择歌曲。" }
+            if !self.isPlaying { self.errorMessage = L10n.text("恢复播放失败，请重新选择歌曲。") }
             self.playbackPosition = audioPlayer.currentTime
             self.updateRoute()
             self.updateNowPlaying()
@@ -350,8 +350,8 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         reachedEnd = false
         playbackPosition = 0
         duration = 0
-        title = "未选择歌曲"
-        artist = "本地音乐"
+        title = L10n.text("未选择歌曲")
+        artist = L10n.text("本地音乐")
         album = ""
         artworkData = nil
         cachedArtworkData = nil
@@ -383,7 +383,7 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
     /// Removing an item from the queue does not delete its file.
     func removeQueueItem(at index: Int) {
-        guard !isPreparing else { errorMessage = "正在准备播放，请稍后编辑队列。"; return }
+        guard !isPreparing else { errorMessage = L10n.text("正在准备播放，请稍后编辑队列。"); return }
         guard queue.indices.contains(index) else { return }
         let removed = queue[index]
         var remaining = queue
@@ -403,12 +403,12 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         } else {
             stop()
             queue = remaining
-            errorMessage = "后续歌曲无法播放，请在队列中选择其他歌曲。"
+            errorMessage = L10n.text("后续歌曲无法播放，请在队列中选择其他歌曲。")
         }
     }
 
     func moveQueueItems(from indices: IndexSet, to destination: Int) {
-        guard !isPreparing else { errorMessage = "正在准备播放，请稍后编辑队列。"; return }
+        guard !isPreparing else { errorMessage = L10n.text("正在准备播放，请稍后编辑队列。"); return }
         let valid = indices.filter { queue.indices.contains($0) }
         guard !valid.isEmpty else { return }
         let moving = valid.map { queue[$0] }
@@ -429,7 +429,7 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
             guard let self else { return }
             self.pendingOutputActivations.remove(requestID)
             self.updateRoute()
-            if !success { self.errorMessage = message ?? "请在手表控制中心连接 AirPods 或蓝牙耳机。" }
+            if !success { self.errorMessage = message ?? L10n.text("请在手表控制中心连接 AirPods 或蓝牙耳机。") }
         }
     }
 
@@ -487,7 +487,7 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
     private func updateRoute() {
         let outputs = AVAudioSession.sharedInstance().currentRoute.outputs
-        let description = outputs.isEmpty ? "请连接 AirPods 或蓝牙耳机" : outputs.map(\.portName).joined(separator: "、")
+        let description = outputs.isEmpty ? L10n.text("请连接 AirPods 或蓝牙耳机") : outputs.map(\.portName).joined(separator: L10n.text("、"))
         if description != routeDescription { routeDescription = description }
     }
 
@@ -532,18 +532,18 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 self.playbackPosition = player.currentTime
                 self.savePlayback()
                 self.updateNowPlaying()
-                self.errorMessage = "播放意外中断，请重新选择歌曲。"
+                self.errorMessage = L10n.text("播放意外中断，请重新选择歌曲。")
             }
             self.releaseAudioResourcesIfIdle()
         }
     }
     nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
-        let message = error?.localizedDescription ?? "文件可能已损坏"
+        let message = error?.localizedDescription ?? L10n.text("文件可能已损坏")
         Task { @MainActor [weak self] in
             guard let self, player === self.audioPlayer else { return }
             self.isPlaying = false
             self.playbackPosition = player.currentTime
-            self.errorMessage = "音频解码失败：\(message)"
+            self.errorMessage = L10n.format("音频解码失败：%@", message)
             self.updateNowPlaying()
             self.savePlayback()
             self.releaseAudioResourcesIfIdle()
@@ -689,7 +689,7 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         playbackPosition = player.currentTime
         reachedEnd = duration > 0 && player.currentTime >= duration - 0.1
         title = url.deletingPathExtension().lastPathComponent
-        artist = "本地音乐"
+        artist = L10n.text("本地音乐")
         album = url.deletingLastPathComponent().lastPathComponent
         artworkData = nil
         loadMetadata(url)
@@ -702,8 +702,8 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         case invalidAudio, cannotPlay
         var errorDescription: String? {
             switch self {
-            case .invalidAudio: return "音频无效或时长为零"
-            case .cannotPlay: return "无法开始播放，请检查音频文件和输出设备"
+            case .invalidAudio: return L10n.text("音频无效或时长为零")
+            case .cannotPlay: return L10n.text("无法开始播放，请检查音频文件和输出设备")
             }
         }
     }

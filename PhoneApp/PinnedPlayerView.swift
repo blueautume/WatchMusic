@@ -38,7 +38,7 @@ struct PinnedPlayerView: View {
                 }
                 .shadow(color: .black.opacity(0.14), radius: 14, y: 5)
                 .accessibilityElement(children: .contain)
-                .accessibilityLabel("播放控制")
+                .accessibilityLabel(L10n.text("播放控制"))
         }
     }
 
@@ -58,17 +58,17 @@ struct PinnedPlayerView: View {
                     Spacer(minLength: 0)
                 }.frame(maxWidth: .infinity, minHeight: 44).contentShape(Rectangle())
             }
-            .buttonStyle(.plain).accessibilityLabel("打开播放器：\(player.title)")
+            .buttonStyle(.plain).accessibilityLabel(L10n.format("打开播放器：%@", player.title))
             Button(action: player.previous) {
                 Image(systemName: "backward.end.fill").frame(width: 44, height: 44)
-            }.accessibilityLabel("上一首")
+            }.accessibilityLabel(L10n.text("上一首"))
             Button(action: player.togglePlayback) {
                 Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                     .font(.title3).frame(width: 44, height: 44)
-            }.accessibilityLabel(player.isPlaying ? "暂停" : "播放")
+            }.accessibilityLabel(player.isPlaying ? L10n.text("暂停") : L10n.text("播放"))
             Button(action: player.next) {
                 Image(systemName: "forward.end.fill").frame(width: 44, height: 44)
-            }.accessibilityLabel("下一首")
+            }.accessibilityLabel(L10n.text("下一首"))
         }
         .buttonStyle(.plain).foregroundStyle(AppPalette.accent).padding(.horizontal, 12)
     }

@@ -105,13 +105,13 @@ struct NowPlayingView: View {
             }
         case .sleep:
             ForEach([15, 30, 45, 60], id: \.self) { minutes in
-                Button("\(minutes) 分钟") {
+                Button(L10n.format("%@ 分钟", String(describing: minutes))) {
                     player.setSleepTimer(minutes: minutes)
                     activeDialog = nil
                 }
             }
             if player.sleepTimerDeadline != nil {
-                Button("关闭定时", role: .destructive) {
+                Button(L10n.text("关闭定时"), role: .destructive) {
                     player.setSleepTimer(minutes: nil)
                     activeDialog = nil
                 }
@@ -119,7 +119,7 @@ struct NowPlayingView: View {
         case nil:
             EmptyView()
         }
-        Button("取消", role: .cancel) { activeDialog = nil }
+        Button(L10n.text("取消"), role: .cancel) { activeDialog = nil }
     }
 }
 
@@ -161,11 +161,11 @@ private struct WatchPlaybackPageContent: View {
                 .clipShape(RoundedRectangle(cornerRadius: layout.compact ? 9 : 12))
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
-                Text(player.isPreparing ? "正在准备…" : player.title)
+                Text(player.isPreparing ? L10n.text("正在准备…") : player.title)
                     .font(.system(size: layout.compact ? 12 : 14, weight: .semibold))
                     .foregroundStyle(AppPalette.textPrimary)
                     .lineLimit(layout.tight ? 1 : 2).minimumScaleFactor(0.85)
-                Text(player.artist.isEmpty ? "未知歌手" : player.artist)
+                Text(player.artist.isEmpty ? L10n.text("未知歌手") : player.artist)
                     .font(.system(size: layout.compact ? 10 : 11))
                     .foregroundStyle(AppPalette.textSecondary)
                     .lineLimit(1)
@@ -177,12 +177,12 @@ private struct WatchPlaybackPageContent: View {
     private func playbackOptions(height: CGFloat) -> some View {
         HStack(spacing: 4) {
             option(symbol: player.mode.symbol, active: player.mode != .sequential, height: height,
-                   label: "播放模式：\(player.mode.title)，轻点切换", action: player.cycleMode)
+                   label: L10n.format("播放模式：%@，轻点切换", String(describing: player.mode.title)), action: player.cycleMode)
             option(symbol: "speedometer", active: player.playbackRate != 1, height: height,
-                   label: "播放速度，\(player.playbackRate.formatted()) 倍", action: chooseSpeed)
+                   label: L10n.format("播放速度，%@ 倍", String(describing: player.playbackRate.formatted())), action: chooseSpeed)
             option(symbol: player.sleepTimerDeadline == nil ? "moon" : "moon.zzz.fill",
-                   active: player.sleepTimerDeadline != nil, height: height, label: "睡眠定时", action: chooseSleep)
-            option(symbol: "airplayaudio", active: true, height: height, label: "选择音频输出", action: chooseOutput)
+                   active: player.sleepTimerDeadline != nil, height: height, label: L10n.text("睡眠定时"), action: chooseSleep)
+            option(symbol: "airplayaudio", active: true, height: height, label: L10n.text("选择音频输出"), action: chooseOutput)
             .disabled(player.isPreparing || choosingOutput)
         }
         .buttonStyle(.plain)
@@ -207,7 +207,7 @@ private struct WatchPlaybackPageContent: View {
                 player.previous()
                 WKInterfaceDevice.current().play(.click)
             } label: { transportSymbol("backward.end.fill", height: height) }
-                .accessibilityLabel("上一首")
+                .accessibilityLabel(L10n.text("上一首"))
             Button(action: player.togglePlayback) {
                 Group {
                     if player.isPreparing { ProgressView().tint(AppPalette.controlForeground) }
@@ -222,7 +222,7 @@ private struct WatchPlaybackPageContent: View {
                 .background(AppPalette.accent, in: Circle())
                 .contentShape(Circle())
             }
-            .accessibilityLabel(player.isPlaying ? "暂停" : "播放")
+            .accessibilityLabel(player.isPlaying ? L10n.text("暂停") : L10n.text("播放"))
             nextControl(height: height)
         }
         .buttonStyle(.plain)
@@ -244,7 +244,7 @@ private struct WatchPlaybackPageContent: View {
             WKInterfaceDevice.current().play(.click)
         } label: { transportSymbol("forward.end.fill", height: height) }
             .clipShape(RoundedRectangle(cornerRadius: 14))
-            .accessibilityLabel("下一首")
+            .accessibilityLabel(L10n.text("下一首"))
         if #available(watchOS 11.0, *) {
             control.handGestureShortcut(.primaryAction,
                 isEnabled: player.currentURL != nil && acceptsPrimaryGesture)
@@ -314,15 +314,15 @@ private struct WatchVolumeFeedbackOverlay: View {
         .clipShape(Capsule())
         .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: feedback.volume)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("音量")
-        .accessibilityValue("百分之\(Int((feedback.volume * 100).rounded()))")
+        .accessibilityLabel(L10n.text("音量"))
+        .accessibilityValue(L10n.format("百分之%@", String(describing: Int((feedback.volume * 100).rounded()))))
     }
 
 }
 
 private enum PlaybackDialog: Equatable {
     case speed, sleep
-    var title: String { self == .speed ? "播放速度" : "睡眠定时" }
+    var title: String { self == .speed ? L10n.text("播放速度") : L10n.text("睡眠定时") }
 }
 
 private struct WatchPlaybackLayout {

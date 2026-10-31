@@ -27,5 +27,5 @@ esac
 test_root="$(cd "$(dirname "$0")/.." && pwd)"
 test_output_dir="$(mktemp -d "${TMPDIR:-/tmp}/watch-audio-decode-tests.XXXXXX")"
 trap 'rm -rf "$test_output_dir"' EXIT
-xcrun swiftc -parse-as-library -sdk "$test_sdk" -target "$test_target" "$test_root/Tests/AudioDecodeProbe.swift" -o "$test_output_dir/AudioDecodeProbe"
+xcrun swiftc "$test_root/Shared/Localization.swift" -parse-as-library -sdk "$test_sdk" -target "$test_target" "$test_root/Tests/AudioDecodeProbe.swift" -o "$test_output_dir/AudioDecodeProbe"
 xcrun simctl spawn "$test_device" "$test_output_dir/AudioDecodeProbe" "$@"
