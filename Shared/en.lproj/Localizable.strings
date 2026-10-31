@@ -1,4 +1,5 @@
 // Shared iPhone and Apple Watch app copy.
+"系统音频控制" = "System audio controls";
 "已连接" = "Connected";
 "未连接" = "Not connected";
 "\n另有 %lld 项，请分别重试。" = "\nAdditional items to retry: %lld.";

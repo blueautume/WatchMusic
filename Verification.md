@@ -445,3 +445,22 @@ Debug / Release 完整通用模拟器构建通过（含Watch）。40mm的竖屏�
 可识别的 AirPods、AirPods Pro、AirPods Max 分别改为 `airpods`、`airpodspro`、`airpodsmax`，继续使用已连接蓝色。其他耳机和未知端点沿用各自的原有映射。型号仅从 AirPods 品牌后紧邻的名称识别，避免把 `Max’s AirPods Pro` 误识别成 Max，或将 `Max’s AirPods` 误判型号；兼容中文所有者名称、大小写、代次后缀和连写名称。内置输出、无关单词和蓝牙音箱仍不因相似品牌文字变成 AirPods。
 
 输出模型测试扩展为 74 项并通过。Apple SF Symbols 及本机 watchOS runtime 的官方可用性元数据确认这三个符号兼容最低 watchOS 10；Debug / Release 完整构建均通过。使用生产模型夹具检查 40mm 实际播放页中的三种图标，截图为 [AirPods](Artifacts/Previews/AudioOutput/40mm/airpods.png)、[AirPods Pro](Artifacts/Previews/AudioOutput/40mm/airpods-pro.png)、[AirPods Max](Artifacts/Previews/AudioOutput/40mm/airpods-max.png)。这些是界面展示验证，不表示进行了真实蓝牙连接。
+
+## 音频按钮不弹界面的回归排查（2026-10-31）
+
+用户反馈输出按钮和播放均不能拉起连接界面，设置内先连接后可以播放；进一步确认按钮外观正常，没有持续转圈。只读设备信息显示当前连接的真机为 Apple Watch Series 9、watchOS 27.2。本轮没有安装、启动或控制真机。
+
+确定的实现问题及修正：
+
+- 原输出按钮只有 `requestAudioOutput → activateSession`，没有独立的界面呈现。Apple 的 [activate 语义](https://developer.apple.com/documentation/avfaudio/avaudiosession/activate(options:completionhandler:))允许自动选路后直接完成，不保证每次展示选择器。这条路径与用户“按钮正常但没有界面”的描述吻合，尚无真机回调日志证明本次系统具体返回值。
+- 上轮新增的成功后等待“过滤后的路由快照非空”也存在确定的锁死路径：原生已授权但快照为空或仅有被过滤的 virtual 时，`isPreparing` 不结束，输出按钮被禁用，播放点击被忽略。已删除此条件，以原生成功作为播放授权，保留请求 ID、原生失败/取消、必要的前台返回、进度恢复、断连及后台资源管理逻辑。该路径不是根据用户描述认定的唯一原因。
+- 输出按钮改为独立 sheet，直接展示公开的 `WatchKit.NowPlayingView()`；准备或选择输出期间仍可进入该系统控制页，不依赖第二次激活来产生界面。系统页显示期间释放本 App 表冠焦点，关闭后刷新路由；无障碍名称改为“系统音频控制”。不使用自定义旋转画布或叠层覆盖系统控件。
+
+能力与验收边界：watchOS SDK 没有公开的 `AVRoutePickerView` 或 `WKInterfaceNowPlaying` 接口类；可用的是 [WatchKit 的 SwiftUI 系统 Now Playing View](https://developer.apple.com/documentation/watchkit/adding-a-now-playing-view)。它自动选取当前/最近音源，不提供强制打开内部耳机列表或指定来源的 API。[Apple 输出选择指南](https://support.apple.com/en-za/guide/watch/apd0110baf0e/watchos)提供控制中心 AirPlay 路径，无需进入设置。
+
+验证结果：
+
+- Debug 通用 iOS Simulator、Release 通用真机架构完整构建通过，含 Watch，禁用签名；仅有既有 AppIntents 元数据提取提示。实际本轮 384 条中英资源校验及四种语言环境各 42 项断言通过。
+- watchOS 26.5 的本轮最新静音播放器探针 282 项通过，新增原生成功后始终空快照且没有后续路由通知、再次手动请求输出、解码失败后按钮恢复等用例；保留既有能耗、位置、取消、MP3/FLAC 元数据及封面回归。iOS 最低目标与 Watch 最低目标类型检查通过；本轮 iOS runtime 因首次启动迁移阻塞取消，未计为通过。
+- CoreSimulator 首次启动及 spawn 调度一度长时间阻塞，后恢复；没有重启或终止全局模拟器服务及用户原有模拟器。watchOS 27.0 的隔离 Series 9 模拟器最终呈现真实系统控制页，显示本机夹具歌曲、封面及播放控制，见 [原生系统页](Artifacts/Previews/AudioOutputRecovery/watchOS27/system-controls.png)。这通过 Debug 自动呈现入口验证渲染，没有模拟用户点击。
+- CUA 对 Simulator 的名称、bundle ID 和完整路径均返回 `Invalid app`，未能执行真实按钮点击与内部菜单操作；当前截图未显示独立耳机列表，因此不把“系统页成功显示”当成“耳机选择已恢复”。watchOS 27.2 真机的点选、配对/连接及返回续播链路仍未验收。

@@ -474,7 +474,8 @@ struct MusicPlayerIntegrationProbe {
         }
 
         // The native completion can arrive first, including before currentRoute
-        // catches up. Preserve a resume position instead of starting from zero.
+        // catches up. Authorization is sufficient once the app is active; the
+        // external-device presentation snapshot is not a playback prerequisite.
         for activeArrivesFirst in [true, false] {
             let (engine, state) = try fixture()
             defer { engine.stop() }
@@ -483,10 +484,11 @@ struct MusicPlayerIntegrationProbe {
             engine.setApplicationActive(false)
             try finish(state)
             try check(engine.isPreparing && !engine.isPlaying && state.decoders.first?.playCount == 0,
-                      "native authorization without a route cannot play prematurely")
+                      "native authorization during picker inactivity retains the request until app return")
             if activeArrivesFirst {
                 engine.setApplicationActive(true)
-                try check(!engine.isPlaying, "active-before-route still waits for a real output")
+                try check(engine.isPlaying && !engine.isPreparing && state.ports.isEmpty,
+                          "active-before-route starts the authorized request without waiting for a presentation snapshot")
                 try await route(state, ports: headphones)
             } else {
                 try await route(state, ports: headphones)
@@ -496,6 +498,41 @@ struct MusicPlayerIntegrationProbe {
             try check(engine.isPlaying && engine.currentURL == a && abs(engine.elapsed - 6) < 0.15
                       && state.decoders.first?.playCount == 1 && state.activations.isEmpty,
                       "callback, route and lifecycle ordering preserves one resume at the original position")
+        }
+
+        // This models the production adapter's empty snapshot, including a raw
+        // virtual route omitted from the external-device UI. No route event is
+        // delivered after native authorization. The old route gate left both
+        // Preparing and Selecting true and disabled every subsequent attempt.
+        for action in ["play", "resume"] {
+            let (engine, state) = try fixture()
+            defer { engine.stop() }
+            if action == "play" { engine.play(b, in: tracks) }
+            else { engine.resume() }
+            try finish(state)
+            try check(state.ports.isEmpty && engine.isPlaying && !engine.isPreparing && !engine.isSelectingAudioOutput,
+                      "native success with an empty or filtered-virtual snapshot finishes \(action) without a route notification")
+            try check(state.decoders.last?.playCount == 1, "authorized empty-snapshot playback is attempted once")
+            engine.requestAudioOutput()
+            try check(state.activations.count == 1 && engine.isSelectingAudioOutput,
+                      "empty-snapshot native success leaves the manual output action able to reach the native adapter again")
+            try finish(state)
+            try check(!engine.isSelectingAudioOutput && engine.isPlaying,
+                      "the subsequent manual action completes independently of the old playback request")
+        }
+
+        do {
+            let (engine, state) = try fixture()
+            defer { engine.stop() }
+            state.decoders.first?.allowsPlayback = false
+            engine.resume()
+            try finish(state)
+            try check(state.ports.isEmpty && !engine.isPlaying && !engine.isPreparing && !engine.isSelectingAudioOutput
+                      && engine.errorMessage != nil,
+                      "decoder failure after native success with no displayed route reports an error instead of locking controls")
+            engine.requestAudioOutput()
+            try check(state.activations.count == 1, "reported playback failure does not suppress a subsequent native output action")
+            try finish(state)
         }
 
         do {

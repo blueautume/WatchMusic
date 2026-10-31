@@ -529,14 +529,11 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
     private func completeAuthorizedPlaybackIfReady() {
         guard let request = playbackActivation, request.id == activationID, request.isAuthorized else { return }
-        if request.beganWithoutOutput {
-            // A successful activation can authorize a supported Watch speaker
-            // as well as headphones. The external-device display deliberately
-            // excludes built-in ports; playback suitability must not use that
-            // presentation flag alone.
-            guard !currentOutputPorts().isEmpty,
-                  !request.waitsForForegroundReturn || isApplicationActive else { return }
-        }
+        // Native activation success authorizes playback, including supported
+        // built-in routes. The presentation snapshot can still be empty (for
+        // example, after filtering a virtual route) and must never keep a
+        // successful request preparing forever while both controls are locked.
+        guard !request.waitsForForegroundReturn || isApplicationActive else { return }
         playbackActivation = nil
         isPreparing = false
         refreshOutputSelectionState()
