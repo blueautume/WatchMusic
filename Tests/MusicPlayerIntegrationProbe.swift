@@ -328,6 +328,7 @@ struct MusicPlayerIntegrationProbe {
 
         try await runAudioOutputIntentTests(tracks: [a, b, c], snapshot: snapshot)
         try await runAudioOutputCancellationTests(tracks: [a, b, c], snapshot: snapshot)
+        try await runNativeSessionPipelineTests(tracks: [a, b, c], snapshot: snapshot)
         try await runEnergyLifecycleTests(tracks: [a, b, c], snapshot: snapshot)
 
         // Optional real fixtures verify bounded embedded artwork on both platforms.
@@ -915,6 +916,131 @@ struct MusicPlayerIntegrationProbe {
         print("AUDIO_OUTPUT_CANCELLATION_PASS")
     }
 
+    /// Runs the production asynchronous executor path. The older synchronous
+    /// activation/deactivation hooks are intentionally not supplied here.
+    @MainActor
+    private static func runNativeSessionPipelineTests(tracks: [URL], snapshot: Session) async throws {
+        let a = tracks[0], b = tracks[1]
+        let cancellation = NSError(domain: NSCocoaErrorDomain, code: NSUserCancelledError)
+        let headphones = [AudioOutputPort(kind: .bluetooth, name: "Pipeline AirPods Pro")]
+        func fixture(fresh: Bool = false) throws -> (MusicPlayer, NativePipelineState, NativePipelineBackend) {
+            if fresh { UserDefaults.standard.removeObject(forKey: "player.session") }
+            else { UserDefaults.standard.set(try JSONEncoder().encode(snapshot), forKey: "player.session") }
+            let state = NativePipelineState()
+            let backend = NativePipelineBackend()
+            let executor = AudioSessionExecutor(configure: { try backend.configure($0) },
+                                                activate: { backend.activate($0) },
+                                                deactivate: { try backend.deactivate() })
+            let engine = MusicPlayer(makeAudioPlayer: { url in
+                let decoder = try SilentCompletionDecoder(contentsOf: url)
+                state.decoders.append(decoder)
+                return decoder
+            }, audioSessionExecutor: executor, audioOutputPorts: { state.ports }, publishNowPlayingInfo: { _ in })
+            return (engine, state, backend)
+        }
+
+        // The manual idle request must enter native activation again even if
+        // an earlier empty-route selection already activated the session.
+        do {
+            let (engine, _, backend) = try fixture()
+            defer { engine.stop() }
+            engine.seek(to: 6)
+            engine.requestAudioOutput()
+            try await waitUntil("native pipeline receives a manual no-output selection") { backend.snapshot.activations == 1 }
+            try check(backend.snapshot.deactivationsAtActivation == [1],
+                      "manual idle selection resets the native session before its first activation")
+            try check(backend.completeNext(activated: false, error: cancellation), "manual pipeline cancellation has a native completion")
+            try await waitUntil("manual native cancellation clears selection and releases its idle session") {
+                !engine.isSelectingAudioOutput && !backend.snapshot.sessionIsActive
+            }
+            try check(engine.errorMessage == nil && engine.currentURL == a && abs(engine.elapsed - 6) < 0.15,
+                      "manual native cancellation quietly retains the paused song and position")
+            let beforeRetry = backend.snapshot.deactivations
+            engine.requestAudioOutput()
+            try await waitUntil("reopening idle no-output selection invokes native activation again") { backend.snapshot.activations == 2 }
+            try check((backend.snapshot.deactivationsAtActivation.last ?? 0) > beforeRetry,
+                      "each deliberate idle no-output reselection performs a fresh native reset")
+            try check(backend.snapshot.configurations == 1, "reselecting output does not repeat unchanged native configuration")
+            try check(backend.completeNext(activated: true), "manual native retry completes")
+            try await waitUntil("manual native retry releases the selection UI") { !engine.isSelectingAudioOutput }
+            try check(!engine.isPlaying && engine.errorMessage == nil, "manual native success never starts a paused song")
+            try check(backend.snapshot.mainThreadOperations.isEmpty, "manual native session mutations are off the main thread")
+        }
+
+        // Setup failure must retain its distinct error path; otherwise the
+        // watch's empty-route native-false policy would swallow this failure.
+        do {
+            let (engine, _, backend) = try fixture()
+            defer { engine.stop() }
+            let failure = NSError(domain: "PipelineConfigurationFailure", code: 41,
+                                  userInfo: [NSLocalizedDescriptionKey: "Native pipeline configuration failed"])
+            backend.failNextConfiguration(with: failure)
+            engine.requestAudioOutput()
+            try await waitUntil("native setup failure is reported with no output route") {
+                !engine.isSelectingAudioOutput && engine.errorMessage != nil
+            }
+            try check(engine.errorMessage == failure.localizedDescription && backend.snapshot.activations == 0,
+                      "empty-route configuration failure remains visible without calling native activation")
+            try check(!engine.isPreparing && !engine.isPlaying, "setup failure restores the idle player controls")
+            try check(backend.snapshot.mainThreadOperations.isEmpty, "failed native setup is also executed off main")
+        }
+
+        for fresh in [false, true] {
+            let (engine, state, backend) = try fixture(fresh: fresh)
+            defer { engine.stop() }
+            if fresh { engine.play(b, in: tracks) }
+            else { engine.seek(to: 6); engine.resume() }
+            try await waitUntil("production executor starts the pending play selection") { backend.snapshot.activations == 1 }
+            try check(backend.completeNext(activated: false, error: cancellation), "play selection receives its native canceled result")
+            try await waitUntil("production cancellation restores a usable paused selection") {
+                !engine.isPreparing && !engine.isSelectingAudioOutput && engine.currentURL != nil
+            }
+            try check(engine.errorMessage == nil && !engine.isPlaying && engine.queue == tracks,
+                      "production cancellation returns to the player without a restoration error")
+            try check(engine.currentURL == (fresh ? b : a) && abs(engine.elapsed - (fresh ? 0 : 6)) < 0.15,
+                      "production cancellation preserves the fresh song or existing playback position")
+            try check(state.decoders.allSatisfy { $0.playCount == 0 && $0.prepareCount == 0 },
+                      "retaining a canceled selection never prepares or plays audio")
+            engine.togglePlayback()
+            try await waitUntil("restored Play control can request the native pipeline again") { backend.snapshot.activations == 2 }
+            try check(backend.completeNext(activated: true), "deliberate native playback retry succeeds")
+            try await waitUntil("native retry starts the selected silent decoder once") { engine.isPlaying && !engine.isPreparing }
+            try check(state.decoders.reduce(0) { $0 + $1.playCount } == 1,
+                      "one deliberate retry produces one playback start after cancellation")
+            try check(backend.snapshot.mainThreadOperations.isEmpty, "play retry uses only off-main native session mutations")
+        }
+
+        // A real queued cleanup is held on the worker while a new Play intent
+        // arrives on MainActor, then released before the replacement activates.
+        do {
+            let (engine, state, backend) = try fixture()
+            defer { engine.stop() }
+            state.ports = headphones
+            engine.resume()
+            try await waitUntil("cleanup-race fixture starts its first native activation") { backend.snapshot.activations == 1 }
+            try check(backend.completeNext(activated: true), "cleanup-race fixture authorizes its first play")
+            try await waitUntil("cleanup-race fixture is playing") { engine.isPlaying }
+            backend.blockNextDeactivation()
+            let watchdog = DispatchWorkItem { backend.releaseDeactivationBlock() }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 5, execute: watchdog)
+            defer { watchdog.cancel(); backend.releaseDeactivationBlock() }
+            engine.setApplicationInBackground(true)
+            engine.pause()
+            try await waitUntil("idle native cleanup is held on the worker") { backend.snapshot.deactivationBlocked }
+            engine.resume()
+            try check(engine.isPreparing && !engine.isPlaying,
+                      "a new Play intent remains responsive while older native cleanup is blocked")
+            backend.releaseDeactivationBlock()
+            try await waitUntil("replacement activation advances after old cleanup acknowledgement") { backend.snapshot.activations == 2 }
+            try check(backend.completeNext(activated: true), "replacement activation receives its own native result")
+            try await waitUntil("replacement playback is active after asynchronous cleanup") { engine.isPlaying && !engine.isPreparing }
+            try check(backend.snapshot.sessionIsActive && state.decoders.first?.playCount == 2,
+                      "queued old cleanup cannot stop or duplicate the replacement playback")
+            try check(backend.snapshot.mainThreadOperations.isEmpty, "cleanup and replacement activation never mutate the native session on main")
+        }
+        print("NATIVE_AUDIO_SESSION_PIPELINE_PASS")
+    }
+
     @MainActor
     private static func runEnergyLifecycleTests(tracks: [URL], snapshot: Session) async throws {
         let defaults = UserDefaults.standard
@@ -1283,4 +1409,107 @@ private final class OutputCancellationState {
     var deactivations = 0
     var rejectDecoderCreation = false
     var configurationError: NSError?
+}
+
+@MainActor
+private final class NativePipelineState {
+    var ports: [AudioOutputPort] = []
+    var decoders: [SilentCompletionDecoder] = []
+}
+
+/// Thread-safe inert native adapter for the production executor integration.
+/// It deliberately completes activations from a non-main queue.
+private final class NativePipelineBackend: @unchecked Sendable {
+    typealias Completion = @Sendable (Bool, NSError?) -> Void
+
+    struct Snapshot {
+        let configurations: Int
+        let activations: Int
+        let deactivations: Int
+        let deactivationsAtActivation: [Int]
+        let sessionIsActive: Bool
+        let deactivationBlocked: Bool
+        let mainThreadOperations: [String]
+    }
+
+    private let lock = NSLock()
+    private var configurations = 0
+    private var activations = 0
+    private var deactivations = 0
+    private var deactivationsAtActivation: [Int] = []
+    private var sessionIsActive = false
+    private var mainThreadOperations: [String] = []
+    private var completions: [Completion] = []
+    private var configurationError: NSError?
+    private var shouldBlockDeactivation = false
+    private var deactivationBlocked = false
+    private let deactivationGate = DispatchSemaphore(value: 0)
+
+    var snapshot: Snapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return Snapshot(configurations: configurations, activations: activations, deactivations: deactivations,
+                        deactivationsAtActivation: deactivationsAtActivation, sessionIsActive: sessionIsActive,
+                        deactivationBlocked: deactivationBlocked, mainThreadOperations: mainThreadOperations)
+    }
+
+    func configure(_ configuration: AudioSessionExecutor.Configuration) throws {
+        lock.lock()
+        configurations += 1
+        if Thread.isMainThread { mainThreadOperations.append("configure") }
+        let error = configurationError
+        configurationError = nil
+        lock.unlock()
+        if let error { throw error }
+    }
+
+    func activate(_ completion: @escaping Completion) {
+        lock.lock()
+        defer { lock.unlock() }
+        if Thread.isMainThread { mainThreadOperations.append("activate") }
+        activations += 1
+        deactivationsAtActivation.append(deactivations)
+        completions.append(completion)
+        // Failure can still leave a partially acquired native session. Cleanup
+        // must not assume that a false callback means no resources were used.
+        sessionIsActive = true
+    }
+
+    func deactivate() throws {
+        lock.lock()
+        if Thread.isMainThread { mainThreadOperations.append("deactivate") }
+        let block = shouldBlockDeactivation
+        shouldBlockDeactivation = false
+        if block { deactivationBlocked = true }
+        lock.unlock()
+        if block { deactivationGate.wait() }
+        lock.lock()
+        deactivationBlocked = false
+        deactivations += 1
+        sessionIsActive = false
+        lock.unlock()
+    }
+
+    func failNextConfiguration(with error: NSError) {
+        lock.lock()
+        configurationError = error
+        lock.unlock()
+    }
+
+    func blockNextDeactivation() {
+        lock.lock()
+        shouldBlockDeactivation = true
+        lock.unlock()
+    }
+
+    func releaseDeactivationBlock() { deactivationGate.signal() }
+
+    func completeNext(activated: Bool, error: NSError? = nil) -> Bool {
+        lock.lock()
+        guard !completions.isEmpty else { lock.unlock(); return false }
+        let completion = completions.removeFirst()
+        lock.unlock()
+        DispatchQueue.global().async { completion(activated, error) }
+        return true
+    }
 }

@@ -60,6 +60,8 @@ iPhone 首次启动会全屏展示协议入口，明确同意后才初始化音�
 
 音频输出按钮使用同一原生输出选择流程，只选择设备，不创建播放请求。系统可能直接采用已有可用输出；设备列表的呈现与可选端点由 watchOS 管理。
 
+音频会话的同步配置与停用由专用串行后台队列执行，相同配置不重复设置，结果回主线程更新播放器。空闲且没有可用输出时，输出按钮先释放已准备的音频资源并完成会话停用，再重新激活长音频输出，避免复用残留的激活状态。正在播放时保留现有音频。
+
 未选择设备直接返回时，清除本次待播请求、恢复播放按钮，保留歌曲及进度，不弹出“音乐提示”或“恢复播放失败”。之后单独连接设备不会触发已取消的播放。音频配置、文件解码错误，以及已有输出时的激活失败仍显示提示；主动暂停、停止或真正断开输出也会取消待播请求。
 
 输出按钮在没有外设路由时显示灰色原图标，已连接时变蓝。可识别的 AirPods、AirPods Pro、AirPods Max 分别显示各自的 AirPods 图标；其他耳机、HomePod / HomePod mini 和车载输出使用对应图标。未知或改名后无法识别的设备保留原图标，连接状态仍由当前实际路由决定。系统只提供端口类型和名称，蓝牙或 AirPlay 协议本身不代表设备型号；内置扬声器和虚拟路由不算已连接外设。支持机型仍可按系统许可使用内置扬声器播放。
@@ -107,6 +109,7 @@ xcodebuild -project WatchMusic.xcodeproj -scheme WatchMusic \
   -configuration Debug -destination 'generic/platform=iOS Simulator' build
 Tests/run-playback-tests.sh
 Tests/run-audio-output-tests.sh
+Tests/run-audio-session-executor-probe.sh
 Tests/run-audio-format-tests.sh
 Tests/run-audio-metadata-tests.sh
 Tests/run-artwork-tests.sh
