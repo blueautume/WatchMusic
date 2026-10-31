@@ -8,13 +8,12 @@ struct NowPlayingView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @State private var activeDialog: PlaybackDialog?
-    @State private var showingSystemAudioControls = false
     @State private var isOnScreen = false
     #if DEBUG && targetEnvironment(simulator)
     @State private var previewApplied = false
     #endif
 
-    private var choosingOutput: Bool { showingSystemAudioControls || player.isSelectingAudioOutput }
+    private var choosingOutput: Bool { player.isSelectingAudioOutput }
 
     private var acceptsCrownInput: Bool {
         isOnScreen && scenePhase == .active && activeDialog == nil && !choosingOutput && player.currentURL != nil
@@ -25,7 +24,7 @@ struct NowPlayingView: View {
             acceptsPrimaryGesture: acceptsCrownInput && !player.isPreparing,
             chooseSpeed: { activeDialog = .speed },
             chooseSleep: { activeDialog = .sleep },
-            chooseOutput: { showingSystemAudioControls = true }
+            chooseOutput: { player.requestAudioOutput() }
         )
         .background(AppPalette.background)
         .watchPage(title: "", action: { dismiss() }, symbol: "chevron.left")
@@ -44,15 +43,6 @@ struct NowPlayingView: View {
         .confirmationDialog(activeDialog?.title ?? "", isPresented: dialogPresented, titleVisibility: .visible) {
             dialogActions
         }
-        .sheet(isPresented: $showingSystemAudioControls, onDismiss: {
-            player.setApplicationActive(scenePhase == .active)
-            WatchCrownDiagnostics.record("system-audio-controls-dismissed")
-        }) {
-            // Present the public system interface directly. Activating an
-            // already-routed audio session is not a request to show a picker.
-            WatchKit.NowPlayingView()
-                .onAppear { WatchCrownDiagnostics.record("system-audio-controls-presented") }
-        }
         .onAppear {
             WatchCrownDiagnostics.record("page-appeared")
             isOnScreen = true
@@ -62,7 +52,6 @@ struct NowPlayingView: View {
                 let arguments = ProcessInfo.processInfo.arguments
                 if arguments.contains("-preview-playback-rate") { activeDialog = .speed }
                 if arguments.contains("-preview-sleep-timer") { activeDialog = .sleep }
-                if arguments.contains("-preview-system-audio-controls") { showingSystemAudioControls = true }
             }
             #endif
         }
@@ -225,8 +214,9 @@ private struct WatchPlaybackPageContent: View {
             option(symbol: player.sleepTimerDeadline == nil ? "moon" : "moon.zzz.fill",
                    active: player.sleepTimerDeadline != nil, height: height, label: L10n.text("睡眠定时"), action: chooseSleep)
             option(symbol: audioOutput.symbol, active: audioOutput.isConnected, height: height,
-                   label: L10n.text("系统音频控制"), action: chooseOutput)
+                   label: L10n.text("选择音频输出"), action: chooseOutput)
                 .accessibilityValue(outputAccessibilityValue)
+                .disabled(player.isSelectingAudioOutput)
         }
         .buttonStyle(.plain)
     }

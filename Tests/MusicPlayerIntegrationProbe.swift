@@ -327,6 +327,7 @@ struct MusicPlayerIntegrationProbe {
         print("OUTPUT_FOCUS_COMPLETION_PASS")
 
         try await runAudioOutputIntentTests(tracks: [a, b, c], snapshot: snapshot)
+        try await runAudioOutputCancellationTests(tracks: [a, b, c], snapshot: snapshot)
         try await runEnergyLifecycleTests(tracks: [a, b, c], snapshot: snapshot)
 
         // Optional real fixtures verify bounded embedded artwork on both platforms.
@@ -706,6 +707,215 @@ struct MusicPlayerIntegrationProbe {
     }
 
     @MainActor
+    private static func runAudioOutputCancellationTests(tracks: [URL], snapshot: Session) async throws {
+        let a = tracks[0], b = tracks[1]
+        let headphones = [AudioOutputPort(kind: .bluetooth, name: "Probe AirPods")]
+        let cocoaCancellation = NSError(domain: NSCocoaErrorDomain, code: NSUserCancelledError)
+        let urlCancellation = NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled)
+        let wrappedCancellation = NSError(domain: "RouteSelectionWrapper", code: 1,
+                                          userInfo: [NSUnderlyingErrorKey: cocoaCancellation])
+        func fixture(fresh: Bool = false) throws -> (MusicPlayer, OutputCancellationState) {
+            if fresh { UserDefaults.standard.removeObject(forKey: "player.session") }
+            else { UserDefaults.standard.set(try JSONEncoder().encode(snapshot), forKey: "player.session") }
+            let state = OutputCancellationState()
+            let engine = MusicPlayer(makeAudioPlayer: { url in
+                if state.rejectDecoderCreation {
+                    throw NSError(domain: NSCocoaErrorDomain, code: NSFileReadCorruptFileError,
+                                  userInfo: [NSLocalizedDescriptionKey: "Corrupt audio fixture"])
+                }
+                let decoder = try SilentCompletionDecoder(contentsOf: url)
+                state.decoders.append(decoder)
+                return decoder
+            }, activateAudioSessionWithError: {
+                if let error = state.configurationError { throw error }
+                state.activations.append($0)
+            },
+               audioOutputPorts: { state.ports },
+               deactivateAudioSession: { state.deactivations += 1 }, publishNowPlayingInfo: { _ in })
+            return (engine, state)
+        }
+        func begin(_ engine: MusicPlayer, action: String) {
+            if action == "play" { engine.play(b, in: tracks) }
+            else if action == "resume" { engine.resume() }
+            else { engine.requestAudioOutput() }
+        }
+        func finish(_ state: OutputCancellationState, activated: Bool = false, error: NSError? = nil) throws {
+            try check(state.activations.count == 1, "selection completion belongs to one pending native adapter call")
+            state.activations.removeFirst()(activated, error)
+        }
+
+        var cancellations: [NSError?] = [cocoaCancellation, urlCancellation, wrappedCancellation]
+        #if os(watchOS)
+        cancellations.insert(nil, at: 0)
+        cancellations.append(NSError(domain: NSOSStatusErrorDomain, code: -123456,
+                                     userInfo: [NSLocalizedDescriptionKey: "Unspecified native route result"]))
+        cancellations.append(NSError(domain: NSOSStatusErrorDomain, code: Int(AVAudioSession.ErrorCode.cannotStartPlaying.rawValue)))
+        #endif
+        for action in ["play", "resume", "manual"] {
+            for cancellation in cancellations {
+                let (engine, state) = try fixture()
+                defer { engine.stop() }
+                engine.seek(to: 6)
+                begin(engine, action: action)
+                engine.setApplicationActive(false)
+                try finish(state, error: cancellation)
+                try check(!engine.isPreparing && !engine.isSelectingAudioOutput && !engine.isPlaying
+                          && engine.errorMessage == nil,
+                          "\(action) unselected/canceled native result quietly restores the Play state")
+                try check(engine.currentURL == a && engine.queue == tracks && abs(engine.elapsed - 6) < 0.15,
+                          "canceling \(action) preserves the existing paused song, queue and position")
+                try check(state.deactivations > 0, "canceled idle selection releases its session even in the foreground")
+                state.ports = headphones
+                engine.audioOutputRouteDidChange(reason: .newDeviceAvailable, previousPorts: [])
+                engine.setApplicationActive(true)
+                try check(!engine.isPlaying && state.activations.isEmpty,
+                          "connecting later cannot resurrect a canceled \(action) request")
+                begin(engine, action: action)
+                try finish(state, activated: true)
+                try check(!engine.isPreparing && !engine.isSelectingAudioOutput && engine.isPlaying == (action != "manual"),
+                          "a deliberate retry after canceled \(action) can reach and complete native activation")
+            }
+        }
+
+        // Fresh selection must remain resumable after backing out of the picker.
+        // Loading it paused performs decoding only, never prepare/activation/play.
+        for cancellation in cancellations {
+            let (engine, state) = try fixture(fresh: true)
+            defer { engine.stop() }
+            try check(engine.currentURL == nil && state.decoders.isEmpty, "fresh cancellation fixture has no saved media")
+            engine.play(b, in: tracks)
+            try finish(state, error: cancellation)
+            try check(engine.currentURL == b && engine.queue == tracks && engine.elapsed < 0.15
+                      && !engine.isPreparing && !engine.isSelectingAudioOutput && !engine.isPlaying
+                      && engine.errorMessage == nil,
+                      "fresh picker cancellation retains the requested song as a usable paused selection")
+            try check(state.decoders.count == 1 && state.decoders[0].prepareCount == 0 && state.decoders[0].playCount == 0,
+                      "retaining a canceled first selection does not prepare audio hardware or start playback")
+            state.ports = headphones
+            engine.audioOutputRouteDidChange(reason: .newDeviceAvailable, previousPorts: [])
+            engine.setApplicationActive(true)
+            try check(!engine.isPlaying && state.activations.isEmpty, "fresh canceled media cannot auto-play on connection")
+            engine.togglePlayback()
+            try finish(state, activated: true)
+            try check(engine.isPlaying && engine.currentURL == b && state.decoders[0].playCount == 1,
+                      "the restored Play button can retry a canceled first song")
+        }
+
+        let failures = [AVAudioSession.ErrorCode.badParam, .cannotStartPlaying, .insufficientPriority,
+                        .missingEntitlement, .mediaServicesFailed, .resourceNotAvailable].map {
+            NSError(domain: NSOSStatusErrorDomain, code: Int($0.rawValue),
+                    userInfo: [NSLocalizedDescriptionKey: "Actual audio-session failure: \($0.rawValue)"])
+        } + [NSError(domain: NSOSStatusErrorDomain, code: Int(AVAudioSession.ErrorCode.mediaServicesFailed.rawValue),
+                     userInfo: [NSLocalizedDescriptionKey: "Media services failed", NSUnderlyingErrorKey: cocoaCancellation]),
+             NSError(domain: "NativeActivationFailure", code: 2, userInfo: [NSLocalizedDescriptionKey: "Activation service failed"])]
+        for action in ["play", "resume", "manual"] {
+            for failure in failures {
+                let (engine, state) = try fixture()
+                defer { engine.stop() }
+                state.ports = headphones
+                engine.audioOutputRouteDidChange(reason: .newDeviceAvailable, previousPorts: [])
+                begin(engine, action: action)
+                try finish(state, error: failure)
+                try check(engine.errorMessage == failure.localizedDescription && !engine.isPlaying
+                          && !engine.isPreparing && !engine.isSelectingAudioOutput,
+                          "\(action) preserves native failures when an output route was already present")
+                try check(state.deactivations > 0, "failed idle \(action) selection releases any partially acquired session")
+            }
+        }
+
+        for action in ["play", "resume", "manual"] {
+            let (engine, state) = try fixture()
+            defer { engine.stop() }
+            let configurationError = NSError(domain: NSOSStatusErrorDomain, code: Int(AVAudioSession.ErrorCode.badParam.rawValue),
+                                             userInfo: [NSLocalizedDescriptionKey: "Invalid session configuration"])
+            state.configurationError = configurationError
+            begin(engine, action: action)
+            try check(engine.errorMessage == configurationError.localizedDescription && state.activations.isEmpty
+                      && !engine.isPreparing && !engine.isSelectingAudioOutput && !engine.isPlaying,
+                      "\(action) configuration throws remain visible even in an entirely unrouted session")
+        }
+
+        // An output seen during selection prevents the unrouted-return policy,
+        // even if it disconnects again before a manual native callback arrives.
+        do {
+            let (engine, state) = try fixture()
+            defer { engine.stop() }
+            let failure = NSError(domain: NSOSStatusErrorDomain, code: -123456,
+                                  userInfo: [NSLocalizedDescriptionKey: "Native route disappeared"])
+            engine.requestAudioOutput()
+            state.ports = headphones
+            engine.audioOutputRouteDidChange(reason: .newDeviceAvailable, previousPorts: [])
+            state.ports = []
+            engine.audioOutputRouteDidChange(reason: .oldDeviceUnavailable, previousPorts: headphones)
+            try finish(state, error: failure)
+            try check(engine.errorMessage == failure.localizedDescription && !engine.isSelectingAudioOutput,
+                      "a native error after an observed connection is not mistaken for backing out without selecting")
+        }
+
+        #if os(watchOS)
+        do {
+            let (engine, state) = try fixture()
+            defer { engine.stop() }
+            engine.resume()
+            try finish(state, activated: true)
+            try check(engine.isPlaying, "old-route notification fixture starts the prior song")
+            NotificationCenter.default.post(name: AVAudioSession.routeChangeNotification, object: nil,
+                                            userInfo: [AVAudioSessionRouteChangeReasonKey:
+                                                AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue])
+            try check(!engine.isPlaying && !engine.isPreparing,
+                      "a main-queue old-route notification finishes before a later request can begin")
+            engine.play(b, in: tracks)
+            try await Task.sleep(for: .milliseconds(50))
+            try check(engine.isPreparing && engine.isSelectingAudioOutput && state.activations.count == 1,
+                      "an old notification cannot asynchronously cancel a newer unrouted selection")
+            try finish(state, error: NSError(domain: NSOSStatusErrorDomain, code: -123456))
+            try check(engine.errorMessage == nil && !engine.isPreparing && !engine.isSelectingAudioOutput,
+                      "the newer entirely unrouted selection still returns quietly after the old event")
+        }
+        #endif
+
+        do {
+            let (engine, state) = try fixture()
+            defer { engine.stop() }
+            engine.requestAudioOutput()
+            let failure = NSError(domain: NSOSStatusErrorDomain, code: Int(AVAudioSession.ErrorCode.badParam.rawValue),
+                                  userInfo: [NSLocalizedDescriptionKey: "New playback configuration failed"])
+            state.configurationError = failure
+            engine.resume()
+            try check(engine.errorMessage == failure.localizedDescription, "a newer playback reports its configuration failure")
+            try finish(state, error: cocoaCancellation)
+            try check(engine.errorMessage == failure.localizedDescription && !engine.isSelectingAudioOutput,
+                      "an older manual selection cancellation cannot erase a newer playback error")
+        }
+
+        do {
+            let (engine, state) = try fixture()
+            defer { engine.stop() }
+            engine.resume()
+            try finish(state, activated: true)
+            let plays = state.decoders.first?.playCount
+            let deactivations = state.deactivations
+            engine.requestAudioOutput()
+            try finish(state, error: cocoaCancellation)
+            try check(engine.isPlaying && engine.errorMessage == nil && state.decoders.first?.playCount == plays
+                      && state.deactivations == deactivations,
+                      "canceling manual output selection neither stops nor restarts an existing playing song")
+        }
+
+        do {
+            let (engine, state) = try fixture(fresh: true)
+            defer { engine.stop() }
+            engine.play(b, in: tracks)
+            state.rejectDecoderCreation = true
+            try finish(state, error: cocoaCancellation)
+            try check(engine.errorMessage?.contains("Corrupt audio fixture") == true
+                      && !engine.isPreparing && !engine.isSelectingAudioOutput && !engine.isPlaying,
+                      "a genuine decoder error while retaining canceled media still reports the corrupt file")
+        }
+        print("AUDIO_OUTPUT_CANCELLATION_PASS")
+    }
+
+    @MainActor
     private static func runEnergyLifecycleTests(tracks: [URL], snapshot: Session) async throws {
         let defaults = UserDefaults.standard
         let a = tracks[0], b = tracks[1]
@@ -1063,4 +1273,14 @@ private final class OutputIntentState {
     var activations: [@MainActor (Bool, String?) -> Void] = []
     var decoders: [SilentCompletionDecoder] = []
     var deactivations = 0
+}
+
+@MainActor
+private final class OutputCancellationState {
+    var ports: [AudioOutputPort] = []
+    var activations: [@MainActor (Bool, NSError?) -> Void] = []
+    var decoders: [SilentCompletionDecoder] = []
+    var deactivations = 0
+    var rejectDecoderCreation = false
+    var configurationError: NSError?
 }
