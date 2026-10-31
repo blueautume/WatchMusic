@@ -220,7 +220,9 @@ struct MusicPlayerIntegrationProbe {
             let decoder = try SilentCompletionDecoder(contentsOf: url)
             completionDecoder = decoder
             return decoder
-        }, activateAudioSession: { activations.append($0) }, publishNowPlayingInfo: { completionInfo = $0 })
+        }, activateAudioSession: { activations.append($0) },
+           audioOutputPorts: { [AudioOutputPort(kind: .bluetooth, name: "Probe Headphones")] },
+           publishNowPlayingInfo: { completionInfo = $0 })
         guard let completionEngine = player, let decoder = completionDecoder else {
             throw ProbeError.failure("completion transition player")
         }
@@ -294,7 +296,8 @@ struct MusicPlayerIntegrationProbe {
         var outputCallbacks: [@MainActor (Bool, String?) -> Void] = []
         var outputCompletions = 0
         let outputEngine = MusicPlayer(makeAudioPlayer: { try SilentCompletionDecoder(contentsOf: $0) },
-                                       activateAudioSession: { outputCallbacks.append($0) })
+                                       activateAudioSession: { outputCallbacks.append($0) },
+                                       audioOutputPorts: { [AudioOutputPort(kind: .bluetooth, name: "Probe Headphones")] })
         outputEngine.requestAudioOutput { outputCompletions += 1 }
         try check(outputCallbacks.count == 1 && outputCompletions == 0,
                   "output selection waits for native session activation completion")
@@ -323,6 +326,7 @@ struct MusicPlayerIntegrationProbe {
         try check(outputCompletions == 4, "late output completion returns focus even after the player is released")
         print("OUTPUT_FOCUS_COMPLETION_PASS")
 
+        try await runAudioOutputIntentTests(tracks: [a, b, c], snapshot: snapshot)
         try await runEnergyLifecycleTests(tracks: [a, b, c], snapshot: snapshot)
 
         // Optional real fixtures verify bounded embedded artwork on both platforms.
@@ -365,6 +369,306 @@ struct MusicPlayerIntegrationProbe {
     }
 
     @MainActor
+    private static func runAudioOutputIntentTests(tracks: [URL], snapshot: Session) async throws {
+        let a = tracks[0], b = tracks[1], c = tracks[2]
+        let headphones = [AudioOutputPort(kind: .bluetooth, name: "Probe AirPods Pro")]
+        func fixture(ports: [AudioOutputPort] = []) throws -> (MusicPlayer, OutputIntentState) {
+            UserDefaults.standard.set(try JSONEncoder().encode(snapshot), forKey: "player.session")
+            let state = OutputIntentState()
+            state.ports = ports
+            let engine = MusicPlayer(makeAudioPlayer: { url in
+                let decoder = try SilentCompletionDecoder(contentsOf: url)
+                state.decoders.append(decoder)
+                return decoder
+            }, activateAudioSession: { state.activations.append($0) }, audioOutputPorts: { state.ports },
+               deactivateAudioSession: { state.deactivations += 1 }, publishNowPlayingInfo: { _ in })
+            return (engine, state)
+        }
+        func finish(_ state: OutputIntentState, at index: Int = 0, success: Bool = true) throws {
+            try check(state.activations.indices.contains(index), "output intent has exactly the expected native activation")
+            state.activations.remove(at: index)(success, success ? nil : "Native route selection canceled")
+        }
+        func route(_ state: OutputIntentState, ports: [AudioOutputPort],
+                   reason: AVAudioSession.RouteChangeReason = .newDeviceAvailable) async throws {
+            state.ports = ports
+            NotificationCenter.default.post(name: AVAudioSession.routeChangeNotification, object: nil,
+                                            userInfo: [AVAudioSessionRouteChangeReasonKey: reason.rawValue])
+            // Notification observers hand off to MainActor. This also gives a
+            // forbidden delayed action a chance to run before negative checks.
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        func interruption(_ type: AVAudioSession.InterruptionType) async throws {
+            NotificationCenter.default.post(name: AVAudioSession.interruptionNotification, object: nil,
+                                            userInfo: [AVAudioSessionInterruptionTypeKey: type.rawValue])
+            try await Task.sleep(for: .milliseconds(50))
+        }
+
+        // Actual route snapshots update the UI independently of playback. Merely
+        // opening the output selector never creates a deferred play intention.
+        do {
+            let (engine, state) = try fixture()
+            defer { engine.stop() }
+            try check(!engine.audioOutput.isConnected && !engine.isSelectingAudioOutput,
+                      "no external output starts disconnected and idle")
+            engine.requestAudioOutput()
+            try check(engine.isSelectingAudioOutput && !engine.isPreparing && state.activations.count == 1,
+                      "manual output selection publishes its own pending state")
+            try await route(state, ports: headphones)
+            try check(engine.audioOutput.isConnected && engine.audioOutput.deviceName == "Probe AirPods Pro",
+                      "route notification publishes the connected device name")
+            try finish(state)
+            engine.setApplicationActive(false)
+            engine.setApplicationActive(true)
+            try check(!engine.isPlaying && !engine.isPreparing && !engine.isSelectingAudioOutput
+                      && state.decoders.allSatisfy { $0.playCount == 0 },
+                      "manual output selection and return to app never start a paused song")
+        }
+
+        do {
+            let (engine, state) = try fixture()
+            defer { engine.stop() }
+            engine.requestAudioOutput()
+            NotificationCenter.default.post(name: AVAudioSession.mediaServicesWereResetNotification, object: nil)
+            try await waitUntil("audio reset clears a manual output selector even if its old callback never arrives", timeout: 1) {
+                !engine.isSelectingAudioOutput
+            }
+            engine.errorMessage = nil
+            engine.requestAudioOutput()
+            try finish(state, success: false)
+            try check(engine.isSelectingAudioOutput && engine.errorMessage == nil,
+                      "a pre-reset output callback cannot finish or overwrite a new selection")
+            try finish(state)
+            try check(!engine.isSelectingAudioOutput && !engine.isPlaying,
+                      "post-reset manual selection finishes without creating a play intent")
+        }
+
+        #if os(watchOS)
+        // A route can become available before the original native callback. The
+        // system picker may emit interruption/disconnection events while doing
+        // so; those transitions must not invalidate this initial play request.
+        do {
+            let (engine, state) = try fixture()
+            defer { engine.stop() }
+            engine.play(b, in: tracks)
+            try check(engine.isPreparing && engine.isSelectingAudioOutput && state.activations.count == 1,
+                      "an explicit play without output owns one native selection")
+            engine.setApplicationActive(false)
+            try await interruption(.began)
+            try await route(state, ports: [], reason: .oldDeviceUnavailable)
+            try check(engine.isPreparing && state.activations.count == 1,
+                      "initial picker interruption and empty-route transition preserve the play request")
+            try await route(state, ports: headphones)
+            try finish(state)
+            try check(engine.isPreparing && !engine.isPlaying && engine.isSelectingAudioOutput,
+                      "authorized route selection waits for the app to return active")
+            // No legacy .ended interruption is required: the successful native
+            // activation is authoritative for this original explicit play action.
+            engine.setApplicationActive(true)
+            try check(engine.isPlaying && engine.currentURL == b && !engine.isSelectingAudioOutput
+                      && state.activations.isEmpty && state.decoders.last?.playCount == 1,
+                      "returning from output connection automatically starts the originally requested song once")
+            try await route(state, ports: headphones)
+            engine.setApplicationActive(true)
+            try check(state.activations.isEmpty && state.decoders.last?.playCount == 1,
+                      "duplicate route and active events do not replay or reactivate the song")
+        }
+
+        // The native completion can arrive first, including before currentRoute
+        // catches up. Preserve a resume position instead of starting from zero.
+        for activeArrivesFirst in [true, false] {
+            let (engine, state) = try fixture()
+            defer { engine.stop() }
+            engine.seek(to: 6)
+            engine.resume()
+            engine.setApplicationActive(false)
+            try finish(state)
+            try check(engine.isPreparing && !engine.isPlaying && state.decoders.first?.playCount == 0,
+                      "native authorization without a route cannot play prematurely")
+            if activeArrivesFirst {
+                engine.setApplicationActive(true)
+                try check(!engine.isPlaying, "active-before-route still waits for a real output")
+                try await route(state, ports: headphones)
+            } else {
+                try await route(state, ports: headphones)
+                try check(!engine.isPlaying, "route-before-active still waits for picker return")
+                engine.setApplicationActive(true)
+            }
+            try check(engine.isPlaying && engine.currentURL == a && abs(engine.elapsed - 6) < 0.15
+                      && state.decoders.first?.playCount == 1 && state.activations.isEmpty,
+                      "callback, route and lifecycle ordering preserves one resume at the original position")
+        }
+
+        do {
+            let (engine, state) = try fixture()
+            defer { engine.stop() }
+            engine.resume()
+            engine.setApplicationActive(false)
+            try await route(state, ports: headphones)
+            try finish(state)
+            try await interruption(.began)
+            engine.setApplicationActive(true)
+            try check(!engine.isPlaying && !engine.isPreparing && !engine.isSelectingAudioOutput,
+                      "a new genuine interruption after authorization cancels deferred playback before app return")
+            try await interruption(.ended)
+            try check(!engine.isPlaying && state.activations.isEmpty,
+                      "ending that interruption cannot revive an unstarted canceled request")
+        }
+
+        // Cancellation/failure is final. Reconnecting headphones or returning
+        // active later must not resurrect the canceled play request.
+        do {
+            let (engine, state) = try fixture()
+            defer { engine.stop() }
+            engine.play(b, in: tracks)
+            engine.setApplicationActive(false)
+            try finish(state, success: false)
+            try await route(state, ports: headphones)
+            engine.setApplicationActive(true)
+            try check(!engine.isPlaying && !engine.isPreparing && !engine.isSelectingAudioOutput
+                      && state.activations.isEmpty && state.decoders.allSatisfy { $0.playCount == 0 },
+                      "native cancellation cannot play after a later connection or app return")
+            try check(state.deactivations > 0, "native cancellation releases its idle activated resources")
+        }
+
+        for cancellation in ["pause", "stop", "remove", "invalid-track", "next-without-track", "media-reset"] {
+            let (engine, state) = try fixture()
+            defer { engine.stop() }
+            if cancellation == "next-without-track" { engine.stop() }
+            engine.play(b, in: tracks)
+            switch cancellation {
+            case "pause": engine.pause()
+            case "stop": engine.stop()
+            case "remove": engine.removeFromQueue(b)
+            case "invalid-track": engine.play(b.appendingPathComponent("missing.mp3"), in: [])
+            case "media-reset":
+                NotificationCenter.default.post(name: AVAudioSession.mediaServicesWereResetNotification, object: nil)
+                try await waitUntil("media reset cancels pending play", timeout: 1) { !engine.isPreparing }
+            default: engine.next()
+            }
+            try await route(state, ports: headphones)
+            try finish(state)
+            engine.setApplicationActive(true)
+            try check(!engine.isPlaying && !engine.isPreparing && state.decoders.allSatisfy { $0.playCount == 0 },
+                      "\(cancellation) invalidates the pending play before late native success")
+        }
+
+        for staleCompletesFirst in [true, false] {
+            let (engine, state) = try fixture()
+            defer { engine.stop() }
+            engine.play(b, in: tracks)
+            engine.play(c, in: tracks)
+            try await route(state, ports: headphones)
+            if staleCompletesFirst {
+                try finish(state)
+                try check(!engine.isPlaying && engine.isPreparing,
+                          "old track authorization cannot start the replacement request")
+                try finish(state)
+            } else {
+                try finish(state, at: 1)
+                try finish(state)
+            }
+            try check(engine.isPlaying && engine.currentURL == c && state.decoders.last?.playCount == 1
+                      && state.activations.isEmpty,
+                      "switching tracks preserves only the latest intent regardless of native callback order")
+        }
+
+        do {
+            let (engine, state) = try fixture()
+            defer { engine.stop() }
+            engine.resume()
+            engine.previous()
+            try check(engine.isPreparing && engine.elapsed < 0.15 && state.activations.count == 1,
+                      "previous while resuming the same song resets its position without canceling the route request")
+            try await route(state, ports: headphones)
+            try finish(state)
+            try check(engine.isPlaying && engine.currentURL == a && engine.elapsed < 0.15,
+                      "the original pending resume starts from zero after previous")
+        }
+
+        for navigation in ["next", "previous-track", "previous-reset-current"] {
+            let (engine, state) = try fixture()
+            defer { engine.stop() }
+            if navigation != "previous-reset-current" { engine.seek(to: 0) }
+            engine.play(b, in: tracks)
+            if navigation == "next" { engine.next() }
+            else { engine.previous() }
+            try check(state.activations.count == 2, "track navigation replaces the pending route request")
+            try await route(state, ports: headphones)
+            try finish(state)
+            try check(!engine.isPlaying && engine.isPreparing,
+                      "track navigation ignores the old route callback")
+            try finish(state)
+            let target = navigation == "next" ? b : (navigation == "previous-track" ? c : a)
+            try check(engine.isPlaying && engine.currentURL == target && engine.elapsed < 0.15,
+                      "\(navigation) starts only its replacement track at zero")
+        }
+
+        // Once an external output was observed, losing it is a real disconnect,
+        // even if the original selection callback has not arrived yet.
+        do {
+            let (engine, state) = try fixture()
+            defer { engine.stop() }
+            engine.play(b, in: tracks)
+            try await route(state, ports: headphones)
+            try await route(state, ports: [], reason: .oldDeviceUnavailable)
+            try finish(state)
+            try await route(state, ports: headphones)
+            try check(!engine.isPlaying && !engine.isPreparing && !engine.isSelectingAudioOutput,
+                      "a real disconnect after connection cancels the pending play permanently")
+            engine.resume()
+            try finish(state)
+            try await route(state, ports: [], reason: .oldDeviceUnavailable)
+            try await route(state, ports: headphones)
+            try check(!engine.isPlaying && state.activations.isEmpty,
+                      "disconnecting active playback never auto-resumes on reconnection")
+        }
+
+        do {
+            let (engine, state) = try fixture()
+            defer { engine.stop() }
+            engine.play(b, in: tracks)
+            // The device connected and disconnected before MainActor handled
+            // either notification. Both handlers see the current empty route,
+            // but the disconnection event still carries its previous device.
+            state.ports = []
+            engine.audioOutputRouteDidChange(reason: .newDeviceAvailable, previousPorts: [])
+            engine.audioOutputRouteDidChange(reason: .oldDeviceUnavailable, previousPorts: headphones)
+            try finish(state)
+            try await route(state, ports: headphones)
+            engine.setApplicationActive(true)
+            try check(!engine.isPlaying && !engine.isPreparing && !engine.isSelectingAudioOutput
+                      && state.decoders.allSatisfy { $0.playCount == 0 },
+                      "previous-route evidence cancels a fast connect/disconnect before delayed native success")
+        }
+
+        // Newer watches may authorize built-in speaker playback. It remains a
+        // disconnected external-device display and must work for system Play
+        // commands while the app is already in the background.
+        for active in [true, false] {
+            let (engine, state) = try fixture(ports: [AudioOutputPort(kind: .builtIn, name: "Watch Speaker")])
+            defer { engine.stop() }
+            engine.setApplicationActive(active)
+            engine.setApplicationInBackground(!active)
+            engine.resume()
+            try finish(state)
+            try check(engine.isPlaying && !engine.audioOutput.isConnected && !engine.isSelectingAudioOutput,
+                      "authorized built-in speaker playback works for foreground and background system play")
+        }
+        do {
+            let (engine, state) = try fixture(ports: [AudioOutputPort(kind: .builtIn, name: "Watch Speaker")])
+            defer { engine.stop() }
+            engine.resume()
+            engine.setApplicationActive(false)
+            engine.setApplicationInBackground(true)
+            try finish(state)
+            try check(engine.isPlaying && !engine.isPreparing,
+                      "a valid built-in output request may finish after moving from foreground to background")
+        }
+        #endif
+        print("AUDIO_OUTPUT_INTENT_PASS")
+    }
+
+    @MainActor
     private static func runEnergyLifecycleTests(tracks: [URL], snapshot: Session) async throws {
         let defaults = UserDefaults.standard
         let a = tracks[0], b = tracks[1]
@@ -379,6 +683,7 @@ struct MusicPlayerIntegrationProbe {
                 state.decoders.append(decoder)
                 return decoder
             }, activateAudioSession: { state.activations.append($0) },
+               audioOutputPorts: { [AudioOutputPort(kind: .bluetooth, name: "Probe Headphones")] },
                deactivateAudioSession: {
                    state.deactivations += 1
                    if state.failedDeactivationsRemaining > 0 {
@@ -713,4 +1018,12 @@ private final class PlayerEnergyState {
     var sessionIsActive = false
     var rejectDecoderCreation = false
     var systemInfo: [String: Any]?
+}
+
+@MainActor
+private final class OutputIntentState {
+    var ports: [AudioOutputPort] = []
+    var activations: [@MainActor (Bool, String?) -> Void] = []
+    var decoders: [SilentCompletionDecoder] = []
+    var deactivations = 0
 }

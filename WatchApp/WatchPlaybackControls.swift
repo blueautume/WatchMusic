@@ -8,11 +8,12 @@ struct NowPlayingView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @State private var activeDialog: PlaybackDialog?
-    @State private var choosingOutput = false
     @State private var isOnScreen = false
     #if DEBUG && targetEnvironment(simulator)
     @State private var previewApplied = false
     #endif
+
+    private var choosingOutput: Bool { player.isSelectingAudioOutput }
 
     private var acceptsCrownInput: Bool {
         isOnScreen && scenePhase == .active && activeDialog == nil && !choosingOutput && player.currentURL != nil
@@ -24,10 +25,7 @@ struct NowPlayingView: View {
             acceptsPrimaryGesture: acceptsCrownInput && !player.isPreparing,
             chooseSpeed: { activeDialog = .speed },
             chooseSleep: { activeDialog = .sleep },
-            chooseOutput: {
-                choosingOutput = true
-                player.requestAudioOutput { choosingOutput = false }
-            }
+            chooseOutput: { player.requestAudioOutput() }
         )
         .background(AppPalette.background)
         .watchPage(title: "", action: { dismiss() }, symbol: "chevron.left")
@@ -133,6 +131,35 @@ private struct WatchPlaybackPageContent: View {
     let chooseSleep: @MainActor () -> Void
     let chooseOutput: @MainActor () -> Void
 
+    private var audioOutput: AudioOutputPresentation {
+        #if DEBUG && targetEnvironment(simulator)
+        // A rendering fixture only: this never changes the system audio route
+        // or the player's playback/activation state.
+        let arguments = ProcessInfo.processInfo.arguments
+        if let index = arguments.firstIndex(of: "-preview-audio-output"), arguments.indices.contains(index + 1) {
+            switch arguments[index + 1] {
+            case "disconnected":
+                return .disconnected
+            case "headphones":
+                return AudioOutputPresentation(ports: [AudioOutputPort(kind: .headphones, name: "Studio Headphones")])
+            case "homepod":
+                return AudioOutputPresentation(ports: [AudioOutputPort(kind: .airPlay, name: "Living Room HomePod")])
+            case "unknown":
+                return AudioOutputPresentation(ports: [AudioOutputPort(kind: .other, name: "Wireless Audio Device")])
+            default: break
+            }
+        }
+        #endif
+        return player.audioOutput
+    }
+
+    private var outputAccessibilityValue: String {
+        guard audioOutput.isConnected else { return L10n.text("未连接") }
+        guard let deviceName = audioOutput.deviceName,
+              !deviceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return L10n.text("已连接") }
+        return deviceName
+    }
+
     var body: some View {
         GeometryReader { geometry in
             let layout = WatchPlaybackLayout(size: geometry.size,
@@ -182,8 +209,10 @@ private struct WatchPlaybackPageContent: View {
                    label: L10n.format("播放速度，%@ 倍", String(describing: player.playbackRate.formatted())), action: chooseSpeed)
             option(symbol: player.sleepTimerDeadline == nil ? "moon" : "moon.zzz.fill",
                    active: player.sleepTimerDeadline != nil, height: height, label: L10n.text("睡眠定时"), action: chooseSleep)
-            option(symbol: "airplayaudio", active: true, height: height, label: L10n.text("选择音频输出"), action: chooseOutput)
-            .disabled(player.isPreparing || choosingOutput)
+            option(symbol: audioOutput.symbol, active: audioOutput.isConnected, height: height,
+                   label: L10n.text("选择音频输出"), action: chooseOutput)
+                .accessibilityValue(outputAccessibilityValue)
+                .disabled(player.isPreparing || choosingOutput)
         }
         .buttonStyle(.plain)
     }

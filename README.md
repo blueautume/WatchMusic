@@ -54,6 +54,12 @@ iPhone 首次启动会全屏展示协议入口，明确同意后才初始化音�
 
 手表本地播放继续通过系统音频会话、Now Playing 信息和远程命令提供系统播控，歌曲、播放状态与队列调整同步到系统。表盘上划打开的智能叠放由 watchOS 决定是否呈现媒体卡片；如未显示，检查手表“设置 → 智能叠放 → 实时活动”相关开关，详见 [Apple 实时活动说明](https://support.apple.com/zh-hans/guide/watch/bz1vx4mwqbw9/watchos)。App 无公开 API 强制插入或置顶这张系统卡片。单次捏合与辅助触控手势由系统设置管理；本 App 的快捷手势使用 watchOS 11 的双指互点两次。
 
+## Watch 音频输出
+
+未连接输出设备时点播放，会通过系统选择音频输出；这次明确的播放请求会保留，连接成功并回到播放界面后自动继续，不必再次点播放。恢复播放保留原歌曲和进度。取消连接、激活失败、主动暂停或停止、真正断开输出后，不会因为之后连接设备而突然播放；只点输出按钮选择设备，也不会自动开始原本暂停的歌曲。
+
+输出按钮在没有外设路由时显示灰色原图标，已连接时变蓝。可识别的耳机、HomePod / HomePod mini 和车载输出使用对应图标；未知或改名后无法识别的设备保留原图标，连接状态仍由当前实际路由决定。系统只提供端口类型和名称，蓝牙或 AirPlay 协议本身不代表设备型号；内置扬声器和虚拟路由不算已连接外设。支持机型仍可按系统许可使用内置扬声器播放。
+
 ## 传输进度
 
 所有新发送和重试均使用局域网传输：手机临时提供文件下载服务，手表通过 HTTP 接收并校验后保存。手机“传输”页分为“进行中”和“已传输”两个标签，无需选择传输方式。旧版普通 WatchConnectivity 任务的历史记录、取消和保存回执继续兼容，重试时统一走局域网。[传输说明与测试步骤](LANTransferExperiment.md)
@@ -96,6 +102,7 @@ LAN 接收开始后，手表自动进入专用全屏接收页，显示进度、�
 xcodebuild -project WatchMusic.xcodeproj -scheme WatchMusic \
   -configuration Debug -destination 'generic/platform=iOS Simulator' build
 Tests/run-playback-tests.sh
+Tests/run-audio-output-tests.sh
 Tests/run-audio-format-tests.sh
 Tests/run-audio-metadata-tests.sh
 Tests/run-artwork-tests.sh

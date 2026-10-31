@@ -418,3 +418,24 @@ Debug / Release 完整通用模拟器构建通过（含Watch）。40mm的竖屏�
 - 既有回归：播放队列 46,760、总 ETA 20、独立进度观察 5、LAN 协议 89、保存回执 36、前台状态 135、传输列表 42、真实 HTTP 源 45、音频格式 186、元数据 277、封面 40、源文件版本 23，以及传输指标测试通过。完整 diff 空白检查通过。
 
 关键截图：[iPhone 英文传输](Artifacts/Previews/Localization/iPhoneSE/en/transfers.png)、[小屏播放器底部](Artifacts/Previews/Localization/iPhoneSE/en/player-bottom.png)、[最大字号同意页](Artifacts/Previews/Localization/iPhoneSE/en/consent-accessibility.png)、[40mm 接收页](Artifacts/Previews/Localization/40mm/en/receiving.png)、[40mm 目录管理](Artifacts/Previews/Localization/40mm/en/folder-actions.png)、[49mm 播放器](Artifacts/Previews/Localization/49mm/en/player.png)。
+
+## Watch 输出连接后续播与按钮状态（2026-10-31）
+
+将双语分支快进合并到本地 `main`（`395be48`），从此创建 `feature/watch-audio-output-ui`。用户原有 PhoneInfo.plist、Watch Scheme 和未跟踪网页解压目录保持原样，不纳入提交。
+
+源码确认存在可重复的丢请求路径：原实现对 `oldDeviceUnavailable` 和音频中断一律调用 `pause()`，使待确认的原生激活请求 UUID 失效；若这些通知发生在首次选择输出期间，后来的成功回调无法继续用户刚才的播放动作。这是源码及注入事件验证的行为，并未以模拟器结果断言真机问题的唯一原因。
+
+- 播放激活保留带请求 ID 的原曲及进度，首次选择期间的空路由转换和授权前中断不丢弃播放意图；只在这次原生激活成功后，结合实际路由及必要的前台返回事件完成一次播放，不重复打开选择器或轮询。恢复播放使用原位置；上一首仅重置当前曲时保留待播，真正切曲替换旧请求。
+- 原生失败或取消立即作废请求，迟到的旧成功回调不能开播。主动暂停、停止、删除、无效曲目、已授权后的中断、真正断连及音频服务重置均清理相应待播状态。断连通知在 actor 切换前捕获 previousRoute 快照，避免快速连接后断开时，迟读 currentRoute 已为空而误保留请求。单纯手动选择输出不生成播放意图；媒体重置也清理手动选择状态，避免按钮永久禁用。
+- `audioOutput` 从实际 `currentRoute.outputs` 更新，`isSelectingAudioOutput` 统一控制输出按钮、表冠焦点与双指快捷。未连接外设时原 airplayaudio 图标为灰色；耳机、HomePod / HomePod mini、车载端口识别后使用对应蓝色图标；未知端点保持蓝色原图标。中文所有者名紧接 AirPods、中文房间名紧接 HomePod 的名称也覆盖；蓝牙音箱不会仅因协议或名称包含相似单词而被猜作耳机。端口名称只是识别提示，改名或未能确认型号时回退原图标。内置和虚拟输出不显示为外设，支持机型的内置扬声器播放与后台系统 Play 仍保留。
+
+使用公开 API：Apple 明确说明 [activate 的成功、失败及取消语义](https://developer.apple.com/documentation/avfaudio/avaudiosession/activate(options:completionhandler:))；[路由变化说明](https://developer.apple.com/documentation/avfaudio/responding-to-audio-route-changes)要求断开时结合 previousRoute；[端口描述](https://developer.apple.com/documentation/avfaudio/avaudiosessionportdescription)不提供可靠的 AirPods/HomePod 型号字段。没有依赖私有路由 API、定时重试或自动连接配对设备。
+
+验证通过：
+
+- Xcode 27.1 的 Debug 通用 iOS Simulator 与 Release 通用真机架构完整构建均成功，包含 Watch，使用 `CODE_SIGNING_ALLOWED=NO`。仅有未使用 AppIntents 的元数据提取提示，不代表签名安装或真实蓝牙连接验收。
+- 新建隔离模拟器的静音播放器集成：watchOS 26.5 共 266 项、iOS 26.5 共 196 项通过，包括 MP3 / FLAC 元数据与封面、既有后台资源释放及新路由时序。覆盖回调先到/后到、路由先到/后到、返回 active、保持原歌曲与位置、取消后重连不播、手动选输出不播、旧回调隔离、后台及内置输出、媒体重置、上一首/下一首，以及快速连接再断开。
+- 输出展示模型 44 项通过，覆盖无路由、内置输出、明确耳机端口、默认设备名、中英文混合名称、HomePod / mini、未知蓝牙/AirPlay、车载及混合路由。既有播放队列 46,760 项、Watch 画布与时钟避让 1,224 项通过。
+- 中英本地化 383 个 key、529 处源码文案及实际手机/内嵌 Watch 资源检查通过；四种语言环境各 42 项断言通过。新增“已连接 / 未连接”无障碍值，保留设备原始名称。
+
+40mm / 49mm 界面截图使用生产展示模型的四种输入，检查灰色未连接、蓝色耳机、蓝色 HomePod 和蓝色未知设备原图标；截图夹具仅在 Debug 模拟器覆盖界面展示，不伪造系统连接或激活音频。截图位于 `Artifacts/Previews/AudioOutput`。未安装、启动或操作真机，未播放用户音频；实际耳机/HomePod 的系统选择器和无线连接仍需用户在真机确认。

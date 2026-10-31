@@ -21,6 +21,8 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
     @Published private(set) var album = ""
     @Published private(set) var artworkData: Data?
     @Published private(set) var routeDescription = L10n.text("选择音频输出")
+    @Published private(set) var audioOutput = AudioOutputPresentation.disconnected
+    @Published private(set) var isSelectingAudioOutput = false
     @Published private(set) var playbackRate: Double = 1
     @Published private(set) var mode: PlaybackMode = .sequential
     @Published private(set) var sleepTimerDeadline: Date?
@@ -52,10 +54,22 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private var audioSessionNeedsDeactivation = false
     private var hasPreparedAudioResources = false
     private var pendingOutputActivations = Set<UUID>()
+    private struct PlaybackActivation {
+        let id: UUID
+        let url: URL
+        let beganWithoutOutput: Bool
+        let waitsForForegroundReturn: Bool
+        var hasObservedOutput: Bool
+        var isAuthorized = false
+        let start: @MainActor () -> Void
+    }
+    private var playbackActivation: PlaybackActivation?
+    private var isApplicationActive = true
     private var cachedArtworkData: Data?
     private var cachedSystemArtwork: MPMediaItemArtwork?
     private let makeAudioPlayer: (URL) throws -> AVAudioPlayer
     private let activateAudioSession: SessionActivation?
+    private let audioOutputPorts: (() -> [AudioOutputPort])?
     private let deactivateAudioSession: () throws -> Void
     private let publishNowPlayingInfo: ([String: Any]?) -> Void
     private let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -68,12 +82,14 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
     /// without starting a simulator audio output or waiting for a physical route.
     init(makeAudioPlayer: @escaping (URL) throws -> AVAudioPlayer,
          activateAudioSession: SessionActivation? = nil,
+         audioOutputPorts: (() -> [AudioOutputPort])? = nil,
          deactivateAudioSession: @escaping () throws -> Void = {
              try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
          },
          publishNowPlayingInfo: @escaping ([String: Any]?) -> Void = { MPNowPlayingInfoCenter.default().nowPlayingInfo = $0 }) {
         self.makeAudioPlayer = makeAudioPlayer
         self.activateAudioSession = activateAudioSession
+        self.audioOutputPorts = audioOutputPorts
         self.deactivateAudioSession = deactivateAudioSession
         self.publishNowPlayingInfo = publishNowPlayingInfo
         super.init()
@@ -86,11 +102,13 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         if defaults.object(forKey: "player.volume") != nil { defaults.removeObject(forKey: "player.volume") }
         let center = NotificationCenter.default
         observers.append(center.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] notification in
-            let reason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
+            let reason = (notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt)
+                .flatMap(AVAudioSession.RouteChangeReason.init(rawValue:))
+            let previous = notification.userInfo?[AVAudioSessionRouteChangePreviousRouteKey] as? AVAudioSessionRouteDescription
+            let previousPorts = Self.outputPorts(previous?.outputs ?? [])
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                if reason == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue { self.pause() }
-                self.updateRoute()
+                self.audioOutputRouteDidChange(reason: reason, previousPorts: previousPorts)
             }
         })
         observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] notification in
@@ -102,13 +120,18 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.activationID = UUID()
+                self.playbackActivation = nil
+                self.pendingOutputActivations.removeAll()
                 self.isPreparing = false
+                self.refreshOutputSelectionState()
                 self.resumeAfterInterruption = false
                 self.playbackPosition = self.elapsed
                 self.audioPlayer = nil
                 self.hasPreparedAudioResources = false
                 self.audioSessionNeedsDeactivation = false
+                self.releasesIdleAudioSession = true
                 self.isPlaying = false
+                self.updateRoute()
                 self.savePlayback()
                 self.updateNowPlaying()
                 self.errorMessage = L10n.text("音频服务已重启，请重新选择歌曲播放。")
@@ -131,24 +154,15 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
     }
 
     private func startPlayback(_ url: URL, in tracks: [URL], recordHistory: Bool) {
+        cancelPlaybackActivation()
         let validTracks = tracks.filter { FileManager.default.fileExists(atPath: $0.path) }
         guard validTracks.contains(url) else {
             errorMessage = L10n.text("歌曲文件已被移动或删除，请刷新音乐库。")
+            releaseAudioResourcesIfIdle()
             return
         }
-        let requestID = UUID()
-        activationID = requestID
-        isPreparing = true
-        releasesIdleAudioSession = false
-        activateSession { [weak self] success, message in
-            guard let self, self.activationID == requestID else { return }
-            self.isPreparing = false
-            guard success else {
-                self.errorMessage = message ?? L10n.text("无法连接音频输出，请连接耳机后重试。")
-                self.capturePlaybackState()
-                self.updateRoute()
-                return
-            }
+        activateForPlayback(url: url, failureMessage: L10n.text("无法连接音频输出，请连接耳机后重试。")) { [weak self] in
+            guard let self else { return }
             do {
                 let nextPlayer = try self.makePlayer(url)
                 guard nextPlayer.play() else { throw PlayerError.cannotPlay }
@@ -184,10 +198,8 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
     func pause() {
         // Invalidate an outstanding route activation so a pause cannot start sound later.
-        if isPreparing { releasesIdleAudioSession = true }
-        activationID = UUID()
+        cancelPlaybackActivation()
         resumeAfterInterruption = false
-        isPreparing = false
         audioPlayer?.pause()
         isPlaying = false
         playbackPosition = elapsed
@@ -203,19 +215,8 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
             else { errorMessage = L10n.text("无法恢复此文件，请重新选择歌曲。") }
             return
         }
-        let requestID = UUID()
-        activationID = requestID
-        isPreparing = true
-        releasesIdleAudioSession = false
-        activateSession { [weak self] success, message in
-            guard let self, self.activationID == requestID else { return }
-            self.isPreparing = false
-            guard success else {
-                self.errorMessage = message ?? L10n.text("恢复播放失败，请检查耳机连接。")
-                self.capturePlaybackState()
-                self.updateRoute()
-                return
-            }
+        activateForPlayback(url: url, failureMessage: L10n.text("恢复播放失败，请检查耳机连接。")) { [weak self] in
+            guard let self else { return }
             if self.reachedEnd || audioPlayer.currentTime >= audioPlayer.duration - 0.1 { audioPlayer.currentTime = 0 }
             self.reachedEnd = false
             audioPlayer.rate = Float(self.playbackRate)
@@ -230,7 +231,14 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
     }
 
     func previous() {
-        if elapsed > 3 { seek(to: 0); return }
+        if elapsed > 3 {
+            let replacesPendingTrack = playbackActivation.map { $0.url != currentURL } == true
+            if replacesPendingTrack { pause() }
+            seek(to: 0)
+            if replacesPendingTrack { resume() }
+            return
+        }
+        if isPreparing { pause() }
         guard let currentURL, let index = queue.firstIndex(of: currentURL) else { return }
         if mode == .shuffle, let previous = history.popLast(), queue.contains(previous) {
             startPlayback(previous, in: queue, recordHistory: false)
@@ -239,7 +247,10 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }
     }
 
-    func next() { advance(completed: false) }
+    func next() {
+        if isPreparing { pause() }
+        advance(completed: false)
+    }
 
     private func advance(completed: Bool) {
         guard let currentURL, let index = queue.firstIndex(of: currentURL),
@@ -319,6 +330,16 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         releaseAudioResourcesIfIdle()
     }
 
+    /// A system output picker makes the scene inactive without backgrounding it.
+    /// Finish its original playback request only after the app is active again.
+    func setApplicationActive(_ value: Bool) {
+        isApplicationActive = value
+        if value {
+            updateRoute()
+            completeAuthorizedPlaybackIfReady()
+        }
+    }
+
     private func releaseAudioResourcesIfIdle() {
         guard isApplicationInBackground || releasesIdleAudioSession,
               !isPlaying, !isPreparing, pendingOutputActivations.isEmpty else { return }
@@ -361,12 +382,13 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         UserDefaults.standard.removeObject(forKey: "player.session")
         publishNowPlayingInfo(nil)
         pendingOutputActivations.removeAll()
+        refreshOutputSelectionState()
         releasesIdleAudioSession = true
         releaseAudioResourcesIfIdle()
     }
 
     func removeFromQueue(_ url: URL) {
-        if isPreparing { activationID = UUID(); isPreparing = false }
+        if isPreparing { cancelPlaybackActivation(); releaseAudioResourcesIfIdle() }
         if currentURL == url { stop() }
         else {
             queue.removeAll { $0 == url }
@@ -423,11 +445,13 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         guard !isPreparing else { onCompletion?(); return }
         let requestID = UUID()
         pendingOutputActivations.insert(requestID)
+        refreshOutputSelectionState()
         releasesIdleAudioSession = false
         activateSession { [weak self] success, message in
             defer { onCompletion?() }
             guard let self else { return }
-            self.pendingOutputActivations.remove(requestID)
+            guard self.pendingOutputActivations.remove(requestID) != nil else { return }
+            self.refreshOutputSelectionState()
             self.updateRoute()
             if !success { self.errorMessage = message ?? L10n.text("请在手表控制中心连接 AirPods 或蓝牙耳机。") }
         }
@@ -452,6 +476,85 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
             guard player.prepareToPlay() else { throw PlayerError.cannotPlay }
         }
         return player
+    }
+
+    private func cancelPlaybackActivation() {
+        if isPreparing { releasesIdleAudioSession = true }
+        activationID = UUID()
+        playbackActivation = nil
+        isPreparing = false
+        refreshOutputSelectionState()
+    }
+
+    private func refreshOutputSelectionState() {
+        let selecting = !pendingOutputActivations.isEmpty || playbackActivation?.beganWithoutOutput == true
+        if isSelectingAudioOutput != selecting { isSelectingAudioOutput = selecting }
+    }
+
+    /// Keep one explicit play action through the native route picker. A false
+    /// native completion is cancellation/failure, never permission to retry it
+    /// later merely because headphones subsequently become available.
+    private func activateForPlayback(url: URL, failureMessage: String, start: @escaping @MainActor () -> Void) {
+        cancelPlaybackActivation()
+        updateRoute()
+        let requestID = UUID()
+        activationID = requestID
+        #if os(watchOS)
+        let beganWithoutOutput = !audioOutput.isConnected
+        #else
+        let beganWithoutOutput = false
+        #endif
+        let needsForegroundPicker = beganWithoutOutput && currentOutputPorts().isEmpty && isApplicationActive
+        playbackActivation = PlaybackActivation(id: requestID, url: url, beganWithoutOutput: beganWithoutOutput,
+                                                waitsForForegroundReturn: needsForegroundPicker,
+                                                hasObservedOutput: audioOutput.isConnected, start: start)
+        isPreparing = true
+        releasesIdleAudioSession = false
+        resumeAfterInterruption = false
+        refreshOutputSelectionState()
+        activateSession { [weak self] success, message in
+            guard let self, self.activationID == requestID, self.playbackActivation?.id == requestID else { return }
+            guard success else {
+                self.updateRoute()
+                self.cancelPlaybackActivation()
+                self.errorMessage = message ?? failureMessage
+                self.capturePlaybackState()
+                return
+            }
+            self.playbackActivation?.isAuthorized = true
+            self.updateRoute()
+            self.completeAuthorizedPlaybackIfReady()
+        }
+    }
+
+    private func completeAuthorizedPlaybackIfReady() {
+        guard let request = playbackActivation, request.id == activationID, request.isAuthorized else { return }
+        if request.beganWithoutOutput {
+            // A successful activation can authorize a supported Watch speaker
+            // as well as headphones. The external-device display deliberately
+            // excludes built-in ports; playback suitability must not use that
+            // presentation flag alone.
+            guard !currentOutputPorts().isEmpty,
+                  !request.waitsForForegroundReturn || isApplicationActive else { return }
+        }
+        playbackActivation = nil
+        isPreparing = false
+        refreshOutputSelectionState()
+        request.start()
+    }
+
+    /// The native adapter captures the previous route before its actor handoff.
+    /// currentRoute may already have changed again when this event is handled.
+    func audioOutputRouteDidChange(reason: AVAudioSession.RouteChangeReason?, previousPorts: [AudioOutputPort]) {
+        let lostExternalOutput = AudioOutputPresentation(ports: previousPorts).isConnected
+        let selectingInitialOutput = playbackActivation.map {
+            $0.beganWithoutOutput && !$0.hasObservedOutput
+        } == true && !isPlaying && !lostExternalOutput
+        if reason == .oldDeviceUnavailable && !selectingInitialOutput {
+            pause()
+        }
+        updateRoute()
+        completeAuthorizedPlaybackIfReady()
     }
 
     private func activateSession(completion: @escaping @MainActor (Bool, String?) -> Void) {
@@ -485,9 +588,37 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         } catch { finish(false, error.localizedDescription) }
     }
 
+    private func currentOutputPorts() -> [AudioOutputPort] {
+        if let audioOutputPorts { return audioOutputPorts() }
+        return Self.outputPorts(AVAudioSession.sharedInstance().currentRoute.outputs)
+    }
+
+    nonisolated private static func outputPorts(_ outputs: [AVAudioSessionPortDescription]) -> [AudioOutputPort] {
+        outputs.compactMap { output in
+            // A virtual port is not audio hardware and must not appear as a
+            // connected device or satisfy an initial playback's route gate.
+            guard output.portType != .virtual else { return nil }
+            let kind: AudioOutputPort.Kind
+            switch output.portType {
+            case .builtInSpeaker, .builtInReceiver: kind = .builtIn
+            case .headphones: kind = .headphones
+            case .bluetoothA2DP, .bluetoothLE, .bluetoothHFP: kind = .bluetooth
+            case .airPlay: kind = .airPlay
+            case .carAudio: kind = .carAudio
+            default: kind = .other
+            }
+            return AudioOutputPort(kind: kind, name: output.portName)
+        }
+    }
+
     private func updateRoute() {
-        let outputs = AVAudioSession.sharedInstance().currentRoute.outputs
-        let description = outputs.isEmpty ? L10n.text("请连接 AirPods 或蓝牙耳机") : outputs.map(\.portName).joined(separator: L10n.text("、"))
+        let outputs = currentOutputPorts()
+        let presentation = AudioOutputPresentation(ports: outputs)
+        if audioOutput != presentation { audioOutput = presentation }
+        if presentation.isConnected || (playbackActivation?.isAuthorized == true && !outputs.isEmpty) {
+            playbackActivation?.hasObservedOutput = true
+        }
+        let description = outputs.isEmpty ? L10n.text("请连接 AirPods 或蓝牙耳机") : outputs.map(\.name).joined(separator: L10n.text("、"))
         if description != routeDescription { routeDescription = description }
     }
 
@@ -504,6 +635,13 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private func handleInterruption(type rawType: UInt?, options rawOptions: UInt) {
         guard let rawType, let type = AVAudioSession.InterruptionType(rawValue: rawType) else { return }
         if type == .began {
+            // The system picker itself may interrupt an initially unrouted
+            // session. Its still-pending native completion owns cancellation;
+            // do not discard the user's play action just for this transition.
+            if let request = playbackActivation, request.beganWithoutOutput,
+               !request.isAuthorized, !isPlaying {
+                return
+            }
             let wasPlaying = isPlaying
             pause()
             resumeAfterInterruption = wasPlaying
@@ -512,6 +650,7 @@ final class MusicPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
             let shouldResume = resumeAfterInterruption && AVAudioSession.InterruptionOptions(rawValue: rawOptions).contains(.shouldResume)
             resumeAfterInterruption = false
             if shouldResume { resume() }
+            else { completeAuthorizedPlaybackIfReady() }
         }
     }
 

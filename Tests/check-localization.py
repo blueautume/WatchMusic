@@ -156,6 +156,9 @@ def check_source_coverage(tables: dict[str, dict]) -> int:
             if path.name == "Localization.swift":
                 continue
             for value, line in swift_literals(path.read_text()):
+                if path.name == "AudioOutputPresentation.swift" and value in {"耳机", "音箱", "扬声器"}:
+                    # A device-name recognition hint, not displayed app copy.
+                    continue
                 if not HAN.search(value) or value in PREVIEW_DATA:
                     continue
                 count += 1

@@ -20,6 +20,7 @@ struct OfflineWatchApp: App {
                 .tint(AppPalette.accent)
                 .onAppear {
                     player.setApplicationInBackground(scenePhase == .background)
+                    player.setApplicationActive(scenePhase == .active)
                     display.start(foreground: scenePhase == .active)
                     library.updateLANForeground(scenePhase == .active)
                     #if DEBUG
@@ -29,6 +30,7 @@ struct OfflineWatchApp: App {
                 .onChange(of: scenePhase) { _, phase in
                     if phase != .active { player.savePlaybackPosition() }
                     player.setApplicationInBackground(phase == .background)
+                    player.setApplicationActive(phase == .active)
                     library.updateLANForeground(phase == .active)
                     display.setForeground(phase == .active)
                     #if DEBUG
