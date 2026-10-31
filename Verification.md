@@ -439,3 +439,9 @@ Debug / Release 完整通用模拟器构建通过（含Watch）。40mm的竖屏�
 - 中英本地化 383 个 key、529 处源码文案及实际手机/内嵌 Watch 资源检查通过；四种语言环境各 42 项断言通过。新增“已连接 / 未连接”无障碍值，保留设备原始名称。
 
 40mm / 49mm 界面截图使用生产展示模型的四种输入，检查灰色未连接、蓝色耳机、蓝色 HomePod 和蓝色未知设备原图标；截图夹具仅在 Debug 模拟器覆盖界面展示，不伪造系统连接或激活音频。截图位于 `Artifacts/Previews/AudioOutput`。未安装、启动或操作真机，未播放用户音频；实际耳机/HomePod 的系统选择器和无线连接仍需用户在真机确认。
+
+### AirPods 专用输出图标（2026-10-31）
+
+可识别的 AirPods、AirPods Pro、AirPods Max 分别改为 `airpods`、`airpodspro`、`airpodsmax`，继续使用已连接蓝色。其他耳机和未知端点沿用各自的原有映射。型号仅从 AirPods 品牌后紧邻的名称识别，避免把 `Max’s AirPods Pro` 误识别成 Max，或将 `Max’s AirPods` 误判型号；兼容中文所有者名称、大小写、代次后缀和连写名称。内置输出、无关单词和蓝牙音箱仍不因相似品牌文字变成 AirPods。
+
+输出模型测试扩展为 74 项并通过。Apple SF Symbols 及本机 watchOS runtime 的官方可用性元数据确认这三个符号兼容最低 watchOS 10；Debug / Release 完整构建均通过。使用生产模型夹具检查 40mm 实际播放页中的三种图标，截图为 [AirPods](Artifacts/Previews/AudioOutput/40mm/airpods.png)、[AirPods Pro](Artifacts/Previews/AudioOutput/40mm/airpods-pro.png)、[AirPods Max](Artifacts/Previews/AudioOutput/40mm/airpods-max.png)。这些是界面展示验证，不表示进行了真实蓝牙连接。

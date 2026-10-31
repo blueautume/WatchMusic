@@ -20,7 +20,23 @@ struct AudioOutputPresentationTests {
             check(value.isConnected && value.symbol == "headphones", "Explicit headphone ports identify the category even when renamed")
             check(value.deviceName == name, "The device name stays unchanged")
         }
-        for name in ["Li’s AirPods Pro", "李浩的AirPods Pro", "AirPods Max", "AIRPODS", "Beats Fit Pro", "Powerbeats Pro", "Bluetooth Headset", "蓝牙耳机"] {
+        let airPodsCases = [
+            ("AirPods", "airpods"), ("AIRPODS", "airpods"), ("李浩的AirPods", "airpods"),
+            ("AirPods 3", "airpods"), ("AirPods 4", "airpods"), ("Max’s AirPods", "airpods"),
+            ("Li’s AirPods Pro", "airpodspro"), ("李浩的AirPods Pro", "airpodspro"),
+            ("AirPods Pro 2", "airpodspro"), ("AirPodsPro", "airpodspro"),
+            ("AIRPODS-PRO", "airpodspro"), ("Max’s AirPods Pro", "airpodspro"),
+            ("AirPods Max", "airpodsmax"), ("李浩的AirPods Max", "airpodsmax"),
+            ("AirPodsMax", "airpodsmax"), ("Pro’s AirPods Max", "airpodsmax")
+        ]
+        for (name, symbol) in airPodsCases {
+            for kind in [AudioOutputPort.Kind.bluetooth, .headphones] {
+                let value = output(kind, name)
+                check(value.isConnected && value.symbol == symbol && value.deviceName == name,
+                      "AirPods use their own model icon while preserving the route name: \(name)")
+            }
+        }
+        for name in ["Beats Fit Pro", "Powerbeats Pro", "Bluetooth Headset", "蓝牙耳机"] {
             let value = output(.bluetooth, name)
             check(value.isConnected && value.symbol == "headphones", "Recognizable Bluetooth headphones use the headphone symbol: \(name)")
         }
@@ -28,7 +44,7 @@ struct AudioOutputPresentationTests {
             let value = output(.other, name)
             check(value.isConnected && value.symbol == "airplayaudio", "An unknown port is connected without inventing a device category")
         }
-        for name in ["Living Room", "Beats Pill", "Wireless Speaker", "My Device", "AirPods-like speaker", "Beats Studio 音箱", "NotAirPods"] {
+        for name in ["Living Room", "Beats Pill", "Wireless Speaker", "My Device", "AirPods-like speaker", "Beats Studio 音箱", "NotAirPods", "NotAirPodsPro", "AirPodsPrototype"] {
             let value = output(.bluetooth, name)
             check(value.isConnected && value.symbol == "airplayaudio", "Bluetooth alone does not imply headphones")
         }

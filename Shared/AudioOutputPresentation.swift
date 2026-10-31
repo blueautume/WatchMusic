@@ -47,18 +47,29 @@ struct AudioOutputPresentation: Equatable {
             let token = NSRegularExpression.escapedPattern(for: word)
             return name.range(of: "(?<![a-z0-9])" + token + "(?![a-z0-9])", options: [.regularExpression, .caseInsensitive]) != nil
         }
+        func airPodsSymbol() -> String? {
+            // Match the model immediately after AirPods, not an owner's name
+            // such as "Max's AirPods Pro". Joined names are also recognizable.
+            guard let range = name.range(of: "(?<![a-z0-9])airpods(?:[\\s._-]*(?:pro|max))?(?![a-z0-9])",
+                                         options: [.regularExpression, .caseInsensitive]) else { return nil }
+            let product = name[range].lowercased()
+            if product.hasSuffix("max") { return "airpodsmax" }
+            if product.hasSuffix("pro") { return "airpodspro" }
+            return "airpods"
+        }
         switch port.kind {
         case .headphones:
-            return "headphones"
+            return airPodsSymbol() ?? "headphones"
         case .bluetooth:
             // Names are only a recognition hint. Renamed or unfamiliar devices
             // keep the generic symbol rather than being guessed as headphones.
-            let headphoneWords: Set<String> = ["airpods", "powerbeats", "headphones", "headset"]
+            let headphoneWords: Set<String> = ["powerbeats", "headphones", "headset"]
             let beatsModels: Set<String> = ["fit", "solo", "studio", "flex", "ep", "pro"]
             let speakerWords: Set<String> = ["speaker", "speakers", "soundbar", "pill"]
             guard !speakerWords.contains(where: { hasWord($0) }), !name.contains("音箱"), !name.contains("扬声器") else {
                 return "airplayaudio"
             }
+            if let symbol = airPodsSymbol() { return symbol }
             if headphoneWords.contains(where: { hasWord($0) }) || name.contains("耳机")
                 || (hasWord("beats") && beatsModels.contains(where: { hasWord($0) })) {
                 return "headphones"

@@ -142,6 +142,12 @@ private struct WatchPlaybackPageContent: View {
                 return .disconnected
             case "headphones":
                 return AudioOutputPresentation(ports: [AudioOutputPort(kind: .headphones, name: "Studio Headphones")])
+            case "airpods":
+                return AudioOutputPresentation(ports: [AudioOutputPort(kind: .bluetooth, name: "AirPods")])
+            case "airpods-pro":
+                return AudioOutputPresentation(ports: [AudioOutputPort(kind: .bluetooth, name: "AirPods Pro")])
+            case "airpods-max":
+                return AudioOutputPresentation(ports: [AudioOutputPort(kind: .bluetooth, name: "AirPods Max")])
             case "homepod":
                 return AudioOutputPresentation(ports: [AudioOutputPort(kind: .airPlay, name: "Living Room HomePod")])
             case "unknown":
