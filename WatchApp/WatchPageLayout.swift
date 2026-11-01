@@ -2,19 +2,29 @@ import SwiftUI
 
 extension View {
     func watchPage(title: String, compactTitle: String? = nil, action: (() -> Void)? = nil, symbol: String = "xmark", showsBattery: Bool = false) -> some View {
-        modifier(WatchPageLayout(title: title, compactTitle: compactTitle, action: action, symbol: symbol, showsBattery: showsBattery))
+        watchPage(title: title, compactTitle: compactTitle, action: action, symbol: symbol, showsBattery: showsBattery) {
+            AppPalette.background
+        }
+    }
+
+    func watchPage<Background: View>(title: String, compactTitle: String? = nil, action: (() -> Void)? = nil,
+                                     symbol: String = "xmark", showsBattery: Bool = false,
+                                     @ViewBuilder background: () -> Background) -> some View {
+        modifier(WatchPageLayout(title: title, compactTitle: compactTitle, action: action, symbol: symbol,
+                                 showsBattery: showsBattery, pageBackground: background()))
     }
 }
 
 /// The page keeps the navigation stack's local coordinates. Scrolling content
 /// may draw outside its layout slot; only individual cards and artwork clip.
-private struct WatchPageLayout: ViewModifier {
+private struct WatchPageLayout<Background: View>: ViewModifier {
     @Environment(\.watchContentViewport) private var viewport
     let title: String
     let compactTitle: String?
     let action: (() -> Void)?
     let symbol: String
     let showsBattery: Bool
+    let pageBackground: Background
 
     func body(content: Content) -> some View {
         GeometryReader { geometry in
@@ -32,10 +42,10 @@ private struct WatchPageLayout: ViewModifier {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
+            .background { pageBackground }
             .overlay(alignment: .topLeading) { header(metrics: metrics, insets: insets) }
         }
         .ignoresSafeArea()
-        .background(AppPalette.background)
         .navigationTitle("")
         .navigationBarBackButtonHidden()
         // Every destination uses the same hidden system bar, avoiding an inset

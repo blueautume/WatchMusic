@@ -26,8 +26,9 @@ struct NowPlayingView: View {
             chooseSleep: { activeDialog = .sleep },
             chooseOutput: { player.requestAudioOutput() }
         )
-        .background(AppPalette.background)
-        .watchPage(title: "", action: { dismiss() }, symbol: "chevron.left")
+        .watchPage(title: "", action: { dismiss() }, symbol: "chevron.left") {
+            WatchPlaybackBackground(data: player.artworkData)
+        }
         .overlay {
             WatchVolumeFeedbackOverlay(isActive: acceptsCrownInput)
         }
@@ -182,7 +183,6 @@ private struct WatchPlaybackPageContent: View {
             .padding(.bottom, layout.bottomInset)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .background(AppPalette.background)
     }
 
     private func metadata(layout: WatchPlaybackLayout) -> some View {

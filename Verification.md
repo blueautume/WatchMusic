@@ -502,3 +502,24 @@ Apple 的 [setActive 约束](https://developer.apple.com/documentation/avfaudio/
 - watchOS 26.5 播放器 589 项、iOS 26.5 播放器 413 项断言通过。新增测试通过执行器注入运行真正的播放器新路径，不绕过到旧激活 hook；检查手动无输出选择每次先停用再激活、相同配置只应用一次、空路由配置错误仍提示、取消保留新歌曲或原进度、再次播放，以及旧异步停用阻塞时主线程仍可接收新播放且最终不会误停。沿用静音解码器及独立文件夹，恢复偏好，不激活真实音频输出。
 - Debug 通用 iOS Simulator、Release 通用真机架构完整构建通过，包含 Watch `arm64_32`，禁用签名。最终无 Swift 源码警告，仅有既有未使用 AppIntents 元数据提示；播放器独立编译保留工具链 sysroot 兼容性提示。实际手机/内嵌 Watch 383 个本地化 key / 530 处源码文案及资源检查、`git diff --check` 通过。
 - 未安装、启动或操作真机，没有把单元测试中的原生操作适配器当作实际蓝牙连接。用户手动安装后，应检查无耳机时点击输出按钮、选择设备后续播、未选返回不提示、前台暂停后再次选择，以及原有后台播放和暂停退出后的资源释放。若仍无界面，查看上述 `AudioSession` 日志中的 setup 阶段与原生 callback，区分系统自动选路和实际调用失败。
+
+## Watch 播放页封面模糊背景实验（2026-11-01）
+
+从当前 `main` 新建并切换到 `experiment/blurred-artwork-background`。按用户选择仅修改 Apple Watch 播放页。原有 `Config/PhoneInfo.plist`、共享 Watch Scheme 及未跟踪网页解压目录保留。
+
+`WatchPlaybackBackground` 使用播放器已有的最多 512px 封面缩略图，按封面数据变化缓存 UIImage；不额外读取音频或原始大图，不增加计时器、持续动画或轮询。图片在画布外扩展后做 12pt 模糊（初版为 24pt），裁到完整逻辑画布，叠加从上到下 0.68 / 0.72 / 0.82 的黑色渐变。增强对比度时进一步减弱图片，无封面、解码失败、降低透明度和降低亮度时使用原纯色底层。背景不参与点击及辅助功能遍历。
+
+为 `watchPage` 增加背景 View 重载，原调用默认使用应用背景。播放页移除两层内容区纯色填充，将封面背景放在 GeometryReader 内部的完整尺寸画布下，返回按钮与系统时钟附近也连续铺满；首轮截图曾出现的内容区矩形接缝已修复。背景始终有不透明底色，继续遮住后方常驻的原生表冠音量控件。现有前景排版、系统时钟避让、旋转、播放控制与音量浮层逻辑保持原实现。
+
+验证结果：
+
+- Xcode 27.1 的 Debug 通用 iOS Simulator、Release 通用 iOS 真机架构完整构建均成功，包含 Watch，使用 `CODE_SIGNING_ALLOWED=NO`。最终无 Swift 源码警告，仅有既有未使用 AppIntents 的元数据提取提示；不代表签名安装或真机验收。
+- `Tests/run-watch-surface-tests.sh` 共 1,224 项布局、完整画布及系统时钟避让断言通过；`Tests/run-artwork-tests.sh` 共 40 项通过；`Tests/run-watch-volume-feedback-probe.sh` 在本轮隔离模拟器上共 22 项音量观察、延迟隐藏及生命周期断言通过，不产生音频或物理表冠输入。`git diff --check` 通过。
+- 新建隔离的 watchOS 26.5 模拟器检查 40mm 的四个显示方向、49mm 的普通封面、纯白封面和无封面状态。预览入口仅载入暂停状态，不播放声音。白色与无封面 FLAC 变体仅替换或删除测试夹具的 PICTURE 元数据，音频帧保持原样。纯白封面检查后加深遮罩，避免小号歌手文字被背景冲淡；最终参数已重新构建并补拍截图。
+- 原生音量控件的可选诊断入口记录了创建、进入播放页请求焦点、打开弹层释放焦点、关闭后重新请求，以及返回音乐库后的拆除和释放；[生命周期记录](Artifacts/Previews/ArtworkBackground/40mm/crown-lifecycle.jsonl)与[返回音乐库截图](Artifacts/Previews/ArtworkBackground/40mm/library-after-dismiss.png)保留。此检查没有旋转物理表冠，也不证明真实音量已经改变。完成后已清理本轮新建的两台隔离模拟器。
+
+截图保存在 `Artifacts/Previews/ArtworkBackground`：[40mm 播放页](Artifacts/Previews/ArtworkBackground/40mm/player.png)、[40mm 横屏](Artifacts/Previews/ArtworkBackground/40mm/landscape-right.png)、[49mm 播放页](Artifacts/Previews/ArtworkBackground/49mm/player.png)、[纯白封面](Artifacts/Previews/ArtworkBackground/49mm/white.png)、[无封面](Artifacts/Previews/ArtworkBackground/49mm/none.png)。降低透明度与熄屏亮度环境采用代码路径审查，未模拟为真机系统行为；模糊渲染在真实手表上的耗电与流畅度需后续体验确认。本轮不安装或操作真机。
+
+### 降低模糊力度（2026-11-01）
+
+根据用户反馈，将模糊半径从 24pt 降到 12pt；相应的画布外扩量从宽高各增加 96pt 降为 48pt，减少裁切并保留更多封面轮廓。遮罩继续使用原参数，保证文字可读。Debug 通用 iOS Simulator 完整构建（包含 Watch，禁用签名）及 `git diff --check` 通过；49mm 实际播放页已目视检查，背景铺满屏幕且封面轮廓更明显。新截图为 [12pt 模糊](Artifacts/Previews/ArtworkBackground/49mm/player-blur12.png)，上方其他截图保留初版 24pt 效果以便比较。预览只载入暂停歌曲，未操作真机。

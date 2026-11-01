@@ -1,0 +1,17 @@
+{"event":"made","time":1793517691.205241}
+{"event":"updated","focused":false,"playing":false,"time":1793517691.240937}
+{"event":"focus-resigned","time":1793517691.2415199}
+{"event":"page-appeared","time":1793517691.2639599}
+{"event":"updated","focused":true,"playing":false,"time":1793517691.992491}
+{"event":"volume-feedback-updated","time":1793517691.9959321}
+{"event":"focus-requested","time":1793517691.99932}
+{"event":"cycle-dialog-open","time":1793517692.435605}
+{"event":"updated","focused":false,"playing":false,"time":1793517692.4375319}
+{"event":"focus-resigned","time":1793517692.4406929}
+{"event":"cycle-dialog-close","time":1793517693.0693641}
+{"event":"updated","focused":true,"playing":false,"time":1793517693.074825}
+{"event":"focus-requested","time":1793517693.0975451}
+{"event":"cycle-page-dismiss","time":1793517693.67082}
+{"event":"dismantled","time":1793517694.555634}
+{"event":"focus-resigned","time":1793517694.556283}
+{"event":"page-disappeared","time":1793517694.558821}
