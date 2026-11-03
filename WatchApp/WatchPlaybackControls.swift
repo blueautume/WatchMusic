@@ -7,10 +7,15 @@ struct NowPlayingView: View {
     @EnvironmentObject private var player: WatchPlayer
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.isLuminanceReduced) private var reducedLuminance
     @State private var activeDialog: PlaybackDialog?
     @State private var isOnScreen = false
+    @State private var immersion = WatchImmersivePlayback()
+    private enum ImmersionAvailability { case suspended, preparing, ready }
     #if DEBUG && targetEnvironment(simulator)
     @State private var previewApplied = false
+    @State private var previewImmersionCycleApplied = false
     #endif
 
     private var choosingOutput: Bool { player.isSelectingAudioOutput }
@@ -19,16 +24,36 @@ struct NowPlayingView: View {
         isOnScreen && scenePhase == .active && activeDialog == nil && !choosingOutput && player.currentURL != nil
     }
 
+    private var acceptsPrimaryGesture: Bool {
+        isOnScreen && scenePhase == .active && activeDialog == nil && !choosingOutput && player.currentURL != nil
+    }
+
+    private var immersionAvailability: ImmersionAvailability {
+        guard acceptsPrimaryGesture, !reducedLuminance else { return .suspended }
+        return player.isPreparing ? .preparing : .ready
+    }
+
+    private var immersionAnimation: Animation? { reduceMotion ? nil : .easeInOut(duration: 0.55) }
+
     var body: some View {
         WatchPlaybackPageContent(
-            acceptsPrimaryGesture: acceptsCrownInput && !player.isPreparing,
+            acceptsPrimaryGesture: acceptsPrimaryGesture,
+            isImmersive: immersion.isImmersive,
+            showControls: registerInteraction,
             chooseSpeed: { activeDialog = .speed },
             chooseSleep: { activeDialog = .sleep },
             chooseOutput: { player.requestAudioOutput() }
         )
-        .watchPage(title: "", action: { dismiss() }, symbol: "chevron.left") {
+        .watchPage(title: "", action: { dismiss() }, symbol: "chevron.left", showsHeader: !immersion.isImmersive) {
             WatchPlaybackBackground(data: player.artworkData)
         }
+        .contentShape(Rectangle())
+        // Consume the first physical tap before it can activate a control or
+        // Back. The visible cover retains the system primary-action shortcut.
+        .highPriorityGesture(TapGesture().onEnded { registerInteraction() },
+                             including: immersion.isImmersive ? .all : .subviews)
+        .simultaneousGesture(TapGesture().onEnded { registerInteraction() },
+                             including: immersion.isImmersive ? .subviews : .all)
         .overlay {
             WatchVolumeFeedbackOverlay(isActive: acceptsCrownInput)
         }
@@ -60,8 +85,49 @@ struct NowPlayingView: View {
             WatchCrownDiagnostics.record("page-disappeared")
             isOnScreen = false
             activeDialog = nil
+            immersion.suspend()
+        }
+        .onChange(of: immersionAvailability, initial: true) { _, availability in
+            if availability == .suspended {
+                withAnimation(scenePhase == .active ? immersionAnimation : nil) { immersion.suspend() }
+            } else {
+                immersion.setEligible(availability == .ready, at: ProcessInfo.processInfo.systemUptime)
+            }
+        }
+        .task(id: immersion.idleRequest) {
+            guard let request = immersion.idleRequest else { return }
+            do {
+                var remaining = request.deadline - ProcessInfo.processInfo.systemUptime
+                while remaining > 0 {
+                    try await Task.sleep(for: .seconds(remaining))
+                    remaining = request.deadline - ProcessInfo.processInfo.systemUptime
+                }
+                guard !Task.isCancelled else { return }
+                withAnimation(immersionAnimation) {
+                    _ = immersion.enter(for: request, at: ProcessInfo.processInfo.systemUptime)
+                }
+            } catch { return }
         }
         #if DEBUG && targetEnvironment(simulator)
+        .onChange(of: immersion.isImmersive) { _, immersive in
+            WatchCrownDiagnostics.record(immersive ? "immersive-entered" : "immersive-exited")
+        }
+        .onChange(of: immersion.idleRequest) { _, request in
+            WatchCrownDiagnostics.record(request == nil ? "immersive-idle-stopped" : "immersive-idle-armed")
+        }
+        .task(id: immersion.isImmersive) {
+            guard immersion.isImmersive, !previewImmersionCycleApplied,
+                  ProcessInfo.processInfo.arguments.contains("-preview-immersion-cycle") else { return }
+            previewImmersionCycleApplied = true
+            do {
+                try await Task.sleep(for: .seconds(3))
+                guard isOnScreen else { return }
+                // Exercise the same exit handler without synthesizing touch,
+                // hand gestures, system volume changes, or audio playback.
+                WatchCrownDiagnostics.record("immersive-preview-exit")
+                registerInteraction()
+            } catch { return }
+        }
         .task {
             guard ProcessInfo.processInfo.arguments.contains("-preview-crown-cycle") else { return }
             // One cancellable test sequence exercises real presentation and
@@ -83,6 +149,10 @@ struct NowPlayingView: View {
             } catch { return }
         }
         #endif
+    }
+
+    private func registerInteraction() {
+        withAnimation(immersionAnimation) { immersion.interact(at: ProcessInfo.processInfo.systemUptime) }
     }
 
     private var dialogPresented: Binding<Bool> {
@@ -125,7 +195,10 @@ struct NowPlayingView: View {
 private struct WatchPlaybackPageContent: View {
     @EnvironmentObject private var player: WatchPlayer
     @Environment(\.watchPageInsets) private var pageInsets
+    @Environment(\.watchContentViewport) private var viewport
     let acceptsPrimaryGesture: Bool
+    let isImmersive: Bool
+    let showControls: () -> Void
     let chooseSpeed: @MainActor () -> Void
     let chooseSleep: @MainActor () -> Void
     let chooseOutput: @MainActor () -> Void
@@ -169,40 +242,78 @@ private struct WatchPlaybackPageContent: View {
         GeometryReader { geometry in
             let layout = WatchPlaybackLayout(size: geometry.size,
                 minimumBottom: pageInsets?.bottomControlBottom ?? 0)
-            VStack(spacing: layout.spacing) {
-                metadata(layout: layout)
-                    .padding(.leading, max(0, (pageInsets?.metadataLeading ?? 0) - layout.horizontalInset))
-                    .padding(.trailing, max(0, (pageInsets?.metadataTrailing ?? 0) - layout.horizontalInset))
-                    .frame(height: layout.metadataHeight)
-                playbackOptions(height: layout.optionsHeight)
-                mainControls(height: layout.transportHeight)
-                    .padding(.leading, max(0, (pageInsets?.bottomControlLeading ?? 0) - layout.horizontalInset))
-                    .padding(.trailing, max(0, (pageInsets?.bottomControlTrailing ?? 0) - layout.horizontalInset))
+            let leading = max(layout.horizontalInset, pageInsets?.metadataLeading ?? 0)
+            let trailing = max(layout.horizontalInset, pageInsets?.metadataTrailing ?? 0)
+            let normalArtwork = CGRect(x: leading, y: (layout.metadataHeight - layout.artworkSize) / 2,
+                                       width: layout.artworkSize, height: layout.artworkSize)
+            let titleX = normalArtwork.maxX + (layout.compact ? 8 : 10)
+            let normalTitle = CGRect(x: titleX, y: 0, width: max(0, geometry.size.width - trailing - titleX),
+                                     height: layout.metadataHeight)
+            ZStack(alignment: .topLeading) {
+                VStack(spacing: layout.spacing) {
+                    Color.clear.frame(height: layout.metadataHeight).allowsHitTesting(false).accessibilityHidden(true)
+                    playbackOptions(height: layout.optionsHeight)
+                    mainControls(height: layout.transportHeight)
+                        .padding(.leading, max(0, (pageInsets?.bottomControlLeading ?? 0) - layout.horizontalInset))
+                        .padding(.trailing, max(0, (pageInsets?.bottomControlTrailing ?? 0) - layout.horizontalInset))
+                }
+                .padding(.horizontal, layout.horizontalInset)
+                .padding(.bottom, layout.bottomInset)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .opacity(isImmersive ? 0 : 1)
+                .scaleEffect(isImmersive ? 0.94 : 1, anchor: .bottom)
+                .allowsHitTesting(!isImmersive)
+                .accessibilityHidden(isImmersive)
+
+                WatchArtworkCaptionLayout(size: geometry.size,
+                    normalArtwork: normalArtwork, normalTitle: normalTitle,
+                    isImmersive: isImmersive,
+                    centeredVertically: viewport?.orientation.isLandscape ?? false,
+                    clockFrame: pageInsets?.bodyClockFrame ?? .null) {
+                    artworkControl(compact: layout.compact)
+                    metadata(layout: layout)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity,
+                               alignment: isImmersive ? .top : .center)
+                }
             }
-            .padding(.horizontal, layout.horizontalInset)
-            .padding(.bottom, layout.bottomInset)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .frame(width: geometry.size.width, height: geometry.size.height)
         }
     }
 
-    private func metadata(layout: WatchPlaybackLayout) -> some View {
-        HStack(spacing: layout.compact ? 8 : 10) {
-            MusicArtwork(title: player.title, data: player.artworkData)
-                .frame(width: layout.artworkSize, height: layout.artworkSize)
-                .clipShape(RoundedRectangle(cornerRadius: layout.compact ? 9 : 12))
+    @ViewBuilder private func artworkControl(compact: Bool) -> some View {
+        let control = Button(action: advanceTrack) {
+            WatchPlaybackArtwork(title: player.title, data: player.artworkData)
+                .clipShape(RoundedRectangle(cornerRadius: isImmersive ? 18 : (compact ? 9 : 12)))
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(player.isPreparing ? L10n.text("正在准备…") : player.title)
-                    .font(.system(size: layout.compact ? 12 : 14, weight: .semibold))
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .allowsHitTesting(isImmersive)
+        .accessibilityHidden(!isImmersive)
+        .accessibilityLabel(L10n.text("下一首"))
+        .accessibilityIdentifier("immersive-artwork")
+        .accessibilityAction(named: L10n.text("播放控制"), showControls)
+        if #available(watchOS 11.0, *) {
+            control.handGestureShortcut(.primaryAction, isEnabled: isImmersive && acceptsPrimaryGesture)
+        } else { control }
+    }
+
+    private func metadata(layout: WatchPlaybackLayout) -> some View {
+            VStack(alignment: isImmersive ? .center : .leading, spacing: isImmersive ? 0 : 2) {
+                Text(!isImmersive && player.isPreparing ? L10n.text("正在准备…") : player.title)
+                    .font(.system(size: isImmersive ? 14 : (layout.compact ? 12 : 14), weight: .semibold))
                     .foregroundStyle(AppPalette.textPrimary)
-                    .lineLimit(layout.tight ? 1 : 2).minimumScaleFactor(0.85)
+                    .lineLimit(isImmersive ? 2 : (layout.tight ? 1 : 2)).minimumScaleFactor(0.85)
+                    .multilineTextAlignment(isImmersive ? .center : .leading)
                 Text(player.artist.isEmpty ? L10n.text("未知歌手") : player.artist)
                     .font(.system(size: layout.compact ? 10 : 11))
                     .foregroundStyle(AppPalette.textSecondary)
                     .lineLimit(1)
+                    .opacity(isImmersive ? 0 : 1)
+                    .frame(height: isImmersive ? 0 : nil)
+                    .accessibilityHidden(isImmersive)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
+            .frame(maxWidth: .infinity, alignment: isImmersive ? .center : .leading)
     }
 
     private func playbackOptions(height: CGFloat) -> some View {
@@ -272,18 +383,48 @@ private struct WatchPlaybackPageContent: View {
     }
 
     @ViewBuilder private func nextControl(height: CGFloat) -> some View {
-        let control = Button {
-            player.next()
-            WKInterfaceDevice.current().play(.click)
-        } label: { transportSymbol("forward.end.fill", height: height) }
+        let control = Button(action: advanceTrack) { transportSymbol("forward.end.fill", height: height) }
             .clipShape(RoundedRectangle(cornerRadius: 14))
             .accessibilityLabel(L10n.text("下一首"))
         if #available(watchOS 11.0, *) {
             control.handGestureShortcut(.primaryAction,
-                isEnabled: player.currentURL != nil && acceptsPrimaryGesture)
+                isEnabled: !isImmersive && acceptsPrimaryGesture)
         } else { control }
     }
 
+    private func advanceTrack() {
+        if !isImmersive { showControls() }
+        player.next()
+        WKInterfaceDevice.current().play(.click)
+    }
+
+}
+
+/// Measure the actual caption before centering the landscape composition;
+/// reserving two lines for a one-line title would leave it visibly top-heavy.
+private struct WatchArtworkCaptionLayout: Layout {
+    let size: CGSize
+    let normalArtwork: CGRect
+    let normalTitle: CGRect
+    let isImmersive: Bool
+    let centeredVertically: Bool
+    let clockFrame: CGRect
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize { size }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let column = WatchImmersiveLayout(size: size, clockFrame: clockFrame,
+                                         centeredVertically: centeredVertically)
+        let titleHeight = centeredVertically && isImmersive
+            ? subviews[1].sizeThatFits(ProposedViewSize(width: column.titleFrame.width, height: nil)).height : 34
+        let immersive = WatchImmersiveLayout(size: size, clockFrame: clockFrame,
+            titleHeight: titleHeight, centeredVertically: centeredVertically)
+        let frames = isImmersive ? [immersive.artworkFrame, immersive.titleFrame] : [normalArtwork, normalTitle]
+        for (index, frame) in frames.enumerated() {
+            subviews[index].place(at: CGPoint(x: bounds.minX + frame.midX, y: bounds.minY + frame.midY),
+                                  anchor: .center, proposal: ProposedViewSize(frame.size))
+        }
+    }
 }
 
 /// Keep volume changes local to this overlay so Crown input doesn't redraw

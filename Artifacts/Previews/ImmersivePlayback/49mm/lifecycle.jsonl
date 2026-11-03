@@ -1,0 +1,15 @@
+{"event":"made","time":1793520893.0267439}
+{"event":"updated","focused":false,"playing":false,"time":1793520893.1801529}
+{"event":"focus-resigned","time":1793520893.180896}
+{"event":"page-appeared","time":1793520893.2996879}
+{"event":"updated","focused":true,"playing":false,"time":1793520893.311079}
+{"event":"volume-feedback-updated","time":1793520893.3175631}
+{"event":"immersive-idle-armed","time":1793520893.3180161}
+{"event":"focus-requested","time":1793520894.2251201}
+{"event":"immersive-entered","time":1793520898.3688951}
+{"event":"immersive-idle-stopped","time":1793520898.36953}
+{"event":"immersive-preview-exit","time":1793520901.405616}
+{"event":"immersive-exited","time":1793520901.4088469}
+{"event":"immersive-idle-armed","time":1793520901.409049}
+{"event":"immersive-entered","time":1793520906.56954}
+{"event":"immersive-idle-stopped","time":1793520906.5702949}

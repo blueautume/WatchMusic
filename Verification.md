@@ -523,3 +523,32 @@ Apple 的 [setActive 约束](https://developer.apple.com/documentation/avfaudio/
 ### 降低模糊力度（2026-11-01）
 
 根据用户反馈，将模糊半径从 24pt 降到 12pt；相应的画布外扩量从宽高各增加 96pt 降为 48pt，减少裁切并保留更多封面轮廓。遮罩继续使用原参数，保证文字可读。Debug 通用 iOS Simulator 完整构建（包含 Watch，禁用签名）及 `git diff --check` 通过；49mm 实际播放页已目视检查，背景铺满屏幕且封面轮廓更明显。新截图为 [12pt 模糊](Artifacts/Previews/ArtworkBackground/49mm/player-blur12.png)，上方其他截图保留初版 24pt 效果以便比较。预览只载入暂停歌曲，未操作真机。
+
+## Watch 五秒沉浸播放与双指互点排查（2026-11-01）
+
+按用户要求先将封面模糊背景提交为 `b41ea8e`（`feat: add blurred artwork background to watch player`），再在同一实验分支实现沉浸播放。页面可交互且歌曲未准备中时，连续五秒没有触屏操作后进入沉浸模式；同一个封面与歌曲标题在 0.55 秒内移动、放大，标题移到封面下方，播放控件与返回按钮渐隐，不新增提示文字。开启降低动态效果时直接切换，不执行过渡动画。
+
+普通模式的触屏操作重新开始完整五秒等待。沉浸模式使用高优先级触屏手势调用同一个退出处理，设计为第一次点击只恢复播放控件，不穿透触发切歌或返回；退出后重新等待完整五秒。普通模式的高优先级手势使用 `.subviews` 掩码保留子按钮操作，同时由并行手势记录触屏交互。沉浸时切换掩码，优先接管屏幕点击。
+
+等待使用基于系统运行时间的单次截止任务，没有页面刷新计时器或轮询。每次触屏、取消或重新安排等待都更新代际标识；任务完成前核对当前请求，迟到任务不能覆盖刚刚退出、离页或已取消的状态。离开页面、进入非 active 状态、打开弹层或系统输出选择，以及降低亮度时退出沉浸并取消等待；恢复可用后重新计满五秒。歌曲准备期间不新进入沉浸，已经处于沉浸模式时短暂准备下一首则保留当前展示；准备期间点击退出后，待准备完成再重新等待。封面和标题使用旋转后的页面坐标及实际系统时钟位置避让，四个显示方向共享同一布局逻辑。
+
+双指互点仍由系统 `.handGestureShortcut(.primaryAction)` 实现。[Apple 官方说明](https://developer.apple.com/documentation/watchos-apps/enabling-double-tap)要求主操作控件在屏幕上，且每个场景只能指定一个主操作。因此普通模式绑定可见的“下一首”，沉浸模式转移到可见的封面按钮；渐隐的播放按钮不再作为沉浸模式的快捷目标。源码排查还发现，触屏下一首在准备播放期间可用，而此前手势额外被 `!player.isPreparing` 禁用；播放器的 `next()` 已支持取消准备并切歌，本轮去除这个额外门槛，保留页面前台、已选歌曲和没有弹层或输出选择等条件。这是确定存在的交互条件差异，并未证明就是用户所报故障的根因；也没有证据说明表冠焦点导致双指互点失效。
+
+验证与限制：
+
+- `Tests/run-watch-immersive-tests.sh` 共 1,342 项断言通过，覆盖五秒边界、重复触屏、取消与迟到任务、重新进入页面、准备期间的状态，以及多尺寸四方向下封面、标题和系统时钟的避让。既有 `Tests/run-watch-surface-tests.sh` 共 1,224 项断言通过。
+- 本地化检查覆盖 383 个 key、532 处源码文案并通过，实际手机与内嵌 Watch 两个产品的资源检查也通过；没有增加沉浸提示文案。最终 Debug 通用 iOS Simulator 与 Release 通用 iOS 真机架构完整构建通过，包含 Watch，禁用签名；无 Swift 源码警告，仅有既有未使用 AppIntents 的元数据提取提示。
+- CUA DeviceHub 可以读取并选择本轮新建的隔离模拟器，但坐标点击返回 `noWindowsAvailable`，因此没有完成真实触屏输入验证。Debug 模拟器参数 `-preview-immersion-cycle` 在自动进入后调用相同的退出处理，用于记录进入、退出和重新计时的渲染过程；它不合成触屏、双指互点、表冠或音频事件。
+- Apple 文档分别描述了主操作快捷手势及高优先级触屏手势，没有保证二者组合时如何区分物理输入。截图、模型断言和上述预览入口不能证明真实点击不会穿透，也不能证明双指互点已经恢复；这两项仍需支持该手势的真机验收。本轮不安装或操作真机。
+
+预览记录使用 `Artifacts/Previews/ImmersivePlayback` 目录。49mm 对照路径为 [普通模式](Artifacts/Previews/ImmersivePlayback/49mm/normal.png)、[沉浸模式](Artifacts/Previews/ImmersivePlayback/49mm/immersive.png)、[退出后](Artifacts/Previews/ImmersivePlayback/49mm/returned.png)、[动画录屏](Artifacts/Previews/ImmersivePlayback/49mm/animation.mp4)、[循环动画预览](Artifacts/Previews/ImmersivePlayback/49mm/animation.gif)和[生命周期记录](Artifacts/Previews/ImmersivePlayback/49mm/lifecycle.jsonl)；40mm 保留四个显示方向的沉浸画面，均已目视复核。封面与标题未被裁切，放大和归位连续，控制区能完整恢复。系统时钟由 watchOS 自行呈现，部分退出截图短暂未显示；应用未添加第二个时钟或改写系统时钟策略。
+
+逐帧检查曾发现原 `MusicArtwork` 在几何变化时重新创建 UIImage，缩放出现交叉淡化的重影；播放页改用 `WatchPlaybackArtwork`，仅在封面数据变化时解码并复用图片实例。最终重新录制的进入、退出中间帧已确认重影消失，静态终态截图也全部重拍。录制中原生表冠控件保持同一实例，退出沉浸后的下一次进入距离退出约 5.16 秒（包含模拟器调度延迟），期间没有循环刷新任务。启动加载画面未作为正常播放页截图，正常状态从同一实际录屏中提取。完成后清理本轮两台隔离模拟器，保留代码与预览产物。
+
+### 横屏沉浸内容整体垂直居中（2026-11-01）
+
+横屏不再沿用 2pt 顶部位置。封面、8pt 间距和歌名组成一个整体，在上下至少 12pt 的区域内垂直居中；安全列继续按真实系统时钟位置避让。`WatchArtworkCaptionLayout` 先按安全列宽测量歌名的自然高度，再计算封面尺寸与整体位置，避免单行标题预留两行高度造成视觉偏上。方向取自页面实际方向，不用内容区宽高比猜测；竖屏继续使用原来的封面位置与 34pt 标题区域。
+
+`Tests/run-watch-immersive-tests.sh` 共 1,865 项断言通过，覆盖六种尺寸、四个方向、17 / 20 / 34 / 46pt 标题高度、受列宽限制的封面、横屏上下等距与竖屏原布局。Debug 通用 iOS Simulator、Release 通用 iOS 真机架构完整构建通过，包含 Watch，禁用签名；无 Swift 源码警告，只有既有 AppIntents 元数据提取提示。`git diff --check` 通过。
+
+本轮使用隔离的 watchOS 26.5 40mm / 49mm 模拟器检查左右横屏、竖屏以及进入和退出的动画中间帧。封面和歌名完整，横屏上下留白均衡，竖屏画面与原布局一致，过渡无重影。截图与录屏位于 `Artifacts/Previews/ImmersivePlayback/LandscapeCentered`，其中带 `-logical` 的图片仅旋转原始截图供横向阅读，系统时钟仍按实际系统方向呈现：[49mm 横屏](Artifacts/Previews/ImmersivePlayback/LandscapeCentered/49mm/landscape-right-logical.png)、[40mm 横屏](Artifacts/Previews/ImmersivePlayback/LandscapeCentered/40mm/landscape-right-logical.png)、[动画](Artifacts/Previews/ImmersivePlayback/LandscapeCentered/49mm/animation.gif)。预览保持暂停，不播放音频；动画退出沿用 Debug 预览入口，不代表真实触屏或双指互点输入验收。完成后清理本轮两台隔离模拟器。

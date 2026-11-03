@@ -8,10 +8,10 @@ extension View {
     }
 
     func watchPage<Background: View>(title: String, compactTitle: String? = nil, action: (() -> Void)? = nil,
-                                     symbol: String = "xmark", showsBattery: Bool = false,
+                                     symbol: String = "xmark", showsBattery: Bool = false, showsHeader: Bool = true,
                                      @ViewBuilder background: () -> Background) -> some View {
         modifier(WatchPageLayout(title: title, compactTitle: compactTitle, action: action, symbol: symbol,
-                                 showsBattery: showsBattery, pageBackground: background()))
+                                 showsBattery: showsBattery, showsHeader: showsHeader, pageBackground: background()))
     }
 }
 
@@ -24,6 +24,7 @@ private struct WatchPageLayout<Background: View>: ViewModifier {
     let action: (() -> Void)?
     let symbol: String
     let showsBattery: Bool
+    let showsHeader: Bool
     let pageBackground: Background
 
     func body(content: Content) -> some View {
@@ -43,7 +44,12 @@ private struct WatchPageLayout<Background: View>: ViewModifier {
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
             .background { pageBackground }
-            .overlay(alignment: .topLeading) { header(metrics: metrics, insets: insets) }
+            .overlay(alignment: .topLeading) {
+                header(metrics: metrics, insets: insets)
+                    .opacity(showsHeader ? 1 : 0)
+                    .allowsHitTesting(showsHeader)
+                    .accessibilityHidden(!showsHeader)
+            }
         }
         .ignoresSafeArea()
         .navigationTitle("")
