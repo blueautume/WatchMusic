@@ -44,7 +44,7 @@
 
 所有页面统一隐藏系统导航栏，使用44pt点击范围的小型自定义返回/关闭按钮，避免切换时重新计算安全区。画布不扣时钟整条区域，滚动内容不被祖先矩形裁切；只对文字和操作控件做曲面边距及系统时钟角落避让。系统键盘和确认弹窗沿用 watchOS 原生呈现。
 
-手表活跃接收时请求防止自动息屏。下载、校验保存和同批切歌共用一个请求，暂停、取消、完成或离开活跃状态后释放。实际亮度、息屏和 App 的执行时长由 watchOS 决定，持续熄屏时传输可能中断。[Apple 常亮屏说明](https://developer.apple.com/documentation/watchos-apps/designing-your-app-for-the-always-on-state)
+手表活跃接收时请求防止自动息屏。下载、校验保存和同批切歌共用一个请求，前台变暗时保留请求，暂停、取消、完成或进入后台后释放。实际亮度、息屏和 App 的执行时长由 watchOS 决定，持续熄屏时传输可能中断。[Apple 常亮屏说明](https://developer.apple.com/documentation/watchos-apps/designing-your-app-for-the-always-on-state)
 
 ## 实现与范围
 

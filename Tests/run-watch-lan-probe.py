@@ -304,16 +304,17 @@ def run_case(device, documents, title, specifications, expected_kind, capture=No
                                      if event["event"] == "stored" and event.get("sessionID") == offer["sessionID"]}
             assert stored_after_inactive == {file["id"] for file in manifest}, f"{title}: not all files saved after entering inactive"
             assert not any(event["kind"] in ("paused", "resumed") for event in events), f"{title}: inactive interrupted the batch"
-        if check_display_activity:
+        if check_display_activity or inactive_during:
             expected_activity = ("lanDisplayActivityBegan", "lanDisplayActivityEnded") * (2 if pause and not cancel else 1)
             observed_activity = ()
+            lifecycle = []
             # The receiver can report the terminal receipt before the library
             # gets the last display update.
             deadline = time.monotonic() + 3
             while time.monotonic() < deadline:
                 try:
-                    observed_activity = tuple(item["event"] for item in json.loads(lifecycle_path.read_text())
-                                              if item["event"] in expected_activity)
+                    lifecycle = json.loads(lifecycle_path.read_text())
+                    observed_activity = tuple(item["event"] for item in lifecycle if item["event"] in expected_activity)
                 except (json.JSONDecodeError, OSError):
                     pass
                 if len(observed_activity) >= len(expected_activity):
@@ -322,6 +323,14 @@ def run_case(device, documents, title, specifications, expected_kind, capture=No
             assert observed_activity == expected_activity, (
                 f"{title}: display activity sequence was {observed_activity}; expected {expected_activity}"
             )
+            if inactive_during:
+                began, ended = (index for index, item in enumerate(lifecycle) if item["event"] in expected_activity)
+                last_store = max(index for index, item in enumerate(lifecycle)
+                                 if item["event"] == "stored" and item.get("sessionID") == offer["sessionID"])
+                assert began < observations[0][0] < last_store < ended, (
+                    f"{title}: display activity must span inactive and the last save; "
+                    f"begin={began}, inactive={observations[0][0]}, last save={last_store}, end={ended}"
+                )
             print(f"Display activity verified: {len(observed_activity) // 2} begin/end pair(s)", flush=True)
         if background:
             assert (documents / "lan-test-background.json").exists(), "background transition hook did not run"
@@ -404,16 +413,18 @@ def run_foreground_case(device, documents, mp3, saving=False):
     threading.Thread(target=server.serve_forever, daemon=True).start()
     offer_path = documents / "lan-probe-offer.json"
     next_path = documents / "lan-next-offer.json"
+    lifecycle_path = documents / "lan-lifecycle-events.json"
     try:
         subprocess.run(["xcrun", "simctl", "terminate", device, BUNDLE], capture_output=True, check=False, timeout=15)
         server.log_path.unlink(missing_ok=True)
+        lifecycle_path.unlink(missing_ok=True)
         first = {"protocolVersion": 1, "sessionID": str(uuid.uuid4()), "token": token,
                  "baseURLs": [f"http://127.0.0.1:{server.server_port}"],
                  "expiresAt": time.time() - 978_307_200 + 120, "files": manifest}
         second = dict(first, sessionID=str(uuid.uuid4()))
         offer_path.write_text(json.dumps(first))
         next_path.write_text(json.dumps(second))
-        arguments = ["launch", device, BUNDLE, "-lan-offer-file", offer_path.name,
+        arguments = ["launch", device, BUNDLE, "-lan-offer-file", offer_path.name, "-lan-record-lifecycle",
                      "-lan-background-after", "1.5" if saving else "0.5",
                      "-lan-foreground-after", "5.0" if saving else "3.0",
                      "-lan-next-offer-file", next_path.name,
@@ -434,6 +445,12 @@ def run_foreground_case(device, documents, mp3, saving=False):
                 break
             time.sleep(0.05)
         assert paused, "background transition did not emit automatic pause"
+        lifecycle = json.loads(lifecycle_path.read_text())
+        activity = [item["event"] for item in lifecycle if item.get("sessionID") == first["sessionID"]
+                    and item["event"] in ("lanDisplayActivityBegan", "lanDisplayActivityEnded")]
+        assert activity == ["lanDisplayActivityBegan", "lanDisplayActivityEnded"], (
+            f"background pause did not release the display activity: {activity}"
+        )
         time.sleep(0.7)
         with server.request_lock:
             assert len(server.requests) == 1 and not server.active_requests, "background receiver kept a native HTTP body running"

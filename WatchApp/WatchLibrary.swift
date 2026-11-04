@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import OSLog
 import WatchConnectivity
 import WatchKit
 
@@ -13,6 +14,7 @@ struct MusicFolder: Identifiable, Hashable {
 /// Disk mutations are serial, and WC temporary files are saved before returning.
 final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
     static let shared = WatchLibrary()
+    private static let transferLogger = Logger(subsystem: "com.lihao.WatchMusic.watchkitapp", category: "LANTransfer")
     @Published private(set) var folders: [MusicFolder] = []
     @Published private(set) var connectionStatus = "本地音乐可离线播放"
     @Published private(set) var totalBytes: Int64 = 0
@@ -333,6 +335,9 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
     }
 
     func updateLANAvailability(_ value: LANReceiverAvailability) {
+        if lanAvailability != value, let reception = lanReception {
+            Self.transferLogger.notice("Reception phase \(String(describing: value), privacy: .public), bytes \(reception.completedBytes)/\(reception.totalBytes)")
+        }
         lanAvailability = value
         updateLANDisplayActivity()
         lanInventory.setForeground(value == .active)
@@ -340,19 +345,22 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
     }
 
     private func updateLANDisplayActivity() {
-        // Keep one request through progress, validation, and the next file in
-        // the batch. A paused receiver no longer needs to hold the display.
-        let needsDisplay = lanAvailability == .active && lanReception?.isPaused == false
-        if needsDisplay, lanDisplayActivity == nil {
+        // An accepted batch can keep running while the Watch app is frontmost
+        // and inactive. Keep its existing display request until work pauses,
+        // finishes, or actually goes into the background.
+        let needsDisplay = lanAvailability != .background && lanReception?.isPaused == false
+        if needsDisplay, lanAvailability == .active, lanDisplayActivity == nil {
             lanDisplayActivity = ProcessInfo.processInfo.beginActivity(
                 options: .idleDisplaySleepDisabled, reason: "WatchMusic LAN transfer"
             )
+            Self.transferLogger.notice("Reception display request started")
             #if DEBUG
             appendLANLifecycleEvent("lanDisplayActivityBegan")
             #endif
         } else if !needsDisplay, let activity = lanDisplayActivity {
             lanDisplayActivity = nil
             ProcessInfo.processInfo.endActivity(activity)
+            Self.transferLogger.notice("Reception display request ended in phase \(String(describing: self.lanAvailability), privacy: .public)")
             #if DEBUG
             appendLANLifecycleEvent("lanDisplayActivityEnded")
             #endif
