@@ -22,7 +22,7 @@ struct OfflineWatchApp: App {
                     player.setApplicationInBackground(scenePhase == .background)
                     player.setApplicationActive(scenePhase == .active)
                     display.start(foreground: scenePhase == .active)
-                    library.updateLANForeground(scenePhase == .active)
+                    library.updateLANAvailability(scenePhase.lanReceiverAvailability)
                     #if DEBUG
                     library.recordLANScenePhase(scenePhase == .background ? "background" : (scenePhase == .active ? "active" : "inactive"))
                     #endif
@@ -31,7 +31,7 @@ struct OfflineWatchApp: App {
                     if phase != .active { player.savePlaybackPosition() }
                     player.setApplicationInBackground(phase == .background)
                     player.setApplicationActive(phase == .active)
-                    library.updateLANForeground(phase == .active)
+                    library.updateLANAvailability(phase.lanReceiverAvailability)
                     display.setForeground(phase == .active)
                     #if DEBUG
                     library.recordLANScenePhase(phase == .background ? "background" : (phase == .active ? "active" : "inactive"))
@@ -87,6 +87,17 @@ struct OfflineWatchApp: App {
         if let reception = library.lanReception {
             LANTransferView(reception: reception, cancel: library.cancelLANTransfer)
         } else { FolderListView() }
+    }
+}
+
+private extension ScenePhase {
+    var lanReceiverAvailability: LANReceiverAvailability {
+        switch self {
+        case .active: .active
+        case .inactive: .inactive
+        case .background: .background
+        @unknown default: .background
+        }
     }
 }
 

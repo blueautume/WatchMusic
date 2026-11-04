@@ -142,7 +142,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def run_case(device, documents, title, specifications, expected_kind, capture=None, cancel=False, background=False, restart=False, pause=False,
              pause_after=0.3, resume_after=3.5, partial=False, require_range=False, serial=False, cancel_first=False,
-             check_display_activity=False, check_handshake=False):
+             check_display_activity=False, check_handshake=False, inactive_during=None):
     folder = "LANProbe-" + str(uuid.uuid4())
     manifest = []
     routes = {}
@@ -184,9 +184,13 @@ def run_case(device, documents, title, specifications, expected_kind, capture=No
                  "expiresAt": time.time() - 978_307_200 + 120, "files": manifest}
         offer_path.write_text(json.dumps(offer))
         args = ["launch", device, BUNDLE, "-lan-offer-file", offer_path.name]
-        if check_display_activity or check_handshake:
+        if check_display_activity or check_handshake or inactive_during:
             lifecycle_path.unlink(missing_ok=True)
             args += ["-lan-record-lifecycle"]
+        if inactive_during:
+            args += ["-lan-inactive-during-" + inactive_during]
+            if inactive_during == "save":
+                args += ["-lan-save-delay", "1.0"]
         if check_handshake:
             args += ["-lan-probe-delayed-legacy"]
         if cancel:
@@ -288,6 +292,18 @@ def run_case(device, documents, title, specifications, expected_kind, capture=No
                           if item["event"] == "stored" and item.get("sessionID") == offer["sessionID"]}
             assert stored_ids == {file["id"] for file in manifest}, f"{title}: missing exact stored lifecycle events"
             assert "probeLegacyCleanupFinished" not in observed, f"{title}: download waited for legacy cleanup"
+        if inactive_during:
+            lifecycle = json.loads(lifecycle_path.read_text())
+            observations = [(index, event["phase"]) for index, event in enumerate(lifecycle)
+                            if event["event"] == "probeEnteredInactive"]
+            expected_phase = "validating" if inactive_during == "save" else "downloading"
+            assert len(observations) == 1 and observations[0][1] == expected_phase, (
+                f"{title}: missing inactive transition during {expected_phase}; observed {observations}"
+            )
+            stored_after_inactive = {event["fileID"] for event in lifecycle[observations[0][0] + 1:]
+                                     if event["event"] == "stored" and event.get("sessionID") == offer["sessionID"]}
+            assert stored_after_inactive == {file["id"] for file in manifest}, f"{title}: not all files saved after entering inactive"
+            assert not any(event["kind"] in ("paused", "resumed") for event in events), f"{title}: inactive interrupted the batch"
         if check_display_activity:
             expected_activity = ("lanDisplayActivityBegan", "lanDisplayActivityEnded") * (2 if pause and not cancel else 1)
             observed_activity = ()
@@ -358,6 +374,13 @@ def run_serial_cases(device, documents, mp3, flac):
              pause_after=2, resume_after=6, check_display_activity=True)
 
 
+def run_inactive_cases(device, documents, mp3, flac):
+    run_case(device, documents, "frontmost inactive continues a partial download and starts the next song",
+             [(mp3, "trickle"), (flac, "normal")], "stored", serial=True, inactive_during="download")
+    run_case(device, documents, "frontmost inactive completes an in-flight save",
+             [(mp3, "normal")], "stored", serial=True, inactive_during="save")
+
+
 def run_foreground_case(device, documents, mp3, saving=False):
     """Real simulator HTTP, lifecycle pause and an explicit fresh offer."""
     folder = "LANProbe-" + str(uuid.uuid4())
@@ -410,15 +433,15 @@ def run_foreground_case(device, documents, mp3, saving=False):
             if paused:
                 break
             time.sleep(0.05)
-        assert paused, "inactive transition did not emit automatic pause"
+        assert paused, "background transition did not emit automatic pause"
         time.sleep(0.7)
         with server.request_lock:
-            assert len(server.requests) == 1 and not server.active_requests, "inactive receiver kept a native HTTP body running"
-        assert not server.destination.exists(), "inactive receiver saved music"
+            assert len(server.requests) == 1 and not server.active_requests, "background receiver kept a native HTTP body running"
+        assert not server.destination.exists(), "background receiver saved music"
         if saving:
             snapshot = documents.parent / "Library/Application Support/LANBackground-v2/transfer.json"
             item = json.loads(snapshot.read_text())["items"][identifier]
-            assert item["phase"] == "paused" and item.get("lifecyclePaused") is True and item.get("stagingName"), "inactive validation did not retain a complete paused cache"
+            assert item["phase"] == "paused" and item.get("lifecyclePaused") is True and item.get("stagingName"), "background validation did not retain a complete paused cache"
         # Wait until active-ready, but before the deliberately delayed new offer.
         deadline = time.monotonic() + 5
         ready = []
@@ -450,8 +473,8 @@ def run_foreground_case(device, documents, mp3, saving=False):
         assert target.is_file() and hashlib.sha256(target.read_bytes()).hexdigest() == manifest[0]["sha256"], "fresh foreground save content mismatch"
         with server.request_lock:
             assert len(server.requests) == 2 and server.peak_requests == 1, "foreground restart did not preserve one-at-a-time HTTP"
-        print("PASS: " + ("inactive cancels uncommitted validation, complete cache remains paused, fresh offer saves exact SHA"
-                          if saving else "inactive cancels HTTP, active signals readiness without old-URL retry, fresh foreground offer saves exact SHA"), flush=True)
+        print("PASS: " + ("background cancels uncommitted validation, complete cache remains paused, fresh offer saves exact SHA"
+                          if saving else "background cancels HTTP, active signals readiness without old-URL retry, fresh foreground offer saves exact SHA"), flush=True)
     finally:
         server.shutdown(); server.server_close()
         offer_path.unlink(missing_ok=True); next_path.unlink(missing_ok=True)
@@ -470,7 +493,8 @@ def main():
     parser.add_argument("--range-only", action="store_true", help="Run complete, malformed and incomplete HTTP 206 response scenarios")
     parser.add_argument("--disconnect-resume-only", action="store_true", help="Compatibility alias for interruption and fresh-offer retry")
     parser.add_argument("--serial-only", action="store_true", help="Verify active serial order, terminal gating, failure/cancel advance and manual pause")
-    parser.add_argument("--foreground-only", action="store_true", help="Verify inactive pause, no stale-source retry and explicit foreground replacement")
+    parser.add_argument("--foreground-only", action="store_true", help="Verify background pause, no stale-source retry and explicit foreground replacement")
+    parser.add_argument("--inactive-only", action="store_true", help="Verify accepted downloads and saves continue while frontmost inactive")
     parser.add_argument("--handshake-only", action="store_true", help="Verify the status reply, offer and download finish while legacy cleanup is delayed")
     args = parser.parse_args()
     if args.app:
@@ -487,6 +511,9 @@ def main():
         if args.foreground_only or args.background_only or args.disconnect_resume_only:
             run_foreground_case(args.device, documents, mp3)
             run_foreground_case(args.device, documents, mp3, saving=True)
+            return
+        if args.inactive_only:
+            run_inactive_cases(args.device, documents, mp3, flac)
             return
         if args.serial_only:
             run_serial_cases(args.device, documents, mp3, flac)
