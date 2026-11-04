@@ -30,10 +30,11 @@ struct PhoneSendQueueProbe {
         try check(condition(), "Timed out: " + message)
     }
 
-    @MainActor private static func send(_ tracks: [PhoneTrack], using library: PhoneLibrary) async -> Set<String> {
-        await withCheckedContinuation { continuation in
-            library.send(tracks) { continuation.resume(returning: $0) }
-        }
+    @MainActor private static func send(_ tracks: [PhoneTrack], using library: PhoneLibrary) throws -> Set<String> {
+        var accepted: Set<String>?
+        library.send(tracks) { accepted = $0 }
+        guard let accepted else { throw ProbeFailure.failed("Send must report accepted tracks before returning") }
+        return accepted
     }
 
     @MainActor private static func ready(_ count: Int, library: PhoneLibrary, peer: QueuePeer) async throws {
@@ -88,19 +89,23 @@ struct PhoneSendQueueProbe {
         let storedPeer = QueuePeer()
         try storedPeer.remember(a1)
         let stored = model(storedPeer)
-        try check(await send([a1], using: stored) == [a1.id], "Already stored songs complete selection handling")
+        try check(send([a1], using: stored) == [a1.id], "Already stored songs complete selection handling")
+        try await wait("first inventory match") { stored.latestTransfer(for: a1)?.state == .stored }
         try check(stored.transfers.count == 1 && stored.storedTransfers.count == 1 && stored.activeTransfers.isEmpty,
                   "A watch match creates no unfinished task")
         try check(storedPeer.offers.isEmpty, "A watch match never starts a transfer offer")
         let storedID = stored.transfers[0].id
-        try check(await send([a1, a1], using: stored) == [a1.id], "All-duplicate selection still reports every unique handled track")
+        let storedInventoryCount = storedPeer.inventoryCount
+        try check(send([a1, a1], using: stored) == [a1.id], "All-duplicate selection still reports every unique handled track")
+        try await wait("repeat inventory match") { storedPeer.inventoryCount > storedInventoryCount && stored.activeTransfers.isEmpty }
         try check(stored.transfers.count == 1 && stored.transfers[0].id == storedID, "Repeated stored songs do not duplicate successful history")
         stored.clearCompletedTransfers()
         try check(stored.transfers.isEmpty, "Successful history can be cleared independently")
-        _ = await send([a1], using: stored)
+        _ = try send([a1], using: stored)
+        try await wait("inventory match after clearing local history") { stored.latestTransfer(for: a1)?.state == .stored }
         try check(storedPeer.offers.isEmpty && stored.storedTransfers.count == 1, "Clearing phone history does not retransmit existing watch content")
         storedPeer.saved.removeAll()
-        _ = await send([a1], using: stored)
+        _ = try send([a1], using: stored)
         try await ready(1, library: stored, peer: storedPeer)
         try check(stored.activeTransfers.count == 1, "A song deleted on the watch becomes eligible again")
         storedPeer.finish(storedPeer.offers[0].files[0], in: storedPeer.offers[0], on: stored)
@@ -108,19 +113,22 @@ struct PhoneSendQueueProbe {
         // Append a different folder while the first batch still owns the lane.
         let appendPeer = QueuePeer()
         let append = model(appendPeer)
-        try check(await send([a1, a2], using: append) == [a1.id, a2.id], "First batch accepts both songs")
+        try check(send([a1, a2], using: append) == [a1.id, a2.id], "First batch accepts both songs")
         try await ready(1, library: append, peer: appendPeer)
         let first = appendPeer.offers[0]
         appendPeer.finish(first.files[0], in: first, on: append)
         try check(append.isLANActive && appendPeer.offers.count == 1, "One saved song does not finish an unfinished batch")
-        try check(await send([b1, b2], using: append) == [b1.id, b2.id], "A second folder is accepted during the current batch")
+        try check(send([b1, b2], using: append) == [b1.id, b2.id], "A second folder is accepted during the current batch")
+        try await wait("appended songs finish preflight") {
+            append.latestTransfer(for: b1)?.state == .queued && append.latestTransfer(for: b2)?.state == .queued
+        }
         try check(appendPeer.offers.count == 1 && appendPeer.stopCount == 0, "Appending neither replaces nor stops the current offer")
         let waiting = append.transfers.filter { $0.folder == b1.folder && $0.state == .queued }
         try check(waiting.count == 2 && waiting.allSatisfy { $0.lanSessionID == nil && !append.isCurrentLANTransfer($0.id) },
                   "Appended songs remain visibly waiting for their own batch")
         let beforeDuplicate = append.transfers.count
         let inventoryBefore = appendPeer.inventoryCount
-        try check(await send([b1], using: append) == [b1.id], "Pending duplicates complete selection handling")
+        try check(send([b1], using: append) == [b1.id], "Pending duplicates complete selection handling")
         try check(append.transfers.count == beforeDuplicate && appendPeer.inventoryCount == inventoryBefore,
                   "Pending duplicates create neither another record nor an inventory request")
         let queuedB1 = append.latestTransfer(for: b1)!
@@ -145,7 +153,7 @@ struct PhoneSendQueueProbe {
         let bulkTracks = try (0..<111).map { try track(directories[0], String(format: "bulk-%03d.mp3", $0)) }
         let bulkPeer = QueuePeer()
         let bulk = model(bulkPeer)
-        try check(await send(bulkTracks, using: bulk) == Set(bulkTracks.map(\.id)), "A selection larger than one manifest is fully accepted")
+        try check(send(bulkTracks, using: bulk) == Set(bulkTracks.map(\.id)), "A selection larger than one manifest is fully accepted")
         try await ready(1, library: bulk, peer: bulkPeer)
         let bulkFirst = bulkPeer.offers[0]
         try check(bulkFirst.files.count == 100 && bulk.pendingCount == 111, "First offer contains 100 songs while all 111 remain in the queue")
@@ -171,7 +179,7 @@ struct PhoneSendQueueProbe {
         }
         let longPeer = QueuePeer()
         let longQueue = model(longPeer)
-        _ = await send(longTracks, using: longQueue)
+        _ = try send(longTracks, using: longQueue)
         var longBatch = 0
         while longQueue.pendingCount > 0 {
             try await ready(longBatch + 1, library: longQueue, peer: longPeer)
@@ -190,19 +198,20 @@ struct PhoneSendQueueProbe {
         // remote work; clearing tasks resets that intent.
         let pausedPeer = QueuePeer()
         let pausedQueue = model(pausedPeer)
-        _ = await send([a1], using: pausedQueue)
+        _ = try send([a1], using: pausedQueue)
         try await ready(1, library: pausedQueue, peer: pausedPeer)
         let pausedFirst = pausedPeer.offers[0]
         pausedQueue.pauseTransfers()
         try await wait("global pause acknowledgement") {
             !pausedQueue.isUpdatingTransferControls && pausedQueue.latestTransfer(for: a1)?.state == .paused
         }
-        try check(await send([b1], using: pausedQueue) == [b1.id], "Global pause still accepts another folder")
+        try check(send([b1], using: pausedQueue) == [b1.id], "Global pause still accepts another folder")
         try check(pausedQueue.latestTransfer(for: b1)?.state == .paused && pausedPeer.offers.count == 1 && pausedQueue.shouldStartTransfers(),
                   "A newly appended song inherits global pause and does not start another offer")
         pausedQueue.resumeTransfers()
         try await wait("global resume acknowledgement") {
-            !pausedQueue.isUpdatingTransferControls && pausedQueue.latestTransfer(for: a1)?.state == .queued
+            !pausedQueue.isUpdatingTransferControls && pausedQueue.latestTransfer(for: a1)?.state == .queued &&
+                pausedQueue.latestTransfer(for: b1)?.state == .queued
         }
         try check(pausedQueue.latestTransfer(for: b1)?.state == .queued && pausedPeer.offers.count == 1,
                   "Global resume releases future songs while preserving the current offer")
@@ -211,11 +220,11 @@ struct PhoneSendQueueProbe {
         let pausedSecond = pausedPeer.offers[1]
         pausedPeer.finish(pausedSecond.files[0], in: pausedSecond, on: pausedQueue)
         pausedQueue.pauseTransfers()
-        _ = await send([b2], using: pausedQueue)
+        _ = try send([b2], using: pausedQueue)
         try check(pausedQueue.latestTransfer(for: b2)?.state == .paused && pausedPeer.offers.count == 2,
                   "Global pause also applies when the queue is currently empty")
         pausedQueue.clearAllTasks()
-        _ = await send([b2], using: pausedQueue)
+        _ = try send([b2], using: pausedQueue)
         try await ready(3, library: pausedQueue, peer: pausedPeer)
         let afterClear = pausedPeer.offers[2]
         try check(afterClear.files.count == 1 && afterClear.pausedFileIDs?.isEmpty != false,
@@ -227,9 +236,10 @@ struct PhoneSendQueueProbe {
         // selecting just that future folder still offers its own Pause action.
         let priorityPeer = QueuePeer()
         let priorityQueue = model(priorityPeer)
-        _ = await send([a1], using: priorityQueue)
+        _ = try send([a1], using: priorityQueue)
         try await ready(1, library: priorityQueue, peer: priorityPeer)
-        _ = await send([b1], using: priorityQueue)
+        _ = try send([b1], using: priorityQueue)
+        try await wait("future folder finishes preflight") { priorityQueue.latestTransfer(for: b1)?.state == .queued }
         let priorityFirst = priorityPeer.offers[0]
         priorityQueue.pauseTransfers(ids: [priorityFirst.files[0].id])
         try await wait("selected current pause") {
@@ -250,7 +260,7 @@ struct PhoneSendQueueProbe {
         // Failed work can be retried behind a different active song.
         let retryPeer = QueuePeer()
         let retry = model(retryPeer)
-        _ = await send([a1, a2], using: retry)
+        _ = try send([a1, a2], using: retry)
         try await ready(1, library: retry, peer: retryPeer)
         let retryFirst = retryPeer.offers[0]
         retryPeer.finish(retryFirst.files[0], in: retryFirst, on: retry, kind: .failed)
@@ -271,9 +281,12 @@ struct PhoneSendQueueProbe {
         // while this batch was waiting behind another folder.
         let latePeer = QueuePeer()
         let late = model(latePeer)
-        _ = await send([a1], using: late)
+        _ = try send([a1], using: late)
         try await ready(1, library: late, peer: latePeer)
-        _ = await send([b1], using: late)
+        _ = try send([b1], using: late)
+        try await wait("waiting song checks inventory before the watch receives a copy") {
+            late.latestTransfer(for: b1)?.state == .queued
+        }
         try latePeer.remember(b1)
         let lateFirst = latePeer.offers[0]
         latePeer.finish(lateFirst.files[0], in: lateFirst, on: late)
@@ -285,7 +298,7 @@ struct PhoneSendQueueProbe {
         // navigation/menu publication. No repeating timer is needed for a stall.
         let measuredPeer = QueuePeer()
         let measured = model(measuredPeer)
-        _ = await send([a1, a2], using: measured)
+        _ = try send([a1, a2], using: measured)
         try await ready(1, library: measured, peer: measuredPeer)
         let measuredOffer = measuredPeer.offers[0]
         let measuredFile = measuredOffer.files[0]
@@ -320,7 +333,10 @@ struct PhoneSendQueueProbe {
         let mutationPeer = QueuePeer()
         try mutationPeer.remember(a1)
         let mutation = model(mutationPeer)
-        _ = await send([a1], using: mutation)
+        _ = try send([a1], using: mutation)
+        try await wait("source version is recorded after inventory confirms a match") {
+            mutation.latestTransfer(for: a1)?.state == .stored
+        }
         try check(mutation.isFullyTransferred(a1), "Unchanged stored source has a valid transferred indicator")
         let before = try TransferSourceVersion.read(a1.url)
         let bytes = try Data(contentsOf: a1.url)
@@ -338,27 +354,26 @@ struct PhoneSendQueueProbe {
         try check(after.byteCount == before.byteCount && after.modificationSeconds == before.modificationSeconds &&
                   after.modificationNanoseconds == before.modificationNanoseconds, "Changed fixture retains its size and mtime")
         try check(!mutation.isFullyTransferred(a1), "Same-size replacement invalidates the transferred indicator")
-        _ = await send([a1], using: mutation)
+        _ = try send([a1], using: mutation)
         try await ready(1, library: mutation, peer: mutationPeer)
         let changed = mutationPeer.offers[0]
         try check(changed.files[0].sha256 != mutationPeer.saved[LANInventoryWire.pathKey(folder: a1.folder, fileName: a1.fileName)]?.hash,
                   "Changed content is sent even with the same destination, size and mtime")
         mutationPeer.finish(changed.files[0], in: changed, on: mutation)
 
-        // Cancellation generations reject a reply that arrives after clear or
-        // background, while a newer submission remains able to make progress.
-        for background in [false] {
+        // A late inventory reply cannot revive cleared work or block a newer submission.
+        do {
             let peer = QueuePeer()
             peer.holdNextInventory = true
             let library = model(peer)
             var completionCount = 0
             var completedIDs: Set<String>?
             library.send([a2]) { completionCount += 1; completedIDs = $0 }
+            try check(completionCount == 1 && completedIDs == [a2.id], "Acceptance completes synchronously before the inventory reply")
             try await wait("held inventory request") { peer.hasHeldInventory }
-            if background { library.sceneDidEnterBackground() } else { library.clearAllTasks() }
-            try check(completionCount == 1 && completedIDs == [], "\(background ? "Background" : "Clear") finishes pending selection exactly once")
-            if background { library.sceneDidBecomeActive() }
-            _ = await send([b2], using: library)
+            defer { peer.releaseInventory() }
+            library.clearAllTasks()
+            _ = try send([b2], using: library)
             try await ready(1, library: library, peer: peer)
             peer.releaseInventory()
             try await Task.sleep(nanoseconds: 80_000_000)
@@ -369,6 +384,38 @@ struct PhoneSendQueueProbe {
             let offer = peer.offers[0]
             peer.finish(offer.files[0], in: offer, on: library)
         }
+
+        let unreachablePeer = QueuePeer()
+        let unreachable = model(unreachablePeer)
+        unreachable.setTransferQueueProbeReachable(false)
+        try check(send([a2], using: unreachable) == [a2.id], "An unreachable watch does not prevent accepting a song")
+        guard let offlineRecord = unreachable.latestTransfer(for: a2) else {
+            throw ProbeFailure.failed("An offline submission has no visible record")
+        }
+        try check(offlineRecord.state == .preparing && unreachable.activeTransfers.map(\.id) == [offlineRecord.id] &&
+                  unreachablePeer.inventoryCount == 0 && unreachablePeer.offers.isEmpty,
+                  "The offline submission appears immediately without contacting the watch")
+        unreachable.cancel(offlineRecord)
+        try check(unreachable.activeTransfers.isEmpty && unreachable.pendingCount == 0,
+                  "An offline submission can be cancelled from the queue")
+        unreachable.setTransferQueueProbeReachable(true)
+        try await Task.sleep(nanoseconds: 80_000_000)
+        try check(unreachablePeer.inventoryCount == 0 && unreachablePeer.offers.isEmpty,
+                  "Reconnection cannot send a cancelled offline submission")
+
+        let emptyURL = directories[0].appendingPathComponent("empty.mp3")
+        try Data().write(to: emptyURL)
+        let empty = PhoneTrack(folder: a1.folder, fileName: emptyURL.lastPathComponent, url: emptyURL)
+        let mixedPeer = QueuePeer()
+        let mixed = model(mixedPeer)
+        try check(send([empty, b1], using: mixed) == [empty.id, b1.id], "The model accepts both files before checking their content")
+        try await ready(1, library: mixed, peer: mixedPeer)
+        let mixedOffer = mixedPeer.offers[0]
+        try check(mixed.latestTransfer(for: empty)?.state == .failed && mixedOffer.files.map(\.fileName) == [b1.fileName],
+                  "An unreadable file fails individually and the valid file reaches the watch")
+        mixedPeer.finish(mixedOffer.files[0], in: mixedOffer, on: mixed)
+        try check(mixed.latestTransfer(for: b1)?.state == .stored && mixed.pendingCount == 0,
+                  "The valid file completes with no unfinished work in the mixed batch")
 
         try check((try? Data(contentsOf: index)) == indexBefore, "Isolated send operations leave the real transfer index untouched")
         for item in [a1, a2, b1, b2] { try check(manager.fileExists(atPath: item.url.path), "Queue control preserves every source file") }

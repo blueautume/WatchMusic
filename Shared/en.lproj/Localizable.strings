@@ -264,6 +264,7 @@
 "正在校验并保存" = "Verifying and saving";
 "正在检查 %lld 首" = "Checking songs: %lld";
 "正在确认传输结果" = "Checking transfer result";
+"正在确认操作…" = "Confirming…";
 "正在聆听" = "Now Playing";
 "正在连接 Apple Watch…" = "Connecting to Apple Watch…";
 "正常速度" = "Normal Speed";
@@ -365,6 +366,7 @@
 "重命名歌曲失败：%@" = "Could not rename the song: %@";
 "重命名目录" = "Rename Folder";
 "重试" = "Retry";
+"重试传输 %@" = "Retry transfer of %@";
 "随机播放" = "Shuffle";
 "随身音乐" = "WatchMusic";
 "隐私与协议" = "Privacy and Terms";

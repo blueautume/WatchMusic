@@ -29,10 +29,11 @@ struct PhoneForegroundQueueProbe {
         try check(condition(), "Timed out: " + message)
     }
 
-    @MainActor private static func send(_ tracks: [PhoneTrack], on library: PhoneLibrary) async -> Set<String> {
-        await withCheckedContinuation { continuation in
-            library.send(tracks) { continuation.resume(returning: $0) }
-        }
+    @MainActor private static func send(_ tracks: [PhoneTrack], on library: PhoneLibrary) throws -> Set<String> {
+        var accepted: Set<String>?
+        library.send(tracks) { accepted = $0 }
+        guard let accepted else { throw ProbeFailure.failed("Send did not acknowledge the request synchronously") }
+        return accepted
     }
 
     @MainActor private static func ready(_ count: Int, on library: PhoneLibrary, peer: ForegroundQueuePeer) async throws {
@@ -93,15 +94,93 @@ struct PhoneForegroundQueueProbe {
                 from: Data(contentsOf: path.appendingPathComponent("lan-phone-queue.json")))
         }
 
+        // An offline send is visible and actionable before hashing or the
+        // Watch reply. Only the uncanceled selection survives model restart.
+        let offlineDirectory = try directory("offline")
+        let offlinePeer = ForegroundQueuePeer()
+        let offline = model(offlinePeer, at: offlineDirectory)
+        offline.setTransferQueueProbeReachable(false)
+        let offlineAccepted = try send([a1, a2], on: offline)
+        guard let survivor = offline.latestTransfer(for: a1), let canceled = offline.latestTransfer(for: a2) else {
+            throw ProbeFailure.failed("Offline send must create both task records immediately")
+        }
+        try check(offlineAccepted == [a1.id, a2.id] && offline.pendingCount == 2 && offline.activeTransfers.count == 2 &&
+                  offline.activeTransfers.allSatisfy { $0.state == .preparing && $0.sourceSHA256 == nil },
+                  "An offline tap acknowledges durable and visible work before preflight")
+        let submitted = try snapshot(offlineDirectory)
+        try check(submitted.orderedRecordIDs == [survivor.id, canceled.id] && submitted.submissions.isEmpty &&
+                  submitted.records?.filter { $0.state == .preparing }.count == 2 && offlinePeer.offers.isEmpty,
+                  "The same offline records and FIFO are committed to a single snapshot")
+        offline.pauseTransfers(ids: [survivor.id])
+        try check(offline.latestTransfer(for: a1)?.state == .paused, "Offline preflight can be paused locally")
+        offline.resumeTransfers(ids: [survivor.id])
+        try check(offline.latestTransfer(for: a1)?.state == .preparing && offlinePeer.offers.isEmpty,
+                  "Resuming an unverified song restores preflight while offline")
+        offline.pauseTransfers(ids: [survivor.id])
+        offline.cancel(canceled)
+        let afterCancel = try snapshot(offlineDirectory)
+        try check(afterCancel.orderedRecordIDs == [survivor.id] &&
+                  afterCancel.records?.first { $0.id == canceled.id }?.state == .cancelled,
+                  "Cancel removes the offline task from runnable FIFO before restart")
+        let offlineRestoredPeer = ForegroundQueuePeer()
+        let offlineRestored = model(offlineRestoredPeer, at: offlineDirectory)
+        offlineRestored.setTransferQueueProbeReachable(false)
+        try offlineRestored.restoreTransferQueueForProbe()
+        offlineRestored.setTransferQueueProbeReachable(true)
+        try check(offlineRestored.activeTransfers.map(\.id) == [survivor.id] &&
+                  offlineRestored.latestTransfer(for: a1)?.state == .paused && !offlineRestored.isLANActive,
+                  "Restart preserves the manual pause and the canceled selection remains absent")
+        offlineRestored.resumeTransfers(ids: [survivor.id])
+        try await ready(1, on: offlineRestored, peer: offlineRestoredPeer)
+        let offlineOffer = offlineRestoredPeer.offers[0]
+        try check(offlineOffer.files.map(\.id) == [survivor.id], "Explicit resume offers only the surviving offline song")
+        offlineRestoredPeer.finish(offlineOffer.files[0], in: offlineOffer, on: offlineRestored)
+        offlineRestored.clearAllTasks()
+
+        // Migrate legacy history and hidden submissions without duplicating
+        // them when the migrated snapshot is read again.
+        let legacyDirectory = try directory("legacy")
+        let legacyID = UUID().uuidString
+        let legacyRecord = TransferRecord(id: legacyID, folder: a1.folder, fileName: a1.fileName, createdAt: Date(),
+            state: .paused, message: "legacy pause", totalBytes: a1.bytes, transport: .localNetwork,
+            sourceVersion: try TransferSourceVersion.read(a1.url), sourceSHA256: try LANFileDigest.sha256(of: a1.url),
+            resumesWhenForeground: false)
+        let legacySnapshot = LANPhoneQueueSnapshot(orderedRecordIDs: [legacyID],
+            submissions: [[LANQueuedTrackLocation(folder: b1.folder, fileName: b1.fileName)]], globallyPaused: false)
+        try JSONEncoder().encode([legacyRecord]).write(to: legacyDirectory.appendingPathComponent("transfers.json"))
+        try JSONEncoder().encode(legacySnapshot).write(to: legacyDirectory.appendingPathComponent("lan-phone-queue.json"))
+        let legacyPeer = ForegroundQueuePeer()
+        let legacy = model(legacyPeer, at: legacyDirectory)
+        legacy.setTransferQueueProbeReachable(false)
+        try legacy.restoreTransferQueueForProbe()
+        try check(legacy.latestTransfer(for: a1)?.id == legacyID && legacy.latestTransfer(for: a1)?.state == .paused &&
+                  legacy.latestTransfer(for: b1)?.state == .preparing && legacy.pendingCount == 2,
+                  "Legacy migration preserves manual pause and creates a visible record from the hidden submission")
+        legacy.setTransferQueueProbeReachable(true)
+        try await ready(1, on: legacy, peer: legacyPeer)
+        let migratedOffer = legacyPeer.offers[0]
+        let migrated = try snapshot(legacyDirectory)
+        try check(migrated.submissions.isEmpty && migrated.records?.count == 2 &&
+                  migrated.orderedRecordIDs == [migratedOffer.files[0].id, legacyID],
+                  "Migrated snapshot owns both records and their current source and waiting order")
+        let legacyReloaded = model(ForegroundQueuePeer(), at: legacyDirectory)
+        try legacyReloaded.restoreTransferQueueForProbe()
+        try check(legacyReloaded.pendingCount == 2 && legacyReloaded.latestTransfer(for: b1)?.id == migratedOffer.files[0].id,
+                  "Reading the migrated snapshot retains IDs without replaying the old submission")
+        legacy.clearAllTasks()
+
         // Control Center/inactive must pause before the later background event.
         // Restore the current tail before the second list, without re-sending a
         // saved song or replacing manual pause intent.
         let activeDirectory = try directory("active")
         let activePeer = ForegroundQueuePeer()
         let active = model(activePeer, at: activeDirectory)
-        _ = await send([a1, a2], on: active)
+        _ = try send([a1, a2], on: active)
         try await ready(1, on: active, peer: activePeer)
-        _ = await send([b1, b2], on: active)
+        _ = try send([b1, b2], on: active)
+        try await wait("appended tracks complete preflight") {
+            active.latestTransfer(for: b1)?.state == .queued && active.latestTransfer(for: b2)?.state == .queued
+        }
         let first = activePeer.offers[0]
         activePeer.finish(first.files[0], in: first, on: active)
         let remainingIDs = [first.files[1].id, active.latestTransfer(for: b1)!.id, active.latestTransfer(for: b2)!.id]
@@ -132,8 +211,8 @@ struct PhoneForegroundQueueProbe {
         for file in recovered.files { activePeer.finish(file, in: recovered, on: active) }
         try check(active.storedTransfers.count == 4 && active.pendingCount == 0,
                   "Automatic foreground recovery finishes each remaining song once")
-        let skipped = await send([a1, a2, b1, b2], on: active)
-        try await Task.sleep(nanoseconds: 60_000_000)
+        let skipped = try send([a1, a2, b1, b2], on: active)
+        try await wait("resubmitted songs reconcile against Watch inventory") { active.pendingCount == 0 }
         try check(skipped == [a1.id, a2.id, b1.id, b2.id] && activePeer.offers.count == 2 && active.pendingCount == 0,
                   "Already saved files are checked against Watch inventory and do not re-enter the queue")
         active.clearAllTasks()
@@ -141,7 +220,7 @@ struct PhoneForegroundQueueProbe {
         // A direct background transition follows the same rule as inactive.
         let backgroundPeer = ForegroundQueuePeer()
         let background = model(backgroundPeer)
-        _ = await send([a1, a2], on: background)
+        _ = try send([a1, a2], on: background)
         try await ready(1, on: background, peer: backgroundPeer)
         background.sceneDidEnterBackground()
         try await wait("background source pauses") { !backgroundPeer.automaticPauses.isEmpty }
@@ -157,7 +236,7 @@ struct PhoneForegroundQueueProbe {
         // Manual per-song and global pauses survive lifecycle changes.
         let manualPeer = ForegroundQueuePeer()
         let manual = model(manualPeer)
-        _ = await send([a1, a2], on: manual)
+        _ = try send([a1, a2], on: manual)
         try await ready(1, on: manual, peer: manualPeer)
         let manualFirst = manualPeer.offers[0]
         let manualID = manualFirst.files[1].id
@@ -185,7 +264,7 @@ struct PhoneForegroundQueueProbe {
         // transition even if the old Watch resume acknowledgment is delayed.
         let resumePeer = ForegroundQueuePeer()
         let resumeRace = model(resumePeer)
-        _ = await send([a1], on: resumeRace)
+        _ = try send([a1], on: resumeRace)
         try await ready(1, on: resumeRace, peer: resumePeer)
         let resumeOriginal = resumePeer.offers[0]
         let resumeID = resumeOriginal.files[0].id
@@ -223,7 +302,7 @@ struct PhoneForegroundQueueProbe {
         let globalPeer = ForegroundQueuePeer()
         let globalDirectory = try directory("global")
         let global = model(globalPeer, at: globalDirectory)
-        _ = await send([a1, a2], on: global)
+        _ = try send([a1, a2], on: global)
         try await ready(1, on: global, peer: globalPeer)
         global.pauseTransfers()
         try await wait("global user pause") { !global.isUpdatingTransferControls }
@@ -244,7 +323,7 @@ struct PhoneForegroundQueueProbe {
         let restartOriginal = try directory("restart-original")
         let restartPeer = ForegroundQueuePeer()
         let restart = model(restartPeer, at: restartOriginal)
-        _ = await send([a1, a2, b1, b2], on: restart)
+        _ = try send([a1, a2, b1, b2], on: restart)
         try await ready(1, on: restart, peer: restartPeer)
         let original = restartPeer.offers[0]
         let userPausedID = original.files[3].id
@@ -295,19 +374,25 @@ struct PhoneForegroundQueueProbe {
         let preflight = model(preflightPeer, at: preflightDirectory)
         preflightPeer.holdNextInventory = true
         var preflightCallbacks = 0
-        preflight.send([a1]) { _ in preflightCallbacks += 1 }
+        var preflightAccepted = Set<String>()
+        preflight.send([a1]) { preflightCallbacks += 1; preflightAccepted = $0 }
+        guard let preflightID = preflight.latestTransfer(for: a1)?.id else {
+            throw ProbeFailure.failed("The preflight record must exist before the Watch replies")
+        }
+        try check(preflightAccepted == [a1.id] && preflightCallbacks == 1 && preflight.activeTransfers.map(\.id) == [preflightID],
+                  "Preflight provides a visible task and a single immediate selection acknowledgment")
         try await wait("preflight before inactive") { preflightPeer.hasHeldInventory }
         preflight.sceneDidBecomeInactive()
         let preflightSnapshot = try snapshot(preflightDirectory)
-        try check(!preflight.isLANActive && preflightSnapshot.submissions.flatMap { $0 }.contains {
-            $0.folder == a1.folder && $0.fileName == a1.fileName
-        }, "Inactive persists a selected song even before it receives a transfer record")
+        try check(!preflight.isLANActive && preflightSnapshot.orderedRecordIDs == [preflightID] &&
+                  preflightSnapshot.records?.first { $0.id == preflightID }?.resumesWhenForeground == true,
+                  "Inactive persists the same preflight record with automatic recovery intent")
         preflight.sceneDidBecomeActive()
         try await ready(1, on: preflight, peer: preflightPeer)
         preflightPeer.releaseInventory()
         try await Task.sleep(nanoseconds: 80_000_000)
-        try check(preflightPeer.offers.count == 1 && preflight.pendingCount == 1 && preflightCallbacks == 1,
-                  "Resumed preflight produces one offer and one completion despite its stale inventory reply")
+        try check(preflightPeer.offers.count == 1 && preflightPeer.offers[0].files.map(\.id) == [preflightID] && preflightCallbacks == 1,
+                  "Resumed preflight keeps its identity and does not repeat the original acknowledgment")
         preflightPeer.finish(preflightPeer.offers[0].files[0], in: preflightPeer.offers[0], on: preflight)
         preflight.clearAllTasks()
 
@@ -320,20 +405,22 @@ struct PhoneForegroundQueueProbe {
         inventoryPausePeer.rejectNextInventoryTemporarily = true
         var inventoryPauseCallbacks = 0
         inventoryPause.send([a1]) { _ in inventoryPauseCallbacks += 1 }
-        try await wait("Watch inventory lifecycle refusal") { inventoryPausePeer.inventoryRefusals == 1 }
-        try check(inventoryPause.errorMessage == nil && inventoryPauseCallbacks == 0,
-                  "Temporary Watch inventory cancellation does not complete the selection or show an upgrade error")
-        try check(try snapshot(inventoryPauseDirectory).submissions.flatMap { $0 }.contains {
-            $0.folder == a1.folder && $0.fileName == a1.fileName
-        }, "Watch inventory cancellation preserves the persisted submission")
+        try await wait("Watch inventory lifecycle refusal") {
+            inventoryPausePeer.inventoryRefusals == 1 && inventoryPause.latestTransfer(for: a1)?.message == "等待手表 App 打开后继续"
+        }
+        try check(inventoryPause.errorMessage == nil && inventoryPauseCallbacks == 1,
+                  "Temporary Watch inventory cancellation keeps the local acknowledgment and avoids an upgrade error")
+        try check(try snapshot(inventoryPauseDirectory).records?.contains {
+            $0.folder == a1.folder && $0.fileName == a1.fileName && $0.state == .preparing
+        } == true, "Watch inventory cancellation keeps the same visible task eligible for retry")
         try await ready(1, on: inventoryPause, peer: inventoryPausePeer)
         try check(inventoryPauseCallbacks == 1 && inventoryPause.pendingCount == 1,
                   "Automatic retry after Watch inventory cancellation produces one offer and one completion")
         inventoryPausePeer.finish(inventoryPausePeer.offers[0].files[0], in: inventoryPausePeer.offers[0], on: inventoryPause)
         inventoryPause.clearAllTasks()
 
-        // Clearing an unfinished preflight cancels its completion once and
-        // cannot be undone by lifecycle changes or its late Watch response.
+        // Clearing an acknowledged preflight cannot be undone by lifecycle
+        // changes or its late Watch response.
         let clearPeer = ForegroundQueuePeer()
         let clear = model(clearPeer)
         clearPeer.holdNextInventory = true
@@ -347,7 +434,7 @@ struct PhoneForegroundQueueProbe {
         clearPeer.releaseInventory()
         clear.retryAutomaticTransfersForProbe()
         try await Task.sleep(nanoseconds: 80_000_000)
-        try check(callbackCount == 1 && clearedHandled.isEmpty, "Clear completes selection exactly once")
+        try check(callbackCount == 1 && clearedHandled == [a1.id], "Clear does not repeat or reverse the original acknowledgment")
         try check(clear.transfers.isEmpty && clearPeer.offers.isEmpty && !clear.isLANActive,
                   "Clear stays empty after foregrounding and a stale inventory response")
 
@@ -356,14 +443,14 @@ struct PhoneForegroundQueueProbe {
         let statusPeer = ForegroundQueuePeer()
         let statusRace = model(statusPeer)
         statusPeer.holdNextStatus = true
-        _ = await send([a1], on: statusRace)
+        _ = try send([a1], on: statusRace)
         try await wait("old preparation status held") { statusPeer.hasHeldStatus }
         try check(statusRace.isPreparingLAN && statusPeer.offers.isEmpty,
                   "Preparation A has not offered songs while its status response is held")
         statusRace.clearAllTasks()
         try check(!statusRace.isLANActive && statusRace.transfers.isEmpty,
                   "Clear invalidates preparation A before its status response arrives")
-        _ = await send([b1], on: statusRace)
+        _ = try send([b1], on: statusRace)
         try await ready(1, on: statusRace, peer: statusPeer)
         let statusReplacement = statusPeer.offers[0]
         let stopsBeforeStaleStatus = statusPeer.stops.count
@@ -378,23 +465,33 @@ struct PhoneForegroundQueueProbe {
                   "Replacement B finishes after the canceled preparation's stale status")
         statusRace.clearAllTasks()
 
-        // Brief unreachability parks work. Repeated recovery triggers cannot
-        // build concurrent sources or break the resumed source session.
+        // WatchConnectivity reachability can disappear while the accepted
+        // HTTP source still serves the batch. Reconcile the remaining files.
         let networkPeer = ForegroundQueuePeer()
         let network = model(networkPeer)
-        _ = await send([a1, b1], on: network)
+        _ = try send([a1, b1], on: network)
         try await ready(1, on: network, peer: networkPeer)
         let networkFirst = networkPeer.offers[0]
+        networkPeer.finish(networkFirst.files[0], in: networkFirst, on: network)
+        let remainingFile = networkFirst.files[1]
         network.setTransferQueueProbeReachable(false)
-        try await wait("unreachable source parks") { !networkPeer.automaticPauses.isEmpty }
-        try check(!network.isLANActive && network.transfers.allSatisfy { $0.state == .paused && $0.resumesWhenForeground == true },
-                  "A temporary connection loss preserves automatically resumable records")
         for _ in 0..<5 { network.retryAutomaticTransfersForProbe() }
         try await Task.sleep(nanoseconds: 80_000_000)
-        try check(networkPeer.offers.count == 1 && networkPeer.offerAttempts == 1,
-                  "Unreachable retry triggers do not repeatedly submit offers")
+        try check(network.activeLANSessionID == networkFirst.sessionID && networkPeer.automaticPauses.isEmpty &&
+                  networkPeer.offers.count == 1 && network.latestTransfer(for: b1)?.state == .queued,
+                  "Reachability loss alone keeps the accepted source and active record")
         network.setTransferQueueProbeReachable(true)
-        network.retryAutomaticTransfersForProbe()
+        try await wait("reconnect requests bound status") {
+            networkPeer.statusRequests.contains { $0.sessionID == networkFirst.sessionID && $0.fileIDs == [remainingFile.id] }
+        }
+        try check(network.activeLANSessionID == networkFirst.sessionID && networkPeer.offerAttempts == 1 && networkPeer.stops.isEmpty,
+                  "A bound status reply preserves the accepted session and credentials")
+
+        // If Watch has no matching state after reconnecting, a scoped empty
+        // response causes a fresh source for the remaining file only.
+        network.setTransferQueueProbeReachable(false)
+        networkPeer.loseSession()
+        network.setTransferQueueProbeReachable(true)
         try await ready(2, on: network, peer: networkPeer)
         let networkRecovered = networkPeer.offers[1]
         let stoppedBeforeRetry = networkPeer.stops.count
@@ -403,8 +500,9 @@ struct PhoneForegroundQueueProbe {
         try check(networkPeer.offers.count == 2 && networkPeer.offerAttempts == 2 &&
                   networkPeer.stops.count == stoppedBeforeRetry && network.activeLANSessionID == networkRecovered.sessionID,
                   "Repeated reconnect signals leave the single recovered source intact")
-        try check(networkRecovered.files.map(\.id) == networkFirst.files.map(\.id),
-                  "Network recovery preserves queue identities and FIFO")
+        try check(networkRecovered.files.map(\.id) == [remainingFile.id] && networkRecovered.sessionID != networkFirst.sessionID &&
+                  networkRecovered.token != networkFirst.token && network.storedTransfers.count == 1,
+                  "An empty scoped reply rebuilds only unfinished work with fresh credentials")
         for file in networkRecovered.files { networkPeer.finish(file, in: networkRecovered, on: network) }
         network.clearAllTasks()
 
@@ -413,7 +511,7 @@ struct PhoneForegroundQueueProbe {
         let refusedPeer = ForegroundQueuePeer()
         refusedPeer.rejectNextOffer = true
         let refused = model(refusedPeer)
-        _ = await send([b1], on: refused)
+        _ = try send([b1], on: refused)
         try await wait("temporary offer rejection") { refusedPeer.offerAttempts == 1 && !refused.isLANActive }
         try check(refused.transfers.count == 1 && refused.transfers[0].state == .paused &&
                   refused.transfers[0].resumesWhenForeground == true,
@@ -427,7 +525,7 @@ struct PhoneForegroundQueueProbe {
         // Watch lifecycle notifications follow automatic pause semantics too.
         let watchPeer = ForegroundQueuePeer()
         let watch = model(watchPeer)
-        _ = await send([a1, b1], on: watch)
+        _ = try send([a1, b1], on: watch)
         try await ready(1, on: watch, peer: watchPeer)
         let watchFirst = watchPeer.offers[0]
         let watchFile = watchFirst.files[0]
@@ -450,7 +548,7 @@ struct PhoneForegroundQueueProbe {
         let withdrawalRoot = try directory("privacy-withdrawal")
         let withdrawalPeer = ForegroundQueuePeer()
         let withdrawal = model(withdrawalPeer, at: withdrawalRoot)
-        _ = await send([a1, b1], on: withdrawal)
+        _ = try send([a1, b1], on: withdrawal)
         try await ready(1, on: withdrawal, peer: withdrawalPeer)
         let withdrawalOffer = withdrawalPeer.offers[0]
         let manualFile = withdrawalOffer.files[1]
@@ -460,9 +558,8 @@ struct PhoneForegroundQueueProbe {
         }
         withdrawal.shutdownForPrivacyWithdrawal()
         withdrawal.shutdownForPrivacyWithdrawal()
-        let withdrawnTransfers = try Data(contentsOf: withdrawalRoot.appendingPathComponent("transfers.json"))
         let withdrawnQueue = try Data(contentsOf: withdrawalRoot.appendingPathComponent("lan-phone-queue.json"))
-        try check(!withdrawal.isLANActive && !withdrawal.canSend && !withdrawal.isImporting,
+        try check(!withdrawal.isLANActive && !withdrawal.isImporting,
                   "Withdrawal closes the source and disables business work idempotently")
         try check(withdrawal.transfers.allSatisfy { $0.state == .paused } &&
                   withdrawal.transfers.first { $0.id == manualFile.id }?.resumesWhenForeground == false,
@@ -476,12 +573,11 @@ struct PhoneForegroundQueueProbe {
         withdrawal.clearAllTasks()
         withdrawal.clearCompletedTransfers()
         withdrawal.importFiles([fixture], into: PhoneFolder(name: folders[0].lastPathComponent))
-        let refusedAfterWithdrawal = await send([a2], on: withdrawal)
+        let refusedAfterWithdrawal = try send([a2], on: withdrawal)
         try check(refusedAfterWithdrawal.isEmpty && !withdrawal.createFolder(prefix + "-withdrawn"),
                   "A retired model rejects both new transfer submissions and file mutations")
         try await Task.sleep(nanoseconds: 80_000_000)
         try check(withdrawalPeer.offers.count == 1 && !withdrawal.isLANActive &&
-                  (try? Data(contentsOf: withdrawalRoot.appendingPathComponent("transfers.json"))) == withdrawnTransfers &&
                   (try? Data(contentsOf: withdrawalRoot.appendingPathComponent("lan-phone-queue.json"))) == withdrawnQueue,
                   "Late receipts and foreground callbacks cannot restart or rewrite a retired model")
         let agreedAgain = model(withdrawalPeer, at: withdrawalRoot)
@@ -530,6 +626,7 @@ private final class ForegroundQueuePeer {
     var offerAttempts = 0
     var rejectNextOffer = false
     var stops: [LANTransferCommand] = []
+    var statusRequests: [LANTransferCommand] = []
     var automaticPauses: [LANTransferCommand] = []
     var holdNextInventory = false
     var rejectNextInventoryTemporarily = false
@@ -560,9 +657,15 @@ private final class ForegroundQueuePeer {
             return try inventoryReply(request)
         }
         if let command = LANTransferWire.decode(LANTransferCommand.self, from: message, type: LANTransferWire.commandType) {
-            if command.kind == .status, holdNextStatus {
-                holdNextStatus = false
-                return try await withCheckedThrowingContinuation { heldStatus = $0 }
+            if command.kind == .status {
+                statusRequests.append(command)
+                if holdNextStatus {
+                    holdNextStatus = false
+                    return try await withCheckedThrowingContinuation { heldStatus = $0 }
+                }
+                if command.fileIDs != nil, current?.sessionID != command.sessionID {
+                    return try LANTransferWire.message(LANTransferControlReply(events: []), type: LANTransferWire.controlReplyType)
+                }
             }
             if command.kind == .resume, command.automaticPause != true, holdNextResume {
                 holdNextResume = false
@@ -600,6 +703,12 @@ private final class ForegroundQueuePeer {
             return ["accepted": true]
         }
         throw PeerFailure.unknownMessage
+    }
+
+    func loseSession() {
+        current = nil
+        pending.removeAll()
+        phases.removeAll()
     }
 
     func finish(_ file: LANTransferFile, in offer: LANTransferOffer, on library: PhoneLibrary) {

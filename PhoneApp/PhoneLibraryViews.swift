@@ -155,6 +155,7 @@ struct FolderDetailView: View {
                         Button { library.send(tracks) } label: {
                             Image(systemName: "applewatch.and.arrow.forward")
                                 .font(.title3).frame(width: 56, height: 48)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain).foregroundStyle(AppPalette.accent)
                         .background(AppPalette.surface, in: RoundedRectangle(cornerRadius: 14))
@@ -250,25 +251,20 @@ private struct TrackSelectionMenu: View {
     let processed: (Set<String>) -> Void
     @State private var moving = false
     @State private var deleting = false
-    @State private var isSending = false
 
     var body: some View {
         Menu {
             Button(L10n.text("发送到手表"), systemImage: "applewatch.and.arrow.forward") {
-                isSending = true
-                library.send(tracks, retryPending: true) { ids in
-                    isSending = false; processed(ids)
-                }
+                library.send(tracks, retryPending: true, completion: processed)
             }
             Button(L10n.text("移动到目录"), systemImage: "folder") { moving = true }
                 .disabled(isUpdatingTransferControls || folders.isEmpty)
             Button(L10n.text("删除手机副本"), systemImage: "trash", role: .destructive) { deleting = true }
                 .disabled(isUpdatingTransferControls)
         } label: {
-            if isSending { ProgressView().controlSize(.small) }
-            else { Text(L10n.text("操作")) }
+            Text(L10n.text("操作"))
         }
-        .disabled(tracks.isEmpty || isImporting || isSending)
+        .disabled(tracks.isEmpty || isImporting)
         .accessibilityLabel(L10n.format("操作所选 %lld 首歌曲", tracks.count))
         .confirmationDialog(L10n.text("移动所选歌曲"), isPresented: $moving, titleVisibility: .visible) {
             ForEach(folders) { folder in

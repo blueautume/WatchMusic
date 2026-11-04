@@ -23,10 +23,12 @@ struct LibraryView: View {
     @State private var tab = 0
     @State private var hasPlayer = false
     @State private var tabBarClearance: CGFloat = 68
+    @State private var transferSummary: TransferSummary?
 
     private var isInSettings: Bool { tab == 1 && showingSettings }
 
     var body: some View {
+        let summary = transferSummary?.message
         TabView(selection: $tab) {
             NavigationStack {
                 LibraryHome(openPlayer: { showingPlayer = true })
@@ -59,10 +61,25 @@ struct LibraryView: View {
         }
         .environment(\.pinnedPlayerClearance, hasPlayer && !isInSettings ? PinnedPlayerLayout.listClearance : 0)
         .onReceive(playerPresence) { hasPlayer = $0 }
-        .overlay(alignment: .top) { TransferSummaryToast() }
+        .onReceive(library.$transferSummary) { message in
+            transferSummary = message.map { TransferSummary(message: $0) }
+        }
+        .task(id: transferSummary?.id) {
+            guard let summaryID = transferSummary?.id else { return }
+            do { try await Task.sleep(nanoseconds: 4_000_000_000) }
+            catch { return }
+            if transferSummary?.id == summaryID { transferSummary = nil }
+        }
+        .overlay(alignment: .top) {
+            if !showingPlayer, let summary { TransferSummaryToast(summary: summary) }
+        }
         .overlay { PhonePlayerErrorPresenter(isShowingPlayer: showingPlayer) }
         .sheet(isPresented: $showingPlayer) {
-            PhoneNowPlayingView().presentationDragIndicator(.visible)
+            PhoneNowPlayingView()
+                .overlay(alignment: .top) {
+                    if let summary { TransferSummaryToast(summary: summary) }
+                }
+                .presentationDragIndicator(.visible)
         }
         .alert(L10n.text("提示"), isPresented: Binding(
             get: { !showingPlayer && library.errorMessage != nil },
@@ -119,30 +136,23 @@ struct LibraryView: View {
     }
 }
 
+private struct TransferSummary {
+    let id = UUID()
+    let message: String
+}
+
 private struct TransferSummaryToast: View {
-    @EnvironmentObject private var library: PhoneLibrary
-    @State private var summary: String?
+    let summary: String
 
     var body: some View {
-        Group {
-            if let summary {
-                Text(L10n.message(summary))
-                    .font(.caption.weight(.medium))
-                    .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
-                    .foregroundStyle(AppPalette.textPrimary)
-                    .padding(.horizontal, 16).padding(.vertical, 12)
-                    .background(.regularMaterial, in: Capsule())
-                    .padding(.horizontal, 20).padding(.top, 8)
-            }
-        }
-        .allowsHitTesting(false)
-        .onReceive(library.$transferSummary) { summary = $0 }
-        .task(id: summary) {
-            guard summary != nil else { return }
-            do { try await Task.sleep(nanoseconds: 4_000_000_000) }
-            catch { return }
-            summary = nil
-        }
+        Text(L10n.message(summary))
+            .font(.caption.weight(.medium))
+            .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+            .foregroundStyle(AppPalette.textPrimary)
+            .padding(.horizontal, 16).padding(.vertical, 12)
+            .background(.regularMaterial, in: Capsule())
+            .padding(.horizontal, 20).padding(.top, 8)
+            .allowsHitTesting(false)
     }
 }
 

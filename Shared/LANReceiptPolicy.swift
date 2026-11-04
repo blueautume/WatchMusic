@@ -11,7 +11,7 @@ enum LANReceiptPolicy {
               event.totalBytes == totalBytes, event.completedBytes == totalBytes else { return false }
         switch state {
         case .queued, .paused, .awaitingReceipt, .failed, .cancelled: return true
-        case .stored, .outdated: return false
+        case .preparing, .stored, .outdated: return false
         }
     }
 

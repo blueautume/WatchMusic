@@ -16,4 +16,5 @@ struct LANPhoneQueueSnapshot: Codable {
     var orderedRecordIDs: [String]
     var submissions: [[LANQueuedTrackLocation]]
     var globallyPaused: Bool
+    var records: [TransferRecord]? = nil
 }

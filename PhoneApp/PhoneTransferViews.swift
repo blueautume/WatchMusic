@@ -12,24 +12,23 @@ struct TransfersView: View {
     @State private var selectedTab = TransferListTab.inProgress
     @State private var clearingTasks = false
 
-    private var records: [TransferRecord] {
-        selectedTab == .inProgress ? library.activeTransfers : library.storedTransfers
-    }
-
     var body: some View {
+        let active = library.activeTransfers
+        let stored = library.storedTransfers
+        let records = selectedTab == .inProgress ? active : stored
         VStack(spacing: 0) {
             TransferHeading(progress: library.transferProgress, showsEstimate: selectedTab == .inProgress)
                 .padding(.horizontal, 20).padding(.top, 4).padding(.bottom, 18)
             Picker(L10n.text("传输记录"), selection: $selectedTab) {
                 ForEach(TransferListTab.allCases) { tab in
-                    let count = tab == .inProgress ? library.activeTransfers.count : library.storedTransfers.count
+                    let count = tab == .inProgress ? active.count : stored.count
                     Text("\(tab.title) · \(count)").tag(tab)
                 }
             }
             .pickerStyle(.segmented).padding(.horizontal, 20).padding(.bottom, 16)
 
             if selectedTab == .inProgress && !records.isEmpty {
-                queueControl.padding(.horizontal, 20).padding(.bottom, 12)
+                queueControl(count: records.count).padding(.horizontal, 20).padding(.bottom, 12)
             }
             ScrollView {
                 if records.isEmpty {
@@ -37,7 +36,7 @@ struct TransfersView: View {
                         selectedTab == .inProgress ? L10n.text("没有进行中的传输") : L10n.text("还没有已传输的记录"),
                         systemImage: selectedTab == .inProgress ? "arrow.up.doc" : "checkmark.circle"
                     ).padding(.top, 36)
-                    if selectedTab == .inProgress && !library.canSend {
+                    if selectedTab == .inProgress {
                         Label(L10n.message(library.connectionDescription), systemImage: "applewatch")
                             .font(.caption).foregroundStyle(AppPalette.textSecondary).padding(.horizontal, 20)
                             .fixedSize(horizontal: false, vertical: true)
@@ -77,30 +76,32 @@ struct TransfersView: View {
         #endif
     }
 
-    private var queueControl: some View {
-        ViewThatFits(in: .horizontal) {
+    private func queueControl(count: Int) -> some View {
+        let countLabel = Text(L10n.format("%lld 项任务", count)).font(.subheadline).foregroundStyle(AppPalette.textSecondary)
+        return ViewThatFits(in: .horizontal) {
             HStack {
-                queueCount.fixedSize()
+                countLabel.fixedSize()
                 Spacer()
                 queueButton.fixedSize()
             }
             VStack(alignment: .leading, spacing: 8) {
-                queueCount
+                countLabel
                 queueButton
             }.frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    private var queueCount: some View {
-        Text(L10n.format("%lld 项任务", records.count)).font(.subheadline).foregroundStyle(AppPalette.textSecondary)
-    }
-
     private var queueButton: some View {
-        Button { library.toggleTransfers() } label: {
+        let shouldStart = library.shouldStartTransfers()
+        return Button { library.toggleTransfers() } label: {
             HStack(spacing: 6) {
-                if library.isUpdatingTransferControls { ProgressView().controlSize(.small) }
-                else { Image(systemName: library.shouldStartTransfers() ? "play.fill" : "pause.fill") }
-                Text(library.shouldStartTransfers() ? L10n.text("全部开始") : L10n.text("全部暂停"))
+                if library.isUpdatingTransferControls {
+                    ProgressView().controlSize(.small)
+                    Text(L10n.text("正在确认操作…"))
+                } else {
+                    Image(systemName: shouldStart ? "play.fill" : "pause.fill")
+                    Text(shouldStart ? L10n.text("全部开始") : L10n.text("全部暂停"))
+                }
             }.font(.subheadline.weight(.medium)).frame(minHeight: 36)
         }
         .disabled(!library.canToggleTransfers())
@@ -192,22 +193,32 @@ private struct TransferRow: View {
         switch record.state {
         case .stored: return .green
         case .failed: return .red
-        case .cancelled, .paused: return AppPalette.textSecondary
+        case .cancelled, .paused, .preparing: return AppPalette.textSecondary
         case .queued: return hasStarted ? AppPalette.accent : AppPalette.textSecondary
         case .awaitingReceipt, .outdated: return AppPalette.accent
         }
     }
     private var status: String {
+        if (record.state == .preparing || record.state == .outdated), !record.message.isEmpty {
+            return L10n.message(record.message)
+        }
         if record.state == .awaitingReceipt {
             return record.method == .localNetwork ? L10n.text("正在校验和保存") : L10n.text("等待手表确认")
         }
         guard record.state == .queued else { return record.state.title }
-        if isCurrent && isPreparing && record.lanSessionID == nil { return L10n.text("正在准备…") }
+        if isCurrent && isPreparing { return L10n.text("正在准备…") }
         if fraction >= 1 { return L10n.text("等待手表确认") }
         if metrics?.isTransferring == true { return L10n.text("传输中") }
         if hasStarted { return L10n.text("等待继续传输") }
         if isCurrent && isAwaitingAcceptance { return L10n.text("等待手表接收") }
-        return L10n.text("等待传输")
+        return record.message.isEmpty ? record.state.title : L10n.message(record.message)
+    }
+
+    private var statusDetail: String? {
+        guard record.state == .failed || record.state == .paused,
+              !record.message.isEmpty else { return nil }
+        let message = L10n.message(record.message)
+        return message == status ? nil : message
     }
 
     var body: some View {
@@ -219,8 +230,8 @@ private struct TransferRow: View {
                     Text(record.songTitle).font(.subheadline.weight(.semibold)).lineLimit(2)
                     Text(status).font(.caption).foregroundStyle(tint)
                         .fixedSize(horizontal: false, vertical: true)
-                    if record.state == .failed && !record.message.isEmpty && record.message != record.state.title {
-                        Text(L10n.message(record.message)).font(.caption2).foregroundStyle(AppPalette.textSecondary)
+                    if let statusDetail {
+                        Text(statusDetail).font(.caption2).foregroundStyle(AppPalette.textSecondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     if record.state == .stored && record.totalBytes > 0 {
@@ -274,23 +285,27 @@ private struct TransferRow: View {
     }
 
     @ViewBuilder private var controls: some View {
-        if record.state == .queued || record.state == .paused || (record.method == .localNetwork && record.state == .awaitingReceipt) {
+        if record.state.isPending {
             HStack(spacing: 0) {
                 if canToggle {
+                    let retriesReceipt = record.method == .system && record.state == .awaitingReceipt
+                    let toggleSymbol = shouldStart ? "play.circle" : "pause.circle"
+                    let toggleLabel = shouldStart ? L10n.format("继续传输 %@", record.songTitle) : L10n.format("暂停传输 %@", record.songTitle)
                     Button { library.toggleTransfers(ids: [record.id]) } label: {
-                        Image(systemName: shouldStart ? "play.circle" : "pause.circle")
-                            .font(.title3).frame(width: 40, height: 44)
+                        Image(systemName: retriesReceipt ? "arrow.clockwise.circle" : toggleSymbol)
+                            .font(.title3).frame(width: 44, height: 44).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain).foregroundStyle(AppPalette.accent).disabled(controlsBusy)
-                    .accessibilityLabel((shouldStart ? L10n.format("继续传输 %@", record.songTitle) : L10n.format("暂停传输 %@", record.songTitle)))
+                    .accessibilityLabel(retriesReceipt ? L10n.format("重试传输 %@", record.songTitle) : toggleLabel)
                 }
                 Button { library.cancel(record) } label: {
-                    Image(systemName: "xmark.circle").font(.title3).frame(width: 40, height: 44)
+                    Image(systemName: "xmark.circle").font(.title3).frame(width: 44, height: 44).contentShape(Rectangle())
                 }
-                .buttonStyle(.plain).foregroundStyle(AppPalette.textSecondary).disabled(controlsBusy)
+                .buttonStyle(.plain).foregroundStyle(AppPalette.textSecondary)
+                .disabled(controlsBusy && record.state != .preparing)
                 .accessibilityLabel(L10n.format("取消传输 %@", record.songTitle))
             }
-        } else if record.state != .stored && !record.state.isPending {
+        } else if record.state == .failed || record.state == .outdated {
             Button(L10n.text("重试")) { library.retry(record) }
                 .font(.caption.weight(.semibold)).buttonStyle(.bordered).tint(AppPalette.accent)
                 .frame(minHeight: 44).disabled(controlsBusy)

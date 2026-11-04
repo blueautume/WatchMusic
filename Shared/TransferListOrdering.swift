@@ -48,6 +48,7 @@ enum TransferListOrdering {
             // A paused transfer keeps its place even after rate estimates stale.
             return received > 0 || metrics[record.id]?.isTransferring == true ? 0 : 2
         case .awaitingReceipt: return 1
+        case .preparing: return 2
         case .paused: return 3
         case .failed, .cancelled, .outdated: return 4
         case .stored: return 5
