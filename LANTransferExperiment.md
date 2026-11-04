@@ -44,7 +44,7 @@
 
 所有页面统一隐藏系统导航栏，使用44pt点击范围的小型自定义返回/关闭按钮，避免切换时重新计算安全区。画布不扣时钟整条区域，滚动内容不被祖先矩形裁切；只对文字和操作控件做曲面边距及系统时钟角落避让。系统键盘和确认弹窗沿用 watchOS 原生呈现。
 
-自动旋转和电量显示不改变系统屏幕策略，本轮不请求额外显示活动。[Always On](https://developer.apple.com/documentation/watchos-apps/designing-your-app-for-the-always-on-state) 由设备能力和用户设置决定，系统仍会降低亮度和界面更新频率，并可能返回表盘。生命周期转为 inactive 或 background 时自动暂停传输，回到 active 后再继续。
+手表在前台接收时请求防止自动息屏。下载、校验保存和同批切歌共用一个请求，暂停、取消、完成或离开活跃状态后释放。实际亮度和息屏由设备与系统决定，生命周期转为 inactive 或 background 时自动暂停传输，回到 active 后再继续。[Apple 常亮屏说明](https://developer.apple.com/documentation/watchos-apps/designing-your-app-for-the-always-on-state)
 
 ## 实现与范围
 
@@ -110,6 +110,8 @@ Tests/run-lan-memory-probe.sh IPHONE_SIMULATOR_UDID
 ```
 
 它通过生产 `start → prepare → digest` 处理 3×512 MiB 稀疏文件，检查独立 SHA-256、实际进程内存和活跃读取中的取消。摘要和发送每 64 KiB 及时释放 Foundation 临时读取对象；两端摘要共用同一实现，取消检查仍逐块执行。探针仅验证准备路径，不解码或播放稀疏文件，也不代表完整 App 或真机的总内存。
+
+仅运行前台握手场景：`python3 Tests/run-watch-lan-probe.py WATCH_SIMULATOR_UDID --handshake-only`。探针延迟旧后台会话清理，验证手表仍能回复状态、接受清单、发出 HTTP 请求并保存歌曲；模拟器直接调用手表的消息处理入口，不代表真机无线连接验收。
 
 仅运行前台暂停、恢复和进程重建场景：
 

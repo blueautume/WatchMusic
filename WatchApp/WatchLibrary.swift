@@ -42,6 +42,7 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
     private var lanFiles: [String: LANTransferFile] = [:]
     private var lanSessionID: String?
     private var lanAppForeground = false
+    private var lanDisplayActivity: (any NSObjectProtocol)?
     #if DEBUG
     private var debugLANEvents: [LANTransferEvent] = []
     private var debugLANEventLog: URL?
@@ -80,6 +81,7 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
         lanReceiver.onUpdate = { [weak self] status in
             guard let self else { return }
             self.lanReception = status
+            self.updateLANDisplayActivity()
             if status == nil {
                 #if DEBUG
                 self.appendLANLifecycleEvent("sessionFinished")
@@ -91,6 +93,11 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
             self.updateReceivingState()
         }
         lanReceiver.onEvent = { [weak self] event in self?.reportLANEvent(event) }
+        #if DEBUG
+        lanReceiver.onLegacyCleanupForProbe = { [weak self] in
+            self?.appendLANLifecycleEvent("probeLegacyCleanupFinished")
+        }
+        #endif
         if let restored = lanReceiver.restore() {
             lanSessionID = restored.sessionID
             lanFiles = Dictionary(uniqueKeysWithValues: restored.files.map { ($0.id, $0) })
@@ -324,9 +331,30 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
 
     func updateLANForeground(_ foreground: Bool) {
         lanAppForeground = foreground
+        updateLANDisplayActivity()
         lanInventory.setForeground(foreground)
         lanReceiver.setForeground(foreground)
         // Inactive/blank-screen states pause LAN work until a fresh phone offer.
+    }
+
+    private func updateLANDisplayActivity() {
+        // Keep one request through progress, validation, and the next file in
+        // the batch. A paused receiver no longer needs to hold the display.
+        let needsDisplay = lanAppForeground && lanReception?.isPaused == false
+        if needsDisplay, lanDisplayActivity == nil {
+            lanDisplayActivity = ProcessInfo.processInfo.beginActivity(
+                options: .idleDisplaySleepDisabled, reason: "WatchMusic LAN transfer"
+            )
+            #if DEBUG
+            appendLANLifecycleEvent("lanDisplayActivityBegan")
+            #endif
+        } else if !needsDisplay, let activity = lanDisplayActivity {
+            lanDisplayActivity = nil
+            ProcessInfo.processInfo.endActivity(activity)
+            #if DEBUG
+            appendLANLifecycleEvent("lanDisplayActivityEnded")
+            #endif
+        }
     }
 
     func cancelLANTransfer() { lanReceiver.stop() }
@@ -368,28 +396,33 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
 
     func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
         DispatchQueue.main.async {
-            if let request = LANTransferWire.decode(LANInventoryRequest.self, from: message, type: LANInventoryWire.requestType) {
-                self.lanInventory.matching(request) { result in
-                    switch result {
-                    case .success(let reply):
-                        replyHandler((try? LANTransferWire.message(reply, type: LANInventoryWire.replyType)) ?? ["accepted": false])
-                    case .failure(let error):
-                        if error is CancellationError {
-                            replyHandler(["accepted": false, "retryable": true, "message": "等待手表 App 打开后继续"])
-                        } else {
-                            replyHandler(["accepted": false, "message": "无法检查手表已存歌曲，请重试。"])
-                        }
+            self.handleLANRequest(message, replyHandler: replyHandler)
+        }
+    }
+
+    private func handleLANRequest(_ message: [String: Any], allowLoopbackForTesting: Bool = false,
+                                  replyHandler: @escaping ([String: Any]) -> Void) {
+        if let request = LANTransferWire.decode(LANInventoryRequest.self, from: message, type: LANInventoryWire.requestType) {
+            self.lanInventory.matching(request) { result in
+                switch result {
+                case .success(let reply):
+                    replyHandler((try? LANTransferWire.message(reply, type: LANInventoryWire.replyType)) ?? ["accepted": false])
+                case .failure(let error):
+                    if error is CancellationError {
+                        replyHandler(["accepted": false, "retryable": true, "message": "等待手表 App 打开后继续"])
+                    } else {
+                        replyHandler(["accepted": false, "message": "无法检查手表已存歌曲，请重试。"])
                     }
                 }
-            } else if let offer = LANTransferWire.decode(LANTransferOffer.self, from: message, type: LANTransferWire.offerType) {
-                do { try self.receiveLANOffer(offer); replyHandler(["accepted": true]) }
-                catch { replyHandler(["accepted": false, "message": error.localizedDescription]) }
-            } else if let command = LANTransferWire.decode(LANTransferCommand.self, from: message, type: LANTransferWire.commandType) {
-                self.lanReceiver.handle(command) { events in
-                    replyHandler((try? LANTransferWire.message(LANTransferControlReply(events: events), type: LANTransferWire.controlReplyType)) ?? ["accepted": false])
-                }
-            } else { replyHandler(["accepted": false, "message": "无法识别局域网传输信息。 "]) }
-        }
+            }
+        } else if let offer = LANTransferWire.decode(LANTransferOffer.self, from: message, type: LANTransferWire.offerType) {
+            do { try self.receiveLANOffer(offer, allowLoopbackForTesting: allowLoopbackForTesting); replyHandler(["accepted": true]) }
+            catch { replyHandler(["accepted": false, "message": error.localizedDescription]) }
+        } else if let command = LANTransferWire.decode(LANTransferCommand.self, from: message, type: LANTransferWire.commandType) {
+            self.lanReceiver.handle(command) { events in
+                replyHandler((try? LANTransferWire.message(LANTransferControlReply(events: events), type: LANTransferWire.controlReplyType)) ?? ["accepted": false])
+            }
+        } else { replyHandler(["accepted": false, "message": "无法识别局域网传输信息。 "]) }
     }
 
     func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
@@ -550,6 +583,20 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
         do {
             let offer = try JSONDecoder().decode(LANTransferOffer.self, from: Data(contentsOf: documents.appendingPathComponent(name)))
             debugLANSessionID = offer.sessionID
+            #if targetEnvironment(simulator)
+            if arguments.contains("-lan-probe-delayed-legacy") {
+                let status = LANTransferCommand(sessionID: UUID().uuidString, kind: .status, fileID: nil)
+                let request = try LANTransferWire.message(status, type: LANTransferWire.commandType)
+                let manifest = try LANTransferWire.message(offer, type: LANTransferWire.offerType)
+                handleLANRequest(request) { [weak self] response in
+                    guard let self, LANTransferWire.decode(LANTransferControlReply.self, from: response,
+                                                          type: LANTransferWire.controlReplyType) != nil else { return }
+                    self.appendLANLifecycleEvent("probeStatusReplied", sessionID: offer.sessionID)
+                    self.handleLANRequest(manifest, allowLoopbackForTesting: true) { _ in }
+                }
+                return
+            }
+            #endif
             try receiveLANOffer(offer, allowLoopbackForTesting: true)
             if let flag = arguments.firstIndex(of: "-lan-background-after"), arguments.indices.contains(flag + 1),
                let seconds = Double(arguments[flag + 1]), seconds.isFinite, (0.1...60).contains(seconds) {

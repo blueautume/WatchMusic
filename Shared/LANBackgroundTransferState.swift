@@ -227,19 +227,3 @@ struct LANBackgroundReceiptOutbox: Codable {
 
     private static func key(sessionID: String, fileID: String) -> String { sessionID + "/" + fileID }
 }
-
-/// Retiring a legacy background wake waits for its delegate/cancellation drain
-/// and any validation worker that is unwinding, without starting new transfers.
-struct LANBackgroundDeliveryBarrier {
-    private(set) var eventsDrained = false
-    private var validationKeys = Set<String>()
-    private var isReconciling = false
-
-    var canComplete: Bool { eventsDrained && validationKeys.isEmpty && !isReconciling }
-    mutating func beginDelivery() { eventsDrained = false }
-    mutating func didFinishEvents() { eventsDrained = true }
-    mutating func beginReconciliation() { isReconciling = true }
-    mutating func finishReconciliation() { isReconciling = false }
-    mutating func beginValidation(_ key: String) -> Bool { validationKeys.insert(key).inserted }
-    mutating func finishValidation(_ key: String) { validationKeys.remove(key) }
-}

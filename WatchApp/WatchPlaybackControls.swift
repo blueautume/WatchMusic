@@ -12,7 +12,11 @@ struct NowPlayingView: View {
     @State private var activeDialog: PlaybackDialog?
     @State private var isOnScreen = false
     @State private var immersion = WatchImmersivePlayback()
-    private enum ImmersionAvailability { case suspended, preparing, ready }
+    private struct ImmersionTaskID: Equatable {
+        let request: WatchImmersivePlayback.IdleRequest?
+        let canPresent: Bool
+        let isInteractive: Bool
+    }
     #if DEBUG && targetEnvironment(simulator)
     @State private var previewApplied = false
     @State private var previewImmersionCycleApplied = false
@@ -28,14 +32,20 @@ struct NowPlayingView: View {
         isOnScreen && scenePhase == .active && activeDialog == nil && !choosingOutput && player.currentURL != nil
     }
 
-    private var immersionAvailability: ImmersionAvailability {
-        guard acceptsPrimaryGesture, !reducedLuminance else { return .suspended }
-        return player.isPreparing ? .preparing : .ready
+    private var immersionAvailability: WatchImmersivePlayback.Availability {
+        .init(isBackground: scenePhase == .background, hasTrack: player.currentURL != nil,
+              isObstructed: activeDialog != nil || choosingOutput, isPreparing: player.isPreparing)
     }
 
-    private var immersionAnimation: Animation? { reduceMotion ? nil : .easeInOut(duration: 0.55) }
+    private var isInteractive: Bool { scenePhase == .active && !reducedLuminance }
+    private var immersionAnimation: Animation? {
+        isInteractive && !reduceMotion ? .easeInOut(duration: 0.55) : nil
+    }
 
     var body: some View {
+        let taskID = ImmersionTaskID(request: immersion.idleRequest,
+                                    canPresent: isOnScreen && immersionAvailability == .ready,
+                                    isInteractive: isInteractive)
         WatchPlaybackPageContent(
             acceptsPrimaryGesture: acceptsPrimaryGesture,
             isImmersive: immersion.isImmersive,
@@ -44,7 +54,7 @@ struct NowPlayingView: View {
             chooseSleep: { activeDialog = .sleep },
             chooseOutput: { player.requestAudioOutput() }
         )
-        .watchPage(title: "", action: { dismiss() }, symbol: "chevron.left", showsHeader: !immersion.isImmersive) {
+        .watchPage(title: "", action: closePlayback, symbol: "chevron.left", showsHeader: !immersion.isImmersive) {
             WatchPlaybackBackground(data: player.artworkData)
         }
         .contentShape(Rectangle())
@@ -85,26 +95,25 @@ struct NowPlayingView: View {
             WatchCrownDiagnostics.record("page-disappeared")
             isOnScreen = false
             activeDialog = nil
-            immersion.suspend()
+            // Wrist-down can detach the view while keeping it frontmost.
+            // Let SwiftUI cancel the task and keep the deadline for reappearance.
         }
         .onChange(of: immersionAvailability, initial: true) { _, availability in
-            if availability == .suspended {
-                withAnimation(scenePhase == .active ? immersionAnimation : nil) { immersion.suspend() }
-            } else {
-                immersion.setEligible(availability == .ready, at: ProcessInfo.processInfo.systemUptime)
+            withAnimation(immersionAnimation) {
+                immersion.updateAvailability(availability, at: WatchImmersivePlayback.now)
             }
         }
-        .task(id: immersion.idleRequest) {
-            guard let request = immersion.idleRequest else { return }
+        .task(id: taskID) {
+            guard taskID.canPresent, let request = taskID.request else { return }
             do {
-                var remaining = request.deadline - ProcessInfo.processInfo.systemUptime
+                var remaining = request.deadline - WatchImmersivePlayback.now
                 while remaining > 0 {
                     try await Task.sleep(for: .seconds(remaining))
-                    remaining = request.deadline - ProcessInfo.processInfo.systemUptime
+                    remaining = request.deadline - WatchImmersivePlayback.now
                 }
                 guard !Task.isCancelled else { return }
                 withAnimation(immersionAnimation) {
-                    _ = immersion.enter(for: request, at: ProcessInfo.processInfo.systemUptime)
+                    _ = immersion.enter(for: request, at: WatchImmersivePlayback.now)
                 }
             } catch { return }
         }
@@ -152,7 +161,12 @@ struct NowPlayingView: View {
     }
 
     private func registerInteraction() {
-        withAnimation(immersionAnimation) { immersion.interact(at: ProcessInfo.processInfo.systemUptime) }
+        withAnimation(immersionAnimation) { immersion.interact(at: WatchImmersivePlayback.now) }
+    }
+
+    private func closePlayback() {
+        immersion.suspend()
+        dismiss()
     }
 
     private var dialogPresented: Binding<Bool> {

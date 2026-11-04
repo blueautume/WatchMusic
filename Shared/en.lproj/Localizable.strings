@@ -20,7 +20,7 @@
 "%lld 首" = "Songs: %lld";
 "%lld 首 · %@" = "Songs: %lld · %@";
 "Apple Watch 已连接" = "Apple Watch connected";
-"Apple Watch 已配对 · 等待打开手表 App" = "Watch paired · Open the app on your Watch";
+"Apple Watch 已配对 · 等待打开手表 App" = "Watch paired · Watch app currently unreachable";
 "Apple Watch 连接尚未就绪，请稍后重试。" = "Apple Watch is not connected yet. Try again shortly.";
 "、" = ", ";
 "上一首" = "Previous song";
@@ -152,6 +152,7 @@
 "手表正在接收另一批歌曲，请完成或取消后重试。" = "Your Watch is receiving another batch. Wait or cancel it, then try again.";
 "手表正在校验和保存" = "Verifying and saving on Watch";
 "手表空间不足，请先删除一些歌曲" = "Your Watch is low on storage. Delete some songs first.";
+"手表连接" = "Watch Connection";
 "手表音乐库发生变化，请重试。" = "The Watch library changed. Try again.";
 "打开播放器：%@" = "Open player: %@";
 "技术支持" = "Support";

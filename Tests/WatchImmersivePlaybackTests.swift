@@ -8,12 +8,17 @@ struct WatchImmersivePlaybackTests {
     private static var checks = 0
     private static var failures: [String] = []
     private static let epsilon: CGFloat = 0.000_001
+    private static let frontmost = WatchImmersivePlayback.Availability(
+        isBackground: false, hasTrack: true, isObstructed: false, isPreparing: false
+    )
 
     static func main() {
         verifyExactDeadlineAndOneShotEntry()
         verifyRepeatedInteraction()
         verifyEligibilityRearm()
         verifySuspensionAndStaleDelivery()
+        verifyFrontmostDeadlineAcrossWake()
+        verifyUnavailablePageRestartsIdleWindow()
         verifyPreparationWhileImmersive()
         verifyLayouts()
         guard failures.isEmpty else {
@@ -115,22 +120,83 @@ struct WatchImmersivePlaybackTests {
         check(!state.enter(for: afterReturn, at: 1000), "completed work stays invalid after suspension and touch")
     }
 
+    private static func verifyFrontmostDeadlineAcrossWake() {
+        for (wakeTime, entersOnWake) in [(3.0, false), (6.0, true)] {
+            var state = WatchImmersivePlayback()
+            state.updateAvailability(frontmost, at: 0)
+            let pending = request(state, "before the display dims")
+            check(pending.deadline == 5, "a ready frontmost page schedules entry at five seconds")
+
+            // Inactive or Always On presentation leaves the page frontmost.
+            // The view's task can defer delivery until the display wakes.
+            state.updateAvailability(frontmost, at: 2)
+            check(state.idleRequest == pending && !state.isImmersive,
+                  "dimming preserves the pending deadline while the page stays frontmost")
+            state.updateAvailability(frontmost, at: wakeTime)
+            check(state.idleRequest == pending, "waking does not start a second five-second interval")
+            check(state.enter(for: pending, at: wakeTime) == entersOnWake,
+                  "waking at \(wakeTime) seconds honors the original deadline")
+            if !entersOnWake {
+                check(state.idleRequest == pending, "waking early keeps the original task valid")
+                check(state.enter(for: pending, at: 5), "an early wake waits only until the original fifth second")
+            }
+
+            state.updateAvailability(frontmost, at: 7)
+            check(state.isImmersive && state.idleRequest == nil,
+                  "dimming an already immersed frontmost page preserves its layout without arming a timer")
+        }
+    }
+
+    private static func verifyUnavailablePageRestartsIdleWindow() {
+        let unavailable: [(String, WatchImmersivePlayback.Availability)] = [
+            ("entering the background", .init(isBackground: true, hasTrack: true, isObstructed: false, isPreparing: false)),
+            ("opening a dialog or output picker", .init(isBackground: false, hasTrack: true, isObstructed: true, isPreparing: false)),
+            ("losing the selected track", .init(isBackground: false, hasTrack: false, isObstructed: false, isPreparing: false))
+        ]
+        for (event, availability) in unavailable {
+            var state = WatchImmersivePlayback()
+            state.updateAvailability(frontmost, at: 0)
+            let before = request(state, "before \(event)")
+            state.updateAvailability(availability, at: 2)
+            check(!state.isImmersive && state.idleRequest == nil, "\(event) cancels the pending deadline")
+            check(!state.enter(for: before, at: 5), "\(event) invalidates a queued completion")
+
+            state.updateAvailability(frontmost, at: 6)
+            let resumed = request(state, "after \(event)")
+            check(resumed.deadline == 11 && resumed != before, "returning after \(event) starts a new five seconds")
+            check(!state.enter(for: before, at: 11), "the old completion stays invalid after \(event) ends")
+            check(!state.enter(for: resumed, at: 10.999), "the resumed page cannot use time from before \(event)")
+            check(state.enter(for: resumed, at: 11), "the resumed page enters on its own deadline")
+
+            state.updateAvailability(availability, at: 12)
+            check(!state.isImmersive && state.idleRequest == nil, "\(event) also exits an existing immersive layout")
+            state.updateAvailability(frontmost, at: 13)
+            check(state.idleRequest?.deadline == 18 && !state.isImmersive,
+                  "after \(event) interrupts immersion, the restored controls get five seconds")
+        }
+    }
+
     private static func verifyPreparationWhileImmersive() {
+        let preparing = WatchImmersivePlayback.Availability(
+            isBackground: false, hasTrack: true, isObstructed: false, isPreparing: true
+        )
         var state = WatchImmersivePlayback()
-        state.setEligible(true, at: 0)
+        state.updateAvailability(preparing, at: 0)
+        check(!state.isImmersive && state.idleRequest == nil, "preparing playback does not arm an entry deadline")
+        state.updateAvailability(frontmost, at: 0)
         let first = request(state, "before track preparation")
         check(state.enter(for: first, at: 5), "fixture reaches immersive playback")
-        state.setEligible(false, at: 6)
+        state.updateAvailability(preparing, at: 6)
         check(state.isImmersive && state.idleRequest == nil,
               "temporarily preparing the next track preserves an existing immersive presentation")
-        state.setEligible(true, at: 8)
+        state.updateAvailability(frontmost, at: 8)
         check(state.isImmersive && state.idleRequest == nil,
               "preparation completion keeps immersive mode without starting another timer")
-        state.setEligible(false, at: 9)
+        state.updateAvailability(preparing, at: 9)
         state.interact(at: 10)
         check(!state.isImmersive && state.idleRequest == nil,
               "touch during preparation restores controls without scheduling ineligible work")
-        state.setEligible(true, at: 12)
+        state.updateAvailability(frontmost, at: 12)
         let afterPreparation = request(state, "after interacting during preparation")
         check(afterPreparation.deadline == 17, "preparation completion after touch arms five new seconds")
         check(!state.enter(for: first, at: 17), "the pre-preparation task cannot enter after a user exit")

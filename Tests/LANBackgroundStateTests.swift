@@ -135,28 +135,6 @@ struct LANBackgroundStateTests {
         let filtered = try JSONDecoder().decode(LANBackgroundReceiptOutbox.self, from: JSONEncoder().encode(invalid))
         try expect(filtered.count == 0, "malformed persisted stored receipt is ignored")
 
-        var barrier = LANBackgroundDeliveryBarrier()
-        try expect(!barrier.canComplete, "native completion cannot run before event drain")
-        try expect(barrier.beginValidation("A"), "first validation registered")
-        try expect(!barrier.beginValidation("A"), "same cache cannot validate twice")
-        try expect(barrier.beginValidation("B"), "second validation registered")
-        barrier.didFinishEvents()
-        try expect(!barrier.canComplete, "event drain waits for file saves started by this delivery")
-        barrier.finishValidation("A")
-        try expect(!barrier.canComplete, "one saved file does not complete another pending save")
-        barrier.finishValidation("B")
-        try expect(barrier.canComplete, "drain and all saves permit native completion")
-        try expect(newBatch.pendingFileIDs.count == 2 && barrier.canComplete, "other network downloads do not block completed delivery")
-        try expect(barrier.canComplete, "a late handler for already drained delivery completes immediately")
-        barrier.beginDelivery()
-        try expect(!barrier.canComplete, "previous drain cannot complete a fresh delivery")
-        barrier.didFinishEvents()
-        try expect(barrier.canComplete, "fresh empty delivery can complete after drain")
-        barrier.beginReconciliation()
-        try expect(!barrier.canComplete, "drain waits for asynchronous daemon task reconciliation")
-        barrier.finishReconciliation()
-        try expect(barrier.canComplete, "reconciled missing tasks permit native completion")
-
         // Pause is durable transport state, not a terminal success/failure.
         var pauseOffer = offer()
         pauseOffer.pausedFileIDs = [fileA.id]

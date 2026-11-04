@@ -4,16 +4,36 @@ import Foundation
 /// A single deadline, invalidated on interaction or suspension. A late task
 /// cannot put a newly touched or dismissed page back into immersive mode.
 struct WatchImmersivePlayback {
+    enum Availability {
+        case suspended, preparing, ready
+
+        init(isBackground: Bool, hasTrack: Bool, isObstructed: Bool, isPreparing: Bool) {
+            if isBackground || !hasTrack || isObstructed { self = .suspended }
+            else { self = isPreparing ? .preparing : .ready }
+        }
+    }
+
     struct IdleRequest: Equatable {
         let generation: UInt64
         let deadline: TimeInterval
     }
 
     static let idleInterval: TimeInterval = 5
+    private static let timeOrigin = ContinuousClock.now
+    static var now: TimeInterval {
+        let elapsed = timeOrigin.duration(to: .now).components
+        return Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18
+    }
+
     private(set) var isImmersive = false
     private(set) var idleRequest: IdleRequest?
     private var isEligible = false
     private var generation: UInt64 = 0
+
+    mutating func updateAvailability(_ availability: Availability, at now: TimeInterval) {
+        if availability == .suspended { suspend() }
+        else { setEligible(availability == .ready, at: now) }
+    }
 
     mutating func setEligible(_ eligible: Bool, at now: TimeInterval) {
         guard eligible != isEligible else { return }

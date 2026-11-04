@@ -32,10 +32,13 @@ struct PhoneSettingsView: View {
 
     var body: some View {
         List {
-            NavigationLink(L10n.text("隐私协议")) { PrivacyAgreementsView() }
-                .listRowBackground(AppPalette.surface)
-            NavigationLink(L10n.text("关于")) { PhoneAboutView() }
-                .listRowBackground(AppPalette.surface)
+            Section {
+                PhoneWatchConnectionRow()
+            }.listRowBackground(AppPalette.surface)
+            Section {
+                NavigationLink(L10n.text("隐私协议")) { PrivacyAgreementsView() }
+                NavigationLink(L10n.text("关于")) { PhoneAboutView() }
+            }.listRowBackground(AppPalette.surface)
         }
         .scrollContentBackground(.hidden).background(AppPalette.background)
         .navigationTitle(L10n.text("设置")).navigationBarTitleDisplayMode(.inline)
@@ -61,6 +64,28 @@ struct PhoneSettingsView: View {
             else if arguments.contains("-preview-support-document") { previewDestination = "support" }
         }
         #endif
+    }
+}
+
+private struct PhoneWatchConnectionRow: View {
+    @EnvironmentObject private var library: PhoneLibrary
+
+    var body: some View {
+        Label {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(L10n.text("手表连接"))
+                Text(L10n.message(library.connectionDescription))
+                    .font(.subheadline)
+                    .foregroundStyle(AppPalette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.vertical, 4)
+        } icon: {
+            Image(systemName: "applewatch")
+                .foregroundStyle(AppPalette.accent)
+                .accessibilityHidden(true)
+        }
+        .accessibilityElement(children: .combine)
     }
 }
 

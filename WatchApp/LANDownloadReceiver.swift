@@ -60,12 +60,9 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
     private let outboxURL: URL
     private var networkSession: URLSession?
     private var legacySession: URLSession?
-    private var legacyMigrationSessionID: String?
     private var state: LANBackgroundTransferState?
     private var tasks: [String: URLSessionDownloadTask] = [:]
-    private var missingRestoredFiles = Set<String>()
     private var permissions: [String: LANStoragePermission] = [:]
-    private var deliveryBarrier = LANBackgroundDeliveryBarrier()
     private var outbox = LANBackgroundReceiptOutbox()
     private var needsTerminalJournalRepair = false
     private var lastProgressTime: [String: TimeInterval] = [:]
@@ -74,14 +71,13 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
     private var didRestore = false
     private var backgroundCompletions: [() -> Void] = []
     private var isForeground = false
-    private var isReconcilingTasks = false
-    private var pendingControls: [(LANTransferCommand, (([LANTransferEvent]) -> Void)?)] = []
     private var activeFileID: String?
     private var validatingFileID: String?
     private var drainingTaskIDs = Set<Int>()
     private var schedulingSuspensionCount = 0
     private var isAdvancingQueue = false
     #if DEBUG
+    var onLegacyCleanupForProbe: (() -> Void)?
     private var debugControlStates: [[String: Any]] = []
     #endif
 
@@ -170,11 +166,9 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
             generation = UUID()
             state = LANBackgroundTransferState(offer: incoming, allowsLoopbackForTesting: allowLoopbackForTesting)
             tasks = [:]
-            missingRestoredFiles = []
             permissions = [:]
             lastProgressTime = [:]
             activeFileID = nil
-            deliveryBarrier.beginDelivery()
             do {
                 // Persist the whole queue, but create a native download only
                 // when its predecessor has finished saving.
@@ -195,32 +189,31 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
     }
 
     private func handleOnQueue(_ command: LANTransferCommand, completion: (([LANTransferEvent]) -> Void)?) {
-            if isReconcilingTasks { pendingControls.append((command, completion)); return }
-            guard command.kind == .status || state?.offer.sessionID == command.sessionID else {
-                if let completion { DispatchQueue.main.async { completion([]) } }
-                return
+        guard command.kind == .status || state?.offer.sessionID == command.sessionID else {
+            if let completion { DispatchQueue.main.async { completion([]) } }
+            return
+        }
+        // Apply a batch atomically before advancing, so pausing/cancelling
+        // every item never starts another item between individual controls.
+        schedulingSuspensionCount += 1
+        defer { schedulingSuspensionCount -= 1; advanceQueue() }
+        var events: [LANTransferEvent] = []
+        switch command.kind {
+        case .stop: self.stopOnQueue(kind: .cancelled, message: "手机已停止局域网传输。")
+        case .cancel:
+            for id in command.fileIDs ?? command.fileID.map({ [$0] }) ?? [] { self.cancelOnQueue(fileID: id) }
+        case .pause, .resume:
+            let ids = command.fileIDs ?? command.fileID.map({ [$0] }) ?? Array(self.state?.pendingFileIDs ?? [])
+            for id in Set(ids) {
+                if let event = self.controlOnQueue(fileID: id, paused: command.kind == .pause,
+                                                   revision: command.controlRevision ?? 0,
+                                                   automatic: command.automaticPause == true) { events.append(event) }
             }
-            // Apply a batch atomically before advancing, so pausing/cancelling
-            // every item never starts another item between individual controls.
-            schedulingSuspensionCount += 1
-            defer { schedulingSuspensionCount -= 1; advanceQueue() }
-            var events: [LANTransferEvent] = []
-            switch command.kind {
-            case .stop: self.stopOnQueue(kind: .cancelled, message: "手机已停止局域网传输。")
-            case .cancel:
-                for id in command.fileIDs ?? command.fileID.map({ [$0] }) ?? [] { self.cancelOnQueue(fileID: id) }
-            case .pause, .resume:
-                let ids = command.fileIDs ?? command.fileID.map({ [$0] }) ?? Array(self.state?.pendingFileIDs ?? [])
-                for id in Set(ids) {
-                    if let event = self.controlOnQueue(fileID: id, paused: command.kind == .pause,
-                                                       revision: command.controlRevision ?? 0,
-                                                       automatic: command.automaticPause == true) { events.append(event) }
-                }
-            case .status:
-                let ids = command.fileIDs ?? command.fileID.map({ [$0] }) ?? Array(self.state?.pendingFileIDs ?? [])
-                events = ids.compactMap { self.controlEvent(fileID: $0) }
-            }
-            if let completion { DispatchQueue.main.async { completion(events) } }
+        case .status:
+            let ids = command.fileIDs ?? command.fileID.map({ [$0] }) ?? Array(self.state?.pendingFileIDs ?? [])
+            events = ids.compactMap { self.controlEvent(fileID: $0) }
+        }
+        if let completion { DispatchQueue.main.async { completion(events) } }
     }
 
     private func controlOnQueue(fileID: String, paused: Bool, revision: Int64, automatic: Bool) -> LANTransferEvent? {
@@ -317,7 +310,6 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
                 task.cancel()
             }
             self.state?.items[file.id]?.taskIdentifier = nil
-            missingRestoredFiles.remove(file.id)
             if self.state?.items[file.id]?.stagingName == nil { self.state?.items[file.id]?.receivedBytes = 0 }
             if changed && !wasAutomaticallyPaused, let event = controlEvent(fileID: file.id, message: message, automatic: true) { deliver(event) }
         }
@@ -392,15 +384,13 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
         pauseForLifecycle(message: "等待两端 App 打开后重试")
         // This belongs only to the removed chunk experiment, never the music library.
         try? FileManager.default.removeItem(at: root.appendingPathComponent("Partial", isDirectory: true))
-        deliveryBarrier.beginReconciliation()
-        isReconcilingTasks = true
-        let session = makeSession()
-        networkSession = session
-        // Retire the old daemon session on upgrade; it must never keep moving
-        // bytes after the foreground-only receiver has taken over.
+        cleanupUnreferencedFiles()
+        networkSession = makeSession()
+        // The restored manifest contains no live task bindings. Old daemon
+        // callbacks are isolated by session identity, so cancellation cannot
+        // hold up status replies or downloads in the new ephemeral session.
         let legacy = makeLegacySession()
         legacySession = legacy
-        legacyMigrationSessionID = state?.offer.sessionID
         legacy.getAllTasks { allTasks in
             allTasks.forEach { $0.cancel() }
             legacy.invalidateAndCancel()
@@ -433,40 +423,9 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
         return URLSession(configuration: configuration, delegate: self, delegateQueue: queue)
     }
 
-    private func reconcile(_ allTasks: [URLSessionTask], restoredSessionID: String?) {
-        for task in allTasks {
-            guard let identity = LANBackgroundTransferState.taskIdentity(task.taskDescription),
-                  identity.sessionID == state?.offer.sessionID,
-                  let item = state?.items[identity.fileID], item.phase.isPending,
-                  item.phase != .validating,
-                  item.taskIdentifier == task.taskIdentifier,
-                  let download = task as? URLSessionDownloadTask else {
-                if task.state != .completed { drainingTaskIDs.insert(task.taskIdentifier); task.cancel() }
-                continue
-            }
-            tasks[identity.fileID] = download
-            missingRestoredFiles.remove(identity.fileID)
-            // Old builds may have submitted the entire batch. Reclaim every
-            // running task before choosing exactly one through the scheduler.
-            if download.state == .running { download.suspend() }
-        }
-        guard let state, state.offer.sessionID == restoredSessionID else { return }
-        for file in state.offer.files {
-            guard let item = self.state?.items[file.id], item.phase.isPending else { continue }
-            if item.phase != .validating, tasks[file.id] == nil, item.taskIdentifier != nil {
-                // getAllTasks omits completed tasks whose delegate files have
-                // not been delivered yet. Preserve their identity until drain.
-                missingRestoredFiles.insert(file.id)
-            }
-        }
-        reconcileDrainedMissingTasks()
-        cleanupUnreferencedFiles()
-        publish()
-    }
-
     /// The only entry point that starts network or validation work.
     private func advanceQueue() {
-        guard isForeground, !isReconcilingTasks, schedulingSuspensionCount == 0, !isAdvancingQueue else { return }
+        guard isForeground, schedulingSuspensionCount == 0, !isAdvancingQueue else { return }
         isAdvancingQueue = true
         defer { isAdvancingQueue = false }
         while let state {
@@ -488,7 +447,6 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
                 publish()
                 return
             }
-            guard !missingRestoredFiles.contains(fileID) else { return }
             do {
                 if tasks[fileID] == nil { try createTask(fileID: fileID, persist: true) }
                 if let task = tasks[fileID], task.state == .suspended {
@@ -506,22 +464,6 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
             }
         }
         activeFileID = nil
-    }
-
-    private func reconcileDrainedMissingTasks() {
-        guard deliveryBarrier.eventsDrained else { return }
-        let missing = missingRestoredFiles
-        missingRestoredFiles = []
-        for fileID in missing {
-            guard let item = state?.items[fileID], item.phase.isPending,
-                  item.phase != .validating, item.stagingName == nil, tasks[fileID] == nil else { continue }
-            if item.phase == .paused {
-                state?.items[fileID]?.taskIdentifier = nil
-                try? persistState()
-                continue
-            }
-            finish(fileID: fileID, kind: .failed, message: "系统下载任务已结束，请从手机重新发送。")
-        }
     }
 
     private func createTask(fileID: String, persist: Bool) throws {
@@ -596,7 +538,6 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
             drainingTaskIDs.insert(task.taskIdentifier)
             task.cancel()
         }
-        missingRestoredFiles.remove(fileID)
         permissions.removeValue(forKey: fileID)
         if outboxSaved && stateSaved, let name = stagingName { try? FileManager.default.removeItem(at: stagingRoot.appendingPathComponent(name)) }
         deliver(event)
@@ -609,9 +550,8 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
     }
 
     private func startValidation(fileID: String, stagingName: String) {
-        guard isForeground, let state, let file = state.file(for: fileID), state.items[fileID]?.phase == .validating else { return }
-        let key = receiptKey(sessionID: state.offer.sessionID, fileID: fileID)
-        guard deliveryBarrier.beginValidation(key) else { return }
+        guard isForeground, validatingFileID == nil, let state, let file = state.file(for: fileID),
+              state.items[fileID]?.phase == .validating else { return }
         validatingFileID = fileID
         let permission = permissions[fileID] ?? LANStoragePermission()
         permissions[fileID] = permission
@@ -621,7 +561,6 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
             guard let self else { return }
             let result = Result { try self.storeFile(temporary, file, permission) }
             self.stateQueue.async {
-                self.deliveryBarrier.finishValidation(key)
                 self.validatingFileID = nil
                 guard self.state?.offer.sessionID == sessionID,
                       self.state?.items[fileID]?.phase == .validating,
@@ -676,7 +615,7 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
     }
 
     private func completeBackgroundEventsIfReady() {
-        guard deliveryBarrier.canComplete, !backgroundCompletions.isEmpty else { return }
+        guard legacySession == nil, !backgroundCompletions.isEmpty else { return }
         let completions = backgroundCompletions
         backgroundCompletions = []
         DispatchQueue.main.async { completions.forEach { $0() } }
@@ -727,8 +666,6 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
         }
     }
 
-    private func receiptKey(sessionID: String, fileID: String) -> String { sessionID + "/" + fileID }
-
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
                     didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
         guard session === networkSession, let (file, _) = binding(downloadTask) else { return }
@@ -738,7 +675,6 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
             return
         }
         guard state?.recordProgress(fileID: file.id, bytes: max(0, totalBytesWritten)) == true else { return }
-        deliveryBarrier.beginDelivery()
         let now = ProcessInfo.processInfo.systemUptime
         if now - lastSnapshotTime >= 1 { try? persistState() }
         if now - (lastProgressTime[file.id] ?? 0) >= 1 || totalBytesWritten == file.byteCount {
@@ -750,7 +686,6 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
         guard session === networkSession, let (file, _) = binding(downloadTask), let state else { return }
-        deliveryBarrier.beginDelivery()
         guard let response = downloadTask.response as? HTTPURLResponse,
               LANTransferValidation.isValidDownloadResponse(statusCode: response.statusCode,
                     contentRange: response.value(forHTTPHeaderField: "Content-Range"), expectedByteCount: file.byteCount) else {
@@ -792,11 +727,9 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
             return
         }
         guard let (file, _) = binding(task) else { return }
-        deliveryBarrier.beginDelivery()
         tasks.removeValue(forKey: file.id)
         if state?.items[file.id]?.phase == .paused, error != nil {
             state?.items[file.id]?.taskIdentifier = nil
-            missingRestoredFiles.remove(file.id)
             try? persistState()
             publish()
             advanceQueue()
@@ -823,34 +756,24 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
         } else { finish(fileID: fileID, kind: .failed, message: error.localizedDescription) }
     }
 
-    func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
-        if session === legacySession {
-            deliveryBarrier.didFinishEvents()
-            completeBackgroundEventsIfReady()
-            return
-        }
-        guard session === networkSession else { return }
-        deliveryBarrier.didFinishEvents()
-        reconcileDrainedMissingTasks()
-        advanceQueue()
-        completeBackgroundEventsIfReady()
-    }
-
     func urlSession(_ session: URLSession, didBecomeInvalidWithError error: Error?) {
         guard session === legacySession else { return }
+        #if DEBUG && targetEnvironment(simulator)
+        if ProcessInfo.processInfo.arguments.contains("-lan-probe-delayed-legacy") {
+            stateQueue.asyncAfter(deadline: .now() + 30) { [weak self] in
+                self?.finishLegacyCleanup()
+            }
+            return
+        }
+        #endif
+        finishLegacyCleanup()
+    }
+
+    private func finishLegacyCleanup() {
         legacySession = nil
-        reconcile([], restoredSessionID: legacyMigrationSessionID)
-        legacyMigrationSessionID = nil
-        deliveryBarrier.finishReconciliation()
-        isReconcilingTasks = false
-        let controls = pendingControls
-        pendingControls = []
-        schedulingSuspensionCount += 1
-        for (command, completion) in controls { handleOnQueue(command, completion: completion) }
-        schedulingSuspensionCount -= 1
-        if isForeground { resumeLifecyclePaused() }
-        advanceQueue()
-        deliveryBarrier.didFinishEvents()
+        #if DEBUG
+        DispatchQueue.main.async { [weak self] in self?.onLegacyCleanupForProbe?() }
+        #endif
         completeBackgroundEventsIfReady()
     }
 

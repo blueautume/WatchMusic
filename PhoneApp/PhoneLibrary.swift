@@ -159,7 +159,9 @@ final class PhoneLibrary: NSObject, ObservableObject {
         #if DEBUG && targetEnvironment(simulator)
         if queueProbeRequest != nil { return queueProbeReachable }
         #endif
-        return WCSession.isSupported() && WCSession.default.isReachable
+        guard WCSession.isSupported() else { return false }
+        let session = WCSession.default
+        return session.activationState == .activated && session.isPaired && session.isWatchAppInstalled && session.isReachable
     }
 
     var isLANActive: Bool { isPreparingLAN || activeLANSessionID != nil }
@@ -428,7 +430,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
 
     private func processSendSubmissions() {
         guard submissionTask == nil, !sendSubmissions.isEmpty, canProcessLAN else { return }
-        guard watchIsReachable else { transferSummary = "等待手表连接"; return }
+        guard watchIsReachable else { transferSummary = "等待手表 App 打开后继续"; return }
         let generation = submissionGeneration
         submissionTask = Task { [weak self] in
             guard let self else { return }
@@ -1482,7 +1484,10 @@ final class PhoneLibrary: NSObject, ObservableObject {
             } catch {
                 guard !Task.isCancelled, self.lanGeneration == generation, !self.lanHandshakeAccepted else { return }
                 if self.isRetryableLANError(error) || !self.isAppForeground || !self.watchIsReachable {
-                    self.parkLANQueue(message: "连接中断，等待重试")
+                    let failure = error as NSError
+                    let hasTransferDetail = failure.domain == "LANHTTPServer" ||
+                        (failure.domain == "LANConnection" && failure.code == 2)
+                    self.parkLANQueue(message: hasTransferDetail ? failure.localizedDescription : "连接中断，等待重试")
                     self.scheduleAutomaticRetry()
                 } else {
                     self.stopLANTransfers(message: error.localizedDescription, state: .failed)
@@ -1708,7 +1713,7 @@ extension PhoneLibrary: WCSessionDelegate {
         }
     }
     nonisolated func sessionDidBecomeInactive(_ session: WCSession) {
-        DispatchQueue.main.async { self.refreshConnection() }
+        DispatchQueue.main.async { self.refreshConnection(); self.watchConnectionChanged() }
     }
     nonisolated func sessionDidDeactivate(_ session: WCSession) {
         Task { @MainActor [weak self] in

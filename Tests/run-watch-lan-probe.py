@@ -141,7 +141,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def run_case(device, documents, title, specifications, expected_kind, capture=None, cancel=False, background=False, restart=False, pause=False,
-             pause_after=0.3, resume_after=3.5, partial=False, require_range=False, serial=False, cancel_first=False):
+             pause_after=0.3, resume_after=3.5, partial=False, require_range=False, serial=False, cancel_first=False,
+             check_display_activity=False, check_handshake=False):
     folder = "LANProbe-" + str(uuid.uuid4())
     manifest = []
     routes = {}
@@ -170,6 +171,7 @@ def run_case(device, documents, title, specifications, expected_kind, capture=No
     thread.start()
     offer_path = documents / "lan-probe-offer.json"
     log_path = documents / "lan-test-events.json"
+    lifecycle_path = documents / "lan-lifecycle-events.json"
     destination = documents / "Music" / folder
     try:
         subprocess.run(["xcrun", "simctl", "terminate", device, BUNDLE], capture_output=True, check=False, timeout=15)
@@ -182,6 +184,11 @@ def run_case(device, documents, title, specifications, expected_kind, capture=No
                  "expiresAt": time.time() - 978_307_200 + 120, "files": manifest}
         offer_path.write_text(json.dumps(offer))
         args = ["launch", device, BUNDLE, "-lan-offer-file", offer_path.name]
+        if check_display_activity or check_handshake:
+            lifecycle_path.unlink(missing_ok=True)
+            args += ["-lan-record-lifecycle"]
+        if check_handshake:
+            args += ["-lan-probe-delayed-legacy"]
         if cancel:
             args += ["-lan-cancel-after", str(pause_after + 0.9) if pause else "0.3"]
         if cancel_first:
@@ -190,6 +197,9 @@ def run_case(device, documents, title, specifications, expected_kind, capture=No
             args += ["-lan-pause-after", str(pause_after), "-lan-resume-after", str(resume_after)]
         if background:
             args += ["-lan-background-after", "0.3"]
+        # The Watch debug hook holds legacy completion for 30 seconds. Include
+        # app launch in the shorter budget so waiting for it cannot pass.
+        handshake_deadline = time.monotonic() + 18 if check_handshake else None
         launch_output = simctl(*args)
         if restart:
             assert server.request_started.wait(timeout=20), "download did not start before process restart"
@@ -207,7 +217,7 @@ def run_case(device, documents, title, specifications, expected_kind, capture=No
             time.sleep(0.8)
             capture.parent.mkdir(parents=True, exist_ok=True)
             simctl("io", device, "screenshot", str(capture))
-        deadline = time.monotonic() + 90
+        deadline = handshake_deadline if handshake_deadline is not None else time.monotonic() + 90
         terminal = {}
         pause_observed = None
         held_without_store = False
@@ -265,6 +275,38 @@ def run_case(device, documents, title, specifications, expected_kind, capture=No
                 assert hashlib.sha256(target.read_bytes()).hexdigest() == file["sha256"], f"{title}: wrong saved content"
             else:
                 assert not target.exists(), f"{title}: rejected/cancelled data must not enter the library"
+        if check_handshake:
+            lifecycle = json.loads(lifecycle_path.read_text())
+            observed = [item["event"] for item in lifecycle]
+            assert "probeStatusReplied" in observed and "offerAccepted" in observed, (
+                f"{title}: missing status reply or accepted offer; observed {observed}"
+            )
+            assert observed.index("probeStatusReplied") < observed.index("offerAccepted"), (
+                f"{title}: offer preceded the status reply"
+            )
+            stored_ids = {item.get("fileID") for item in lifecycle
+                          if item["event"] == "stored" and item.get("sessionID") == offer["sessionID"]}
+            assert stored_ids == {file["id"] for file in manifest}, f"{title}: missing exact stored lifecycle events"
+            assert "probeLegacyCleanupFinished" not in observed, f"{title}: download waited for legacy cleanup"
+        if check_display_activity:
+            expected_activity = ("lanDisplayActivityBegan", "lanDisplayActivityEnded") * (2 if pause and not cancel else 1)
+            observed_activity = ()
+            # The receiver can report the terminal receipt before the library
+            # gets the last display update.
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                try:
+                    observed_activity = tuple(item["event"] for item in json.loads(lifecycle_path.read_text())
+                                              if item["event"] in expected_activity)
+                except (json.JSONDecodeError, OSError):
+                    pass
+                if len(observed_activity) >= len(expected_activity):
+                    break
+                time.sleep(0.05)
+            assert observed_activity == expected_activity, (
+                f"{title}: display activity sequence was {observed_activity}; expected {expected_activity}"
+            )
+            print(f"Display activity verified: {len(observed_activity) // 2} begin/end pair(s)", flush=True)
         if background:
             assert (documents / "lan-test-background.json").exists(), "background transition hook did not run"
         if require_range:
@@ -305,7 +347,7 @@ def run_range_cases(device, documents, mp3):
 
 def run_serial_cases(device, documents, mp3, flac):
     run_case(device, documents, "three files download and save strictly one at a time",
-             [(mp3, "slow"), (flac, "normal"), (mp3, "normal")], "stored", serial=True)
+             [(mp3, "slow"), (flac, "normal"), (mp3, "normal")], "stored", serial=True, check_display_activity=True)
     run_case(device, documents, "failed first file advances to the remaining serial queue",
              [(mp3, "http_error"), (flac, "normal"), (mp3, "normal")], ["failed", "stored", "stored"], serial=True)
     run_case(device, documents, "cancelled current file advances without starting two unfinished downloads",
@@ -313,7 +355,7 @@ def run_serial_cases(device, documents, mp3, flac):
              cancel_first=True, serial=True)
     run_case(device, documents, "paused serial batch keeps waiting files unrequested until resume",
              [(mp3, "trickle"), (flac, "normal"), (mp3, "normal")], "stored", pause=True, serial=True,
-             pause_after=2, resume_after=6)
+             pause_after=2, resume_after=6, check_display_activity=True)
 
 
 def run_foreground_case(device, documents, mp3, saving=False):
@@ -429,6 +471,7 @@ def main():
     parser.add_argument("--disconnect-resume-only", action="store_true", help="Compatibility alias for interruption and fresh-offer retry")
     parser.add_argument("--serial-only", action="store_true", help="Verify active serial order, terminal gating, failure/cancel advance and manual pause")
     parser.add_argument("--foreground-only", action="store_true", help="Verify inactive pause, no stale-source retry and explicit foreground replacement")
+    parser.add_argument("--handshake-only", action="store_true", help="Verify the status reply, offer and download finish while legacy cleanup is delayed")
     args = parser.parse_args()
     if args.app:
         simctl("install", args.device, str(args.app.resolve()))
@@ -437,6 +480,10 @@ def main():
     documents.mkdir(exist_ok=True)
     mp3, flac = (ROOT / "Tests/Fixtures" / name for name in ["EmbeddedResources.mp3", "EmbeddedResources.flac"])
     try:
+        if args.handshake_only:
+            run_case(args.device, documents, "foreground handshake and download finish before legacy cleanup",
+                     [(mp3, "normal")], "stored", serial=True, check_handshake=True)
+            return
         if args.foreground_only or args.background_only or args.disconnect_resume_only:
             run_foreground_case(args.device, documents, mp3)
             run_foreground_case(args.device, documents, mp3, saving=True)
@@ -449,11 +496,12 @@ def main():
             return
         if args.pause_only:
             run_case(args.device, documents, "partially received native task stops bytes then resumes",
-                     [(mp3, "trickle")], "stored", pause=True, pause_after=2, resume_after=6, partial=True)
+                     [(mp3, "trickle")], "stored", pause=True, pause_after=2, resume_after=6, partial=True,
+                     check_display_activity=True)
             run_case(args.device, documents, "native pause then resume preserves MP3 and FLAC",
                      [(mp3, "slow"), (flac, "slow")], "stored", pause=True)
             run_case(args.device, documents, "cancel paused batch prevents late resume and save",
-                     [(mp3, "slow")], "cancelled", pause=True, cancel=True)
+                     [(mp3, "slow")], "cancelled", pause=True, cancel=True, check_display_activity=True)
             return
         run_case(args.device, documents, "MP3 and FLAC download, integrity and save receipts",
                  [(mp3, "slow"), (flac, "normal")], "stored", args.capture)
@@ -463,7 +511,8 @@ def main():
         run_case(args.device, documents, "HTTP failure rejected", [(mp3, "http_error")], "failed")
         run_case(args.device, documents, "redirected final URL rejected even for matching bytes", [(mp3, "redirect")], "failed")
         run_case(args.device, documents, "oversized response rejected", [(mp3, "oversize")], "failed")
-        run_case(args.device, documents, "cancel prevents later save", [(flac, "slow")], "cancelled", cancel=True)
+        run_case(args.device, documents, "cancel prevents later save", [(flac, "slow")], "cancelled", cancel=True,
+                 check_display_activity=True)
         run_range_cases(args.device, documents, mp3)
         print("PASS: real watch URLSession LAN transfer probe", flush=True)
     finally:

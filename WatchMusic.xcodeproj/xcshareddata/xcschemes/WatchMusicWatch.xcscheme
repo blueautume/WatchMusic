@@ -17,6 +17,7 @@
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "C6E215EB937388CDC839B83F"
                BuildableName = "WatchMusicWatch.app"
+               BlueprintName = "WatchMusicWatch"
                ReferencedContainer = "container:WatchMusic.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
