@@ -39,9 +39,13 @@
     "reason": "Development tunnel timed out; user requested completing TestFlight upload first and deferring hardware verification."
   },
   "testFlight": {
-    "status": "uploaded, processing",
+    "status": "processed; testing in existing internal group",
     "group": "music",
-    "buildID": "c6506da8-6cb3-4f62-9ef1-c471b803b71e"
+    "buildID": "c6506da8-6cb3-4f62-9ef1-c471b803b71e",
+    "internalBuildState": "正在测试",
+    "testNotes": "saved",
+    "url": "https://appstoreconnect.apple.com/teams/15b64959-7fb3-4201-97f5-fdb00de27c61/apps/6828426951/testflight/ios/c6506da8-6cb3-4f62-9ef1-c471b803b71e",
+    "evidence": "Artifacts/Verification/testflight-1.0.6-8.jpg"
   },
   "limits": [
     "iPhone file server must remain in foreground and reachable on local Wi-Fi",

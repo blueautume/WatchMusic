@@ -565,4 +565,4 @@ Apple 的 [setActive 约束](https://developer.apple.com/documentation/avfaudio/
 - 已签名模拟器 Debug、真机目标 Debug、双端 Release 归档和深度签名校验通过；归档内两端版本均为 `1.0.6 (8)`，389 个双语键及两端资源检查通过。
 - Mac 到已连接 Apple Watch 的开发隧道超时；用户选择先完成 TestFlight 上传，真机安装与硬件熄屏测试延期。模拟器与构建通过不代表 TestFlight 真机熄屏已验收。
 - 手机仍须前台提供可达文件源，源最长一小时；系统可推迟后台调度。每批最多 100 首，新批次仍要求手表活跃可达。
-- TestFlight：上传成功，App Store Connect 已显示 `1.0.6 (8)` 正在处理；等待处理完成和现有内部群组分发。
+- TestFlight：`1.0.6 (8)` 上传与处理成功，现有内部群组 `music` 显示“正在测试”，中文测试说明已保存；[发布凭证](Artifacts/Verification/testflight-1.0.6-8.jpg)。未提交 App Store 正式审核。
