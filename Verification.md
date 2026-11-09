@@ -599,3 +599,16 @@ Apple 的 [setActive 约束](https://developer.apple.com/documentation/avfaudio/
 - 签名 Debug 模拟器构建、最终签名 Release 归档、深度签名与归档资源检查通过；两端归档均为 `1.0.8 (10)`，406 个双语键、556 处源码文案及两个产品 bundle 检查通过。没有新增 Swift 源码警告；Xcode 仍提示已签名二进制不 strip，以及未使用 AppIntents 的元数据提取提示。
 - [布局预览](Artifacts/Previews/TransferBatch-1.0.8)覆盖 40mm / 49mm、竖横屏与倒置、长中英文标题、列表末尾的已保存/失败、单任务、全部暂停与全部保存中。AOD 图片由 Debug 的 `isLuminanceReduced` 环境覆盖生成，只证明对应布局和颜色；列表末尾由 Debug 初始滚动锚点显示，不声称完成真实触屏/表冠输入验收。硬件 AOD 切换及固定刷新频率未在本轮独立真机验收。
 - TestFlight 上传成功，Xcode 明确返回 `Upload succeeded` / `EXPORT SUCCEEDED`，Apple 已接收并开始处理；[上传凭证](Artifacts/Verification/testflight-1.0.8-10-upload.txt)、[机器可读记录](Artifacts/Verification/watch-transfer-ui-1.0.8-10.json)。App Store Connect 网页登录过期，用户回复“暂时不方便，先完成上传”；因此本轮测试组状态未网页核验、中文测试说明未保存，不标记内部群组已经“正在测试”。未提交 App Store 正式审核。
+
+
+## 播放页返回交互加固（2026-11-09）
+
+用户在 `1.0.8 (10)` 反馈返回箭头可见、点击不返回，但其他控件可用，随后报告已无法退出播放页。当前优先按 App 局部命中/导航问题处理，未将其认定为整表死机，也未确定单一根因。
+
+`1.0.9 (11)` 的修复候选仅调整两处交互结构：空标题播放页的导航 header 改用完整宽度、至少包含 `backFrame.maxY` 的布局容器，用 padding 放置按钮；原 44×44pt 范围改为矩形命中，圆形视觉保持。沉浸模式的高优先级点击手势移入正文，导航 header 在其作用域外；外层保留并行触摸观察及空白区恢复控件。`closePlayback` 仍为清理沉浸状态后调用原 `dismiss()`，不新增音频、网络或磁盘操作。
+
+- 1,902 项沉浸状态/截止任务/生命周期与布局断言、1,224 项既有画布/时钟/导航几何断言通过，签名 Debug 构建通过。两次只读审查确认 Back 与正文高优先级手势分离、隐藏控件继续禁 hit/AX；同次点击可能两次重置截止任务，但 generation 会撤销旧请求，不重复切歌或导航。
+- 最终签名 Release 归档、深度签名及两端资源检查通过；手机与手表均为 `1.0.9 (11)`，406 个双语键、556 处源码文案及两个产品 bundle 检查通过。
+- 真实点按复现未完成：当前 CUA 无可操作的 Simulator 入口，DeviceHub 访问超时；修复前使用 `1.0.8` Debug 产品运行的隔离模拟器自动导航 probe 未取得 native Crown focus，未走到自动 dismiss，不能将此当作返回按钮或修复已通过的证据。也不能用纯几何或直接调用处理函数代替点击命中、沉浸首击不穿透和随后 Back 退出的真机验收。隔离设备已清理，没有修改真实手表数据。
+- 已向用户提供 Apple 官方的数码表冠退出及 App 强制退出步骤；尚待确认硬件按钮是否正常。未建议清空音乐、卸载或解除配对。
+- TestFlight 上传成功，Xcode 明确返回 `Upload succeeded` / `EXPORT SUCCEEDED`，Apple 已接收并开始处理；[上传凭证](Artifacts/Verification/testflight-1.0.9-11-upload.txt)、[机器可读记录](Artifacts/Verification/watch-playback-back-1.0.9-11.json)。遵照此前用户“暂时不方便，先完成上传”的选择，不等待网页登录恢复；测试组可下载状态和中文测试说明尚未网页核验/保存。

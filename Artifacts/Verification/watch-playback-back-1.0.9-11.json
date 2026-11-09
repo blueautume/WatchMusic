@@ -1,0 +1,51 @@
+{
+  "date": "2026-11-09",
+  "branch": "fix/watch-background-downloads",
+  "version": "1.0.9",
+  "build": "11",
+  "purpose": "candidate mitigation for visible Back button not responding; exact cause and physical tap outcome not confirmed",
+  "reportedSymptoms": {
+    "backVisible": true,
+    "backTapDoesNotReturn": true,
+    "otherControlsRespond": true,
+    "hardwareCrownExit": "awaiting user confirmation"
+  },
+  "changes": [
+    "full-width measured header contains the positioned 44pt Back button",
+    "rectangular hit shape within the existing 44pt reserved target",
+    "high-priority immersive gesture scoped to playback content, outside navigation header",
+    "outer simultaneous touch observation retained; original suspend and dismiss action unchanged"
+  ],
+  "checks": {
+    "immersiveAssertions": 1902,
+    "existingSurfaceAssertions": 1224,
+    "signedSimulatorDebug": "passed",
+    "signedReleaseArchive": "passed",
+    "deepSignatureVerification": "passed",
+    "localizedKeys": 406,
+    "sourceLiterals": 556,
+    "productBundlesChecked": 2,
+    "phoneArchivedVersion": "1.0.9 (11)",
+    "watchArchivedVersion": "1.0.9 (11)"
+  },
+  "physicalVerification": {
+    "tapTest": "not completed",
+    "simulatorInput": "CUA Simulator unavailable; DeviceHub timeout",
+    "automaticDismissProbe": "before patch, 1.0.8 Debug probe inconclusive: native Crown focus not requested, so dismiss cycle did not run",
+    "isolatedSimulator": "cleaned up"
+  },
+  "testFlight": {
+    "status": "upload succeeded; Apple accepted package and began processing",
+    "groupState": "not verified; user deferred browser login",
+    "testNotes": "not saved",
+    "uploadEvidence": "Artifacts/Verification/testflight-1.0.9-11-upload.txt"
+  },
+  "remainingValidation": [
+    "visible Back center and edge taps in all orientations",
+    "immersive first body tap restores controls without next-track action",
+    "immersive blank header tap restores controls without navigation",
+    "next tap on visible Back dismisses the page",
+    "long touch crossing five-second idle deadline remains a known timing window to investigate"
+  ],
+  "sourceCommit": "8e23d53"
+}

@@ -1,0 +1,4 @@
+2026-11-09 17:27:12.055 xcodebuild[94142:24204261] Progress 100%: Uploaded package is processing.
+2026-11-09 17:27:12.067 xcodebuild[94142:24204261] Progress 100%: Upload succeeded.
+Uploaded WatchMusic
+** EXPORT SUCCEEDED **
