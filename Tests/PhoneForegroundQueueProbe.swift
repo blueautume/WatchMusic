@@ -42,6 +42,18 @@ struct PhoneForegroundQueueProbe {
         }
     }
 
+    @MainActor private static func readSource(_ file: LANTransferFile, in offer: LANTransferOffer,
+                                             expectedStatus: Int = 200) async throws -> Data {
+        var request = URLRequest(url: offer.baseURLs[0].appendingPathComponent("v1/files").appendingPathComponent(file.id))
+        request.timeoutInterval = 2
+        request.setValue("Bearer " + offer.token, forHTTPHeaderField: "Authorization")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try check((response as? HTTPURLResponse)?.statusCode == expectedStatus &&
+                  (expectedStatus != 200 || Int64(data.count) == file.byteCount),
+                  "The original source enforces its accepted file access and expected response")
+        return data
+    }
+
     @MainActor private static func run() async throws {
         guard CommandLine.arguments.count > 1, CommandLine.arguments.contains("-preview-transfers-in-progress") else {
             throw ProbeFailure.failed("Fixture and explicit isolated preview mode required")
@@ -411,7 +423,7 @@ struct PhoneForegroundQueueProbe {
         try check(inventoryPause.errorMessage == nil && inventoryPauseCallbacks == 1,
                   "Temporary Watch inventory cancellation keeps the local acknowledgment and avoids an upgrade error")
         try check(try snapshot(inventoryPauseDirectory).records?.contains {
-            $0.folder == a1.folder && $0.fileName == a1.fileName && $0.state == .preparing
+            $0.folder == a1.folder && $0.fileName == a1.fileName && $0.state == .paused && $0.resumesWhenForeground == true
         } == true, "Watch inventory cancellation keeps the same visible task eligible for retry")
         try await ready(1, on: inventoryPause, peer: inventoryPausePeer)
         try check(inventoryPauseCallbacks == 1 && inventoryPause.pendingCount == 1,
@@ -438,25 +450,28 @@ struct PhoneForegroundQueueProbe {
         try check(clear.transfers.isEmpty && clearPeer.offers.isEmpty && !clear.isLANActive,
                   "Clear stays empty after foregrounding and a stale inventory response")
 
-        // A cleared preparation's status reply can name a newer live session;
-        // it must not be allowed to stop that source before checking its epoch.
+        // A cleared reconciliation's reply can name a newer live session. It
+        // cannot park or stop the replacement source after its epoch changes.
         let statusPeer = ForegroundQueuePeer()
         let statusRace = model(statusPeer)
-        statusPeer.holdNextStatus = true
         _ = try send([a1], on: statusRace)
-        try await wait("old preparation status held") { statusPeer.hasHeldStatus }
-        try check(statusRace.isPreparingLAN && statusPeer.offers.isEmpty,
-                  "Preparation A has not offered songs while its status response is held")
+        try await ready(1, on: statusRace, peer: statusPeer)
+        statusPeer.holdNextStatus = true
+        statusRace.setTransferQueueProbeReachable(false)
+        statusRace.setTransferQueueProbeReachable(true)
+        try await wait("old reconciliation status held") { statusPeer.hasHeldStatus }
+        try check(statusRace.isLANActive && statusPeer.offers.count == 1,
+                  "Reconciliation keeps source A alive while awaiting the Watch")
         statusRace.clearAllTasks()
         try check(!statusRace.isLANActive && statusRace.transfers.isEmpty,
-                  "Clear invalidates preparation A before its status response arrives")
+                  "Clear invalidates reconciliation A before its status response arrives")
         _ = try send([b1], on: statusRace)
-        try await ready(1, on: statusRace, peer: statusPeer)
-        let statusReplacement = statusPeer.offers[0]
+        try await ready(2, on: statusRace, peer: statusPeer)
+        let statusReplacement = statusPeer.offers[1]
         let stopsBeforeStaleStatus = statusPeer.stops.count
         statusPeer.releaseStatusUsingCurrentSession()
         try await Task.sleep(nanoseconds: 80_000_000)
-        try check(statusPeer.stops.count == stopsBeforeStaleStatus && statusPeer.offers.count == 1 &&
+        try check(statusPeer.stops.count == stopsBeforeStaleStatus && statusPeer.offers.count == 2 &&
                   statusRace.activeLANSessionID == statusReplacement.sessionID &&
                   statusRace.latestTransfer(for: b1)?.state == .queued,
                   "A's late status naming B cannot stop or mutate the accepted replacement session")
@@ -472,6 +487,8 @@ struct PhoneForegroundQueueProbe {
         _ = try send([a1, b1], on: network)
         try await ready(1, on: network, peer: networkPeer)
         let networkFirst = networkPeer.offers[0]
+        try check(networkPeer.inventoryCount == 1 && networkPeer.statusRequests.isEmpty && networkPeer.stops.isEmpty,
+                  "A new batch needs one inventory query and an offer, without status/stop handshakes")
         networkPeer.finish(networkFirst.files[0], in: networkFirst, on: network)
         let remainingFile = networkFirst.files[1]
         network.setTransferQueueProbeReachable(false)
@@ -480,12 +497,29 @@ struct PhoneForegroundQueueProbe {
         try check(network.activeLANSessionID == networkFirst.sessionID && networkPeer.automaticPauses.isEmpty &&
                   networkPeer.offers.count == 1 && network.latestTransfer(for: b1)?.state == .queued,
                   "Reachability loss alone keeps the accepted source and active record")
+        let originalSource = try await readSource(remainingFile, in: networkFirst)
+        try check(originalSource == Data(contentsOf: b1.url), "Messaging loss does not invalidate the source token or bytes")
+        networkPeer.holdNextStatus = true
         network.setTransferQueueProbeReachable(true)
-        try await wait("reconnect requests bound status") {
-            networkPeer.statusRequests.contains { $0.sessionID == networkFirst.sessionID && $0.fileIDs == [remainingFile.id] }
-        }
+        try await wait("reconnect requests bound status") { networkPeer.hasHeldStatus }
+        for _ in 0..<5 { network.setTransferQueueProbeReachable(true); network.retryAutomaticTransfersForProbe() }
+        try check(networkPeer.statusRequests.count == 1 && network.activeLANSessionID == networkFirst.sessionID,
+                  "Repeated reconnects coalesce while one bound status reply is pending")
+        _ = try await readSource(remainingFile, in: networkFirst)
+        networkPeer.releaseStatusUsingCurrentSession()
+        try await Task.sleep(nanoseconds: 30_000_000)
         try check(network.activeLANSessionID == networkFirst.sessionID && networkPeer.offerAttempts == 1 && networkPeer.stops.isEmpty,
                   "A bound status reply preserves the accepted session and credentials")
+
+        network.setTransferQueueProbeReachable(false)
+        networkPeer.rejectNextStatus = true
+        network.setTransferQueueProbeReachable(true)
+        try await wait("status interruption") { networkPeer.statusFailures == 1 }
+        try check(network.activeLANSessionID == networkFirst.sessionID && networkPeer.offers.count == 1 &&
+                  networkPeer.automaticPauses.isEmpty, "A failed status exchange does not tear down system download source")
+        _ = try await readSource(remainingFile, in: networkFirst)
+        network.retryAutomaticTransfersForProbe()
+        try await Task.sleep(nanoseconds: 30_000_000)
 
         // If Watch has no matching state after reconnecting, a scoped empty
         // response causes a fresh source for the remaining file only.
@@ -506,6 +540,43 @@ struct PhoneForegroundQueueProbe {
         for file in networkRecovered.files { networkPeer.finish(file, in: networkRecovered, on: network) }
         network.clearAllTasks()
 
+        // Unconfirmed controls cannot claim success or close the source for
+        // other files. Explicit cancel and clear still revoke access.
+        let controlPeer = ForegroundQueuePeer()
+        let control = model(controlPeer)
+        _ = try send([a1, b1], on: control)
+        try await ready(1, on: control, peer: controlPeer)
+        let controlOffer = controlPeer.offers[0]
+        let controlled = controlOffer.files[0], sibling = controlOffer.files[1]
+        control.setTransferQueueProbeReachable(false)
+        control.pauseTransfers(ids: [controlled.id])
+        try check(control.activeLANSessionID == controlOffer.sessionID &&
+                  control.transfers.first { $0.id == controlled.id }?.state == .queued && control.errorMessage != nil,
+                  "An unreachable Watch cannot falsely acknowledge pause or close the active batch")
+        _ = try await readSource(sibling, in: controlOffer)
+        control.setTransferQueueProbeReachable(true)
+        try await wait("control reconnect status") { !controlPeer.statusRequests.isEmpty }
+        controlPeer.rejectNextControl = true
+        control.pauseTransfers(ids: [controlled.id])
+        try await wait("control confirmation interruption") { controlPeer.controlFailures == 1 && !control.isUpdatingTransferControls }
+        try check(control.activeLANSessionID == controlOffer.sessionID &&
+                  control.transfers.first { $0.id == controlled.id }?.state == .queued,
+                  "A lost control ACK preserves the source and leaves the row unpaused")
+        _ = try await readSource(sibling, in: controlOffer)
+        control.pauseTransfers(ids: [controlled.id])
+        try await wait("explicit pause retry confirmed") {
+            !control.isUpdatingTransferControls && control.transfers.first { $0.id == controlled.id }?.state == .paused
+        }
+        control.cancel(control.transfers.first { $0.id == controlled.id }!)
+        _ = try await readSource(controlled, in: controlOffer, expectedStatus: 404)
+        _ = try await readSource(sibling, in: controlOffer)
+        control.clearAllTasks()
+        do {
+            _ = try await readSource(sibling, in: controlOffer)
+            throw ProbeFailure.failed("Clearing all unfinished tasks must close the source")
+        } catch let error as ProbeFailure { throw error }
+        catch { try check(control.transfers.isEmpty && !control.isLANActive, "Clear closes the HTTP listener and removes all unfinished records") }
+
         // A temporary handshake failure also recovers, and explicit retry
         // triggers coalesce rather than parallelizing preparation or offers.
         let refusedPeer = ForegroundQueuePeer()
@@ -522,7 +593,8 @@ struct PhoneForegroundQueueProbe {
         refusedPeer.finish(refusedPeer.offers[0].files[0], in: refusedPeer.offers[0], on: refused)
         refused.clearAllTasks()
 
-        // Watch lifecycle notifications follow automatic pause semantics too.
+        // A late Watch pause/readiness notification must not tear down a
+        // still-valid source or replace its accepted batch.
         let watchPeer = ForegroundQueuePeer()
         let watch = model(watchPeer)
         _ = try send([a1, b1], on: watch)
@@ -531,16 +603,17 @@ struct PhoneForegroundQueueProbe {
         let watchFile = watchFirst.files[0]
         watch.receiveTransferQueueProbeEvent(LANTransferEvent(sessionID: watchFirst.sessionID, fileID: watchFile.id,
             kind: .paused, completedBytes: 0, totalBytes: watchFile.byteCount, message: "Watch inactive", automaticPause: true))
-        try await wait("Watch inactive parks source") { !watch.isLANActive && !watchPeer.automaticPauses.isEmpty }
-        try check(watch.transfers.allSatisfy { $0.state == .paused && $0.resumesWhenForeground == true },
-                  "Watch inactive preserves the entire queue as an automatic pause")
+        try check(watch.activeLANSessionID == watchFirst.sessionID && watchPeer.automaticPauses.isEmpty &&
+                  watch.transfers.first { $0.id == watchFile.id }?.state == .paused &&
+                  watch.transfers.first { $0.id == watchFirst.files[1].id }?.state == .queued,
+                  "A Watch pause updates only its file and preserves the source for the other system download")
+        _ = try await readSource(watchFirst.files[1], in: watchFirst)
         watch.receiveTransferQueueProbeEvent(LANTransferEvent(sessionID: watchFirst.sessionID, fileID: watchFile.id,
             kind: .resumed, completedBytes: 0, totalBytes: watchFile.byteCount, message: "Watch active", automaticPause: true))
-        try await ready(2, on: watch, peer: watchPeer)
-        try check(watchPeer.offers[1].sessionID != watchFirst.sessionID &&
-                  watchPeer.offers[1].files.map(\.id) == watchFirst.files.map(\.id),
-                  "Watch active automatically rechecks and resumes the saved FIFO in a fresh session")
-        for file in watchPeer.offers[1].files { watchPeer.finish(file, in: watchPeer.offers[1], on: watch) }
+        try check(watch.activeLANSessionID == watchFirst.sessionID && watchPeer.offers.count == 1 &&
+                  watch.latestTransfer(for: a1)?.state == .queued && watchPeer.stops.isEmpty,
+                  "Watch readiness continues the same accepted batch and credentials")
+        for file in watchFirst.files { watchPeer.finish(file, in: watchFirst, on: watch) }
         watch.clearAllTasks()
 
         // Privacy withdrawal retires an existing model, including callbacks
@@ -627,6 +700,11 @@ private final class ForegroundQueuePeer {
     var rejectNextOffer = false
     var stops: [LANTransferCommand] = []
     var statusRequests: [LANTransferCommand] = []
+    var inventoryCount = 0
+    var rejectNextStatus = false
+    var statusFailures = 0
+    var rejectNextControl = false
+    var controlFailures = 0
     var automaticPauses: [LANTransferCommand] = []
     var holdNextInventory = false
     var rejectNextInventoryTemporarily = false
@@ -645,6 +723,7 @@ private final class ForegroundQueuePeer {
 
     func request(_ message: [String: Any]) async throws -> [String: Any] {
         if let request = LANTransferWire.decode(LANInventoryRequest.self, from: message, type: LANInventoryWire.requestType) {
+            inventoryCount += 1
             if rejectNextInventoryTemporarily {
                 rejectNextInventoryTemporarily = false
                 inventoryRefusals += 1
@@ -657,8 +736,18 @@ private final class ForegroundQueuePeer {
             return try inventoryReply(request)
         }
         if let command = LANTransferWire.decode(LANTransferCommand.self, from: message, type: LANTransferWire.commandType) {
+            if (command.kind == .pause || command.kind == .resume), command.automaticPause != true, rejectNextControl {
+                rejectNextControl = false
+                controlFailures += 1
+                throw NSError(domain: "LANControl", code: 3, userInfo: [NSLocalizedDescriptionKey: "Temporary control interruption"])
+            }
             if command.kind == .status {
                 statusRequests.append(command)
+                if rejectNextStatus {
+                    rejectNextStatus = false
+                    statusFailures += 1
+                    throw NSError(domain: "LANControl", code: 3, userInfo: [NSLocalizedDescriptionKey: "Temporary status interruption"])
+                }
                 if holdNextStatus {
                     holdNextStatus = false
                     return try await withCheckedThrowingContinuation { heldStatus = $0 }

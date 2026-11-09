@@ -2,6 +2,14 @@ import Darwin
 import Foundation
 import Network
 
+/// An in-memory digest produced by source inspection, never restored from the
+/// phone's transfer history. The server rechecks the exact file version.
+struct LANHTTPVerifiedSource: Sendable {
+    let url: URL
+    let file: LANTransferFile
+    let version: TransferSourceVersion
+}
+
 /// A short-lived, Wi-Fi-only file server. Only an explicitly offered file UUID
 /// and its per-session bearer token can be used to request a file.
 @MainActor
@@ -19,7 +27,7 @@ final class LANHTTPServer {
         lifetime = min(3_600, max(1, sessionLifetime))
     }
 
-    func start(sources: [LANTransferSource]) async throws -> LANTransferOffer {
+    func start(sources: [LANTransferSource], verifiedSources: [String: LANHTTPVerifiedSource] = [:]) async throws -> LANTransferOffer {
         guard preparation == nil, core == nil else { throw lanServerError("已有局域网传输，请先完成或停止。") }
         let requestID = UUID()
         generation = requestID
@@ -30,7 +38,7 @@ final class LANHTTPServer {
         do {
             return try await withTaskCancellationHandler {
                 let prepared = try await Task.detached(priority: .utility) {
-                    try LANHTTPServerCore.prepare(sources, cancellation: cancellation)
+                    try LANHTTPServerCore.prepare(sources, verifiedSources: verifiedSources, cancellation: cancellation)
                 }.value
                 try Task.checkCancellation()
                 guard generation == requestID, !cancellation.isCancelled else { throw CancellationError() }
@@ -101,24 +109,10 @@ private final class LANPreparationCancellation: @unchecked Sendable {
     func cancel() { lock.lock(); cancelled = true; lock.unlock() }
 }
 
-private struct LANFileAttributes {
-    let isRegularFile: Bool
-    let byteCount: Int64
-    let modificationDate: Date?
-
-    static func read(_ url: URL) throws -> LANFileAttributes {
-        // URL resource values may be cached; file mutation checks must hit the filesystem.
-        let values = try FileManager.default.attributesOfItem(atPath: url.path)
-        return LANFileAttributes(isRegularFile: values[.type] as? FileAttributeType == .typeRegular,
-                                 byteCount: (values[.size] as? NSNumber)?.int64Value ?? 0,
-                                 modificationDate: values[.modificationDate] as? Date)
-    }
-}
-
 private struct LANPreparedFile {
     let metadata: LANTransferFile
     let url: URL
-    let modificationDate: Date?
+    let version: TransferSourceVersion
 }
 
 private final class LANHTTPServerCore: @unchecked Sendable {
@@ -147,7 +141,8 @@ private final class LANHTTPServerCore: @unchecked Sendable {
         listener = try NWListener(using: parameters, on: .any)
     }
 
-    static func prepare(_ sources: [LANTransferSource], cancellation: LANPreparationCancellation) throws -> [LANPreparedFile] {
+    static func prepare(_ sources: [LANTransferSource], verifiedSources: [String: LANHTTPVerifiedSource],
+                        cancellation: LANPreparationCancellation) throws -> [LANPreparedFile] {
         guard !sources.isEmpty, sources.count <= 1_000, Set(sources.map(\.id)).count == sources.count else {
             throw lanServerError("请选择需要发送的歌曲。")
         }
@@ -158,15 +153,24 @@ private final class LANHTTPServerCore: @unchecked Sendable {
                   LANTransferValidation.isSafeComponent(source.folder), LANTransferValidation.isSafeComponent(source.fileName),
                   AudioFileFormat.supports(URL(fileURLWithPath: source.fileName)),
                   paths.insert(source.folder + "/" + source.fileName).inserted else { throw lanServerError("歌曲传输信息无效。") }
-            let before = try LANFileAttributes.read(source.url)
-            guard before.isRegularFile, before.byteCount > 0,
+            let before = try TransferSourceVersion.read(source.url)
+            guard before.byteCount > 0,
                   before.byteCount <= 8 * 1_024 * 1_024 * 1_024 else { throw lanServerError("歌曲文件为空或无法读取。") }
-            let digest = try digest(source.url, cancellation: cancellation)
-            let after = try LANFileAttributes.read(source.url)
-            guard before.byteCount == after.byteCount, before.modificationDate == after.modificationDate else { throw lanServerError("歌曲文件已发生变化，请重新发送。") }
+            let hash: String
+            if let verified = verifiedSources[source.id], verified.url == source.url, verified.version == before,
+               verified.file.id == source.id, verified.file.folder == source.folder,
+               verified.file.fileName == source.fileName, verified.file.byteCount == before.byteCount,
+               verified.file.sha256.count == 64,
+               verified.file.sha256.allSatisfy({ ("0"..."9").contains($0) || ("a"..."f").contains($0) }) {
+                hash = verified.file.sha256
+            } else {
+                hash = try digest(source.url, cancellation: cancellation)
+            }
+            let after = try TransferSourceVersion.read(source.url)
+            guard before == after else { throw lanServerError("歌曲文件已发生变化，请重新发送。") }
             return LANPreparedFile(metadata: LANTransferFile(id: source.id, folder: source.folder, fileName: source.fileName,
-                                                            byteCount: before.byteCount, sha256: digest),
-                                   url: source.url, modificationDate: after.modificationDate)
+                                                            byteCount: before.byteCount, sha256: hash),
+                                   url: source.url, version: after)
         }
     }
 
@@ -279,6 +283,7 @@ private final class LANHTTPClient {
     private var header = Data()
     private var timeout: DispatchWorkItem?
     private var handle: FileHandle?
+    private var source: LANPreparedFile?
     private var remaining: Int64 = 0
     private var isClosed = false
     private(set) var fileID: String?
@@ -310,6 +315,7 @@ private final class LANHTTPClient {
         timeout = nil
         try? handle?.close()
         handle = nil
+        source = nil
         token = ""
         header.removeAll()
         connection.cancel()
@@ -345,14 +351,13 @@ private final class LANHTTPClient {
             guard Date() < expiration else { throw LANHTTPFailure(status: 410) }
             guard let id = request.fileID, let file = lookup(id) else { throw LANHTTPFailure(status: 404) }
             fileID = id
-            let attributes = try LANFileAttributes.read(file.url)
-            guard attributes.isRegularFile, attributes.byteCount == file.metadata.byteCount,
-                  attributes.modificationDate == file.modificationDate else { throw LANHTTPFailure(status: 409) }
+            guard try TransferSourceVersion.read(file.url) == file.version else { throw LANHTTPFailure(status: 409) }
             let range: LANHTTPByteRange
             do { range = try LANHTTPByteRange.resolve(request.headers["range"], size: file.metadata.byteCount) }
             catch { respondError(416, extra: "Content-Range: bytes */\(file.metadata.byteCount)\r\n"); return }
             let input = try FileHandle(forReadingFrom: file.url)
             handle = input
+            source = file
             try input.seek(toOffset: UInt64(range.offset))
             remaining = range.length
             var response = "HTTP/1.1 \(range.isPartial ? "206 Partial Content" : "200 OK")\r\n"
@@ -377,6 +382,7 @@ private final class LANHTTPClient {
         }
         do {
             try autoreleasepool {
+                guard let source, try TransferSourceVersion.read(source.url) == source.version else { close(); return }
                 guard let handle, let data = try handle.read(upToCount: Int(min(65_536, remaining))), !data.isEmpty else { close(); return }
                 let byteCount = data.count
                 remaining -= Int64(byteCount)

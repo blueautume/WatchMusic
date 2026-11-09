@@ -127,6 +127,55 @@ struct LANHTTPServerProbe {
         _ = try await expiringServer.start(sources: sources)
         try await Task.sleep(nanoseconds: 1_500_000_000)
         try expect(expired && expiringServer.activeSessionID == nil, "Expiration closes the listener and notifies its owner")
+
+        // Reusing an in-memory digest still binds it to the complete file
+        // identity. Preserving size and mtime cannot hide a source mutation.
+        let verifiedCopy = directory.appendingPathComponent("verified.flac")
+        try manager.copyItem(at: fixture, to: verifiedCopy)
+        let verifiedID = UUID().uuidString
+        let verifiedFile = LANTransferFile(id: verifiedID, folder: "Verified", fileName: "verified.flac",
+            byteCount: Int64(expectedData.count), sha256: try LANFileDigest.sha256(of: verifiedCopy))
+        let fingerprint = LANHTTPVerifiedSource(url: verifiedCopy, file: verifiedFile,
+                                                version: try TransferSourceVersion.read(verifiedCopy))
+        let verifiedSources = [LANTransferSource(id: verifiedID, folder: "Verified", fileName: "verified.flac", url: verifiedCopy)]
+        let verifiedServer = LANHTTPServer(allowLoopbackForTesting: true)
+        defer { verifiedServer.stop() }
+        let verifiedOffer = try await verifiedServer.start(sources: verifiedSources, verifiedSources: [verifiedID: fingerprint])
+        try expect(verifiedOffer.files == [verifiedFile], "Verified metadata preserves the inspected file identity and digest")
+        var verifiedRequest = URLRequest(url: verifiedOffer.baseURLs[0].appendingPathComponent("v1/files").appendingPathComponent(verifiedID))
+        verifiedRequest.setValue("Bearer " + verifiedOffer.token, forHTTPHeaderField: "Authorization")
+        let (verifiedBody, verifiedResponse) = try await session.data(for: verifiedRequest)
+        try expect((verifiedResponse as? HTTPURLResponse)?.statusCode == 200 && verifiedBody == expectedData,
+                   "A source prepared from an in-memory fingerprint streams the original audio")
+        let priorAttributes = try manager.attributesOfItem(atPath: verifiedCopy.path)
+        var altered = expectedData
+        altered[altered.startIndex] ^= 1
+        try altered.write(to: verifiedCopy)
+        if let priorDate = priorAttributes[.modificationDate] {
+            try manager.setAttributes([.modificationDate: priorDate], ofItemAtPath: verifiedCopy.path)
+        }
+        let changedVersion = try TransferSourceVersion.read(verifiedCopy)
+        try expect(changedVersion != fingerprint.version,
+                   "The source version detects an in-place rewrite with restored size and mtime")
+        let (changedBody, changedResponse) = try await session.data(for: verifiedRequest)
+        try expect((changedResponse as? HTTPURLResponse)?.statusCode == 409 && changedBody.isEmpty,
+                   "An old verified source rejects changed content before returning bytes")
+        verifiedServer.stop()
+        let rehashed = try await verifiedServer.start(sources: verifiedSources, verifiedSources: [verifiedID: fingerprint])
+        let alteredHash = try LANFileDigest.sha256(of: verifiedCopy)
+        try expect(rehashed.files[0].sha256 == alteredHash && alteredHash != verifiedFile.sha256,
+                   "A stale fingerprint is rehashed rather than trusted when opening a new source")
+
+        let linkedCopy = directory.appendingPathComponent("linked.flac")
+        try manager.createSymbolicLink(at: linkedCopy, withDestinationURL: verifiedCopy)
+        let linkedServer = LANHTTPServer(allowLoopbackForTesting: true)
+        defer { linkedServer.stop() }
+        do {
+            _ = try await linkedServer.start(sources: [LANTransferSource(id: UUID().uuidString,
+                folder: "Linked", fileName: "linked.flac", url: linkedCopy)])
+            throw ProbeError.failed("A symlink must not pass source version validation")
+        } catch let error as ProbeError { throw error }
+        catch { assertions += 1 }
     }
 
     @MainActor private static func parserChecks() throws {

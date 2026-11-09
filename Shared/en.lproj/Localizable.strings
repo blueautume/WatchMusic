@@ -385,3 +385,6 @@
 "音频服务已重启，请重新选择歌曲播放。" = "Audio services restarted. Select a song again to play it.";
 "音频解码失败：%@" = "Audio decoding failed: %@";
 "顺序播放" = "Play in Order";
+"传输期间请保持 iPhone App 打开，手表可熄屏。" = "Keep the iPhone app open during transfer. The Watch screen can turn off.";
+"手表暂时无法确认操作，请连接后重试。" = "The Watch cannot confirm this action right now. Reconnect and try again.";
+"等待手表继续接收" = "Waiting for the Watch to continue receiving";

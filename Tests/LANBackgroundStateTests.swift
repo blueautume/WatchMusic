@@ -107,6 +107,42 @@ struct LANBackgroundStateTests {
             try expect(LANBackgroundTransferState.taskIdentity(bad) == nil, "malformed native task identity rejected")
         }
 
+        // A process restart must preserve the system task binding. Recreating
+        // it as an unbound queued item could duplicate an existing download.
+        var daemon = initial()
+        daemon.items[fileA.id]?.phase = .downloading
+        daemon.items[fileA.id]?.taskIdentifier = 91
+        try expect(daemon.recordProgress(fileID: fileA.id, bytes: 40), "daemon download records partial bytes")
+        daemon = try roundTrip(daemon)
+        try daemon.validateForRestoration(allowLoopback: false)
+        try expect(daemon.items[fileA.id]?.taskIdentifier == 91 && daemon.items[fileA.id]?.phase == .downloading,
+                   "process recreation retains the native task identity and phase")
+        try expect(daemon.items[fileA.id]?.receivedBytes == 40 && daemon.pendingFileIDs.contains(fileA.id),
+                   "process recreation retains progress and pending intent")
+        try expect(daemon.setPaused(fileID: fileA.id, paused: true, revision: 7), "daemon download accepts manual pause")
+        daemon = try roundTrip(daemon)
+        try daemon.validateForRestoration(allowLoopback: false)
+        try expect(daemon.items[fileA.id]?.phase == .paused && daemon.items[fileA.id]?.taskIdentifier == 91 &&
+                   daemon.items[fileA.id]?.controlRevision == 7 && daemon.items[fileA.id]?.lifecyclePaused != true,
+                   "restart preserves manually paused daemon identity without granting automatic resume")
+        try expect(daemon.recordTerminal(fileID: fileA.id, kind: .cancelled), "cancel restored paused task")
+        try expect(!daemon.recordDownloaded(fileID: fileA.id, stagingName: UUID().uuidString + ".download"),
+                   "late download callback cannot cache or revive cancelled daemon work")
+        try expect(!daemon.recordTerminal(fileID: fileA.id, kind: .stored) &&
+                   !daemon.recordTerminal(fileID: fileA.id, kind: .failed),
+                   "duplicate and reordered terminal callbacks preserve the first final outcome")
+        try expect(daemon.items[fileA.id]?.phase == .cancelled && daemon.items[fileA.id]?.taskIdentifier == nil,
+                   "cancelled daemon binding is permanently detached")
+
+        var duplicateOutbox = LANBackgroundReceiptOutbox()
+        duplicateOutbox.insert(receipt())
+        duplicateOutbox.insert(receipt())
+        duplicateOutbox = try roundTrip(duplicateOutbox)
+        try expect(duplicateOutbox.count == 1, "repeated terminal delivery stores one durable receipt per session and file")
+        duplicateOutbox.acknowledge(sessionID: sessionA, fileID: fileA.id)
+        duplicateOutbox.acknowledge(sessionID: sessionA, fileID: fileA.id)
+        try expect(duplicateOutbox.count == 0, "repeated acknowledgement remains idempotent")
+
         // Simulate death after the terminal outbox fsync but before manifest
         // fsync: the stale manifest must never restart cancelled/stored files.
         var staleManifest = initial()
@@ -249,6 +285,6 @@ struct LANBackgroundStateTests {
                    "complete uncommitted file remains a paused cache")
         try expect(saving.recordTerminal(fileID: fileA.id, kind: .cancelled), "explicit clear can discard a lifecycle-paused cache")
         try expect(saving.items[fileA.id]?.lifecyclePaused == nil, "terminal cancellation clears automatic recovery marker")
-        print("PASS: \(assertions) LAN foreground state assertions")
+        print("PASS: \(assertions) LAN background state assertions")
     }
 }

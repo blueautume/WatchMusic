@@ -29,6 +29,10 @@ struct TransfersView: View {
 
             if selectedTab == .inProgress && !records.isEmpty {
                 queueControl(count: records.count).padding(.horizontal, 20).padding(.bottom, 12)
+                Text(L10n.text("传输期间请保持 iPhone App 打开，手表可熄屏。"))
+                    .font(.caption).foregroundStyle(AppPalette.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20).padding(.bottom, 12)
             }
             ScrollView {
                 if records.isEmpty {

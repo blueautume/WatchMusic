@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Exercise the real watch downloader against a local HTTP server (Debug only)."""
+"""Exercise daemon-owned Watch downloads with real simulator HTTP (Debug only).
+
+Switching to Settings verifies an actual simulator scene transition. It does not
+validate physical display sleep, system resource policy, or TestFlight behavior.
+"""
 import argparse
 import hashlib
 import hmac
@@ -59,11 +63,14 @@ class Handler(BaseHTTPRequestHandler):
             self.server.requests.append({"fileID": identifier, "terminal": terminal,
                                          "saved": {file["id"]: (self.server.destination / file["fileName"]).is_file()
                                                    for file in self.server.manifest}})
+        self.completed_response_body = False
         try:
             self.serve_route(route)
         finally:
             with self.server.request_lock:
                 self.server.active_requests.pop(self, None)
+            if self.completed_response_body and hasattr(self.server, "response_finished"):
+                self.server.response_finished.set()
 
     def serve_route(self, route):
         body, behavior = route
@@ -127,6 +134,7 @@ class Handler(BaseHTTPRequestHandler):
                     with self.server.request_lock:
                         self.wfile.write(body[index:index + chunk])
                         self.wfile.flush()
+                        self.completed_response_body = True
                         self.server.active_requests.pop(self, None)
                 else:
                     self.wfile.write(body[index:index + chunk])
@@ -142,7 +150,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def run_case(device, documents, title, specifications, expected_kind, capture=None, cancel=False, background=False, restart=False, pause=False,
              pause_after=0.3, resume_after=3.5, partial=False, require_range=False, serial=False, cancel_first=False,
-             check_display_activity=False, check_handshake=False, inactive_during=None):
+             check_handshake=False, inactive_during=None, pause_restart=False,
+             background_during_save=False, cancel_during_save=False, delayed_restart=False):
     folder = "LANProbe-" + str(uuid.uuid4())
     manifest = []
     routes = {}
@@ -160,6 +169,7 @@ def run_case(device, documents, title, specifications, expected_kind, capture=No
     server.routes, server.token = routes, token
     server.range_requests, server.disconnected_paths = [], set()
     server.request_started = threading.Event()
+    server.response_finished = threading.Event()
     server.request_lock = threading.Lock()
     server.active_requests, server.requests = {}, []
     server.peak_requests = server.peak_live_requests = 0
@@ -174,7 +184,13 @@ def run_case(device, documents, title, specifications, expected_kind, capture=No
     lifecycle_path = documents / "lan-lifecycle-events.json"
     destination = documents / "Music" / folder
     try:
-        subprocess.run(["xcrun", "simctl", "terminate", device, BUNDLE], capture_output=True, check=False, timeout=15)
+        if delayed_restart:
+            # Avoid force-quit semantics even when clearing a previous idle
+            # process: a manual launch followed by SIGKILL leaves daemon work
+            # eligible for system relaunch.
+            crash_process(device, simctl("launch", device, BUNDLE))
+        else:
+            subprocess.run(["xcrun", "simctl", "terminate", device, BUNDLE], capture_output=True, check=False, timeout=15)
         log_path.unlink(missing_ok=True)
         (documents / "lan-test-background.json").unlink(missing_ok=True)
         control_path = documents / "lan-test-control-states.json"
@@ -184,44 +200,83 @@ def run_case(device, documents, title, specifications, expected_kind, capture=No
                  "expiresAt": time.time() - 978_307_200 + 120, "files": manifest}
         offer_path.write_text(json.dumps(offer))
         args = ["launch", device, BUNDLE, "-lan-offer-file", offer_path.name]
-        if check_display_activity or check_handshake or inactive_during:
+        if background or restart or delayed_restart or pause_restart or check_handshake or inactive_during or cancel_during_save:
             lifecycle_path.unlink(missing_ok=True)
             args += ["-lan-record-lifecycle"]
+        if background_during_save or cancel_during_save:
+            args += ["-lan-save-delay", "3.0"]
+        if cancel_during_save:
+            args += ["-lan-cancel-during-save"]
         if inactive_during:
             args += ["-lan-inactive-during-" + inactive_during]
             if inactive_during == "save":
                 args += ["-lan-save-delay", "1.0"]
-        if check_handshake:
-            args += ["-lan-probe-delayed-legacy"]
         if cancel:
             args += ["-lan-cancel-after", str(pause_after + 0.9) if pause else "0.3"]
         if cancel_first:
             args += ["-lan-cancel-first-after", "0.8"]
         if pause:
             args += ["-lan-pause-after", str(pause_after), "-lan-resume-after", str(resume_after)]
-        if background:
-            args += ["-lan-background-after", "0.3"]
-        # The Watch debug hook holds legacy completion for 30 seconds. Include
-        # app launch in the shorter budget so waiting for it cannot pass.
-        handshake_deadline = time.monotonic() + 18 if check_handshake else None
         launch_output = simctl(*args)
+        if background or restart or delayed_restart or pause_restart:
+            assert server.request_started.wait(timeout=25), "download did not start before lifecycle test"
+        if background_during_save:
+            snapshot = documents.parent / "Library/Application Support/LANBackground-v2/transfer.json"
+            wait_for_events(snapshot, lambda value: any(item.get("phase") == "validating" for item in value.get("items", {}).values()),
+                            "download did not enter durable validation before switching apps")
+        if background:
+            simctl("launch", device, "com.apple.NanoSettings")
+            wait_for_lifecycle(lifecycle_path, lambda item: item.get("event") == "scenePhase" and item.get("phase") == "background",
+                               "the system did not move the app to background")
         if restart:
-            assert server.request_started.wait(timeout=20), "download did not start before process restart"
-            pid = int(launch_output.rsplit(":", 1)[1].strip())
-            command = subprocess.check_output(["ps", "-p", str(pid), "-o", "command="], text=True)
-            assert "WatchMusicWatch" in command, "unexpected simulator process"
-            # A crash-style kill tests system-owned tasks, unlike an explicit
-            # user force-quit, which tells the OS to cancel background transfers.
-            os.kill(pid, signal.SIGKILL)
-            time.sleep(0.15)
-            simctl("launch", device, BUNDLE, "-lan-restore-events")
+            crash_process(device, launch_output)
+            simctl("launch", device, BUNDLE, "-lan-restore-events", "-lan-record-lifecycle")
+            wait_for_lifecycle(lifecycle_path, lambda item: item.get("event") == "probeTasksReconciled" and item.get("count", 0) > 0,
+                               "a relaunched process did not re-associate a live daemon task")
+        if delayed_restart:
+            crash_process(device, launch_output)
+            assert server.response_finished.wait(timeout=45), "daemon did not finish HTTP while the app process was absent"
+            # The OS may relaunch with no Debug arguments. Give that path a
+            # chance, then manually reopen only after the body is complete.
+            time.sleep(3)
+            simctl("launch", device, BUNDLE, "-lan-restore-events", "-lan-record-lifecycle")
+            target = destination / manifest[0]["fileName"]
+            wait_for_saved_file(target, manifest[0], timeout=45)
+            # Late completion/error delivery must neither replace the saved
+            # file nor create a second HTTP request after this final save.
+            saved_stat = target.stat()
+            time.sleep(2)
+            assert target.stat().st_ino == saved_stat.st_ino, "late callback saved the same file again"
+            assert hashlib.sha256(target.read_bytes()).hexdigest() == manifest[0]["sha256"], "late callback changed saved content"
+            with server.request_lock:
+                requests = [item for item in server.requests if item["fileID"] == manifest[0]["id"]]
+            assert len(requests) == 1, f"completed daemon download was fetched again after relaunch: {len(requests)} requests"
+            print(f"PASS: {title}; exact SHA, one HTTP request, stable saved inode", flush=True)
+            return
+        if pause_restart:
+            wait_for_events(log_path, lambda items: any(item.get("kind") == "paused" for item in items),
+                            "manual pause was not acknowledged")
+            crash_process(device, launch_output)
+            relaunch = simctl("launch", device, BUNDLE, "-lan-restore-events", "-lan-record-lifecycle")
+            wait_for_lifecycle(lifecycle_path, lambda item: item.get("event") == "probeTasksReconciled" and item.get("count", 0) > 0,
+                               "paused daemon task was not re-associated")
+            before = {file["id"]: (destination / file["fileName"]).exists() for file in manifest}
+            assert not any(before.values()), "manually paused file saved during restart"
+            time.sleep(1)
+            assert not any((destination / file["fileName"]).exists() for file in manifest), "restart automatically resumed a manual pause"
+            crash_process(device, relaunch)
+            command = {"sessionID": offer["sessionID"], "kind": "stop" if cancel else "resume", "controlRevision": 2}
+            command_path = documents / "lan-probe-command.json"
+            command_path.write_text(json.dumps(command))
+            simctl("launch", device, BUNDLE, "-lan-restore-events", "-lan-record-lifecycle",
+                   "-lan-probe-command-file", command_path.name)
         if capture:
             assert server.request_started.wait(timeout=15), "download did not reach the HTTP server"
             # Capture the active reception card, after launch-screen dismissal.
             time.sleep(0.8)
             capture.parent.mkdir(parents=True, exist_ok=True)
             simctl("io", device, "screenshot", str(capture))
-        deadline = handshake_deadline if handshake_deadline is not None else time.monotonic() + 90
+        deadline = time.monotonic() + 120
         terminal = {}
         pause_observed = None
         held_without_store = False
@@ -237,9 +292,6 @@ def run_case(device, documents, title, specifications, expected_kind, capture=No
                         resumed = any(event.get("controlRevision") == 2 for event in events)
                         if not resumed and not terminal and time.monotonic() - pause_observed >= 0.5:
                             assert not destination.exists() or not any(destination.iterdir()), "paused data entered the library"
-                            if serial:
-                                with server.request_lock:
-                                    assert len(server.requests) == 1, "a waiting file started while the batch was paused"
                             held_without_store = True
                 except (json.JSONDecodeError, OSError):
                     pass
@@ -247,7 +299,7 @@ def run_case(device, documents, title, specifications, expected_kind, capture=No
                 break
             time.sleep(0.1)
         assert len(terminal) == len(manifest), f"{title}: terminal receipts missing; observed {terminal}"
-        if pause:
+        if pause and not pause_restart:
             assert pause_observed is not None and held_without_store, "pause was not held before storage"
             states = json.loads(control_path.read_text())
             for file in manifest:
@@ -268,10 +320,18 @@ def run_case(device, documents, title, specifications, expected_kind, capture=No
                 time.sleep(3.6)
             else:
                 assert any(event.get("controlRevision") == 2 for event in events), "resume acknowledgement was not observed"
+        if cancel_during_save:
+            wait_for_lifecycle(lifecycle_path, lambda item: item.get("event") == "probeCancelledDuringSave",
+                               "cancellation did not race an in-flight validation")
+            time.sleep(3.2)
+            events = json.loads(log_path.read_text())
         expected = [expected_kind] * len(manifest) if isinstance(expected_kind, str) else expected_kind
         for file, expected_file_kind in zip(manifest, expected, strict=True):
             event = terminal[file["id"]]
             assert event["kind"] == expected_file_kind, f"{title}: expected {expected_file_kind}, got {event}"
+            outcomes = {item["kind"] for item in events
+                        if item.get("fileID") == file["id"] and item.get("kind") in ("stored", "failed", "cancelled")}
+            assert outcomes == {expected_file_kind}, f"{title}: replay or late callbacks changed the final outcome: {outcomes}"
             target = destination / file["fileName"]
             if expected_file_kind == "stored":
                 assert target.is_file(), f"{title}: receipt without saved file"
@@ -281,17 +341,8 @@ def run_case(device, documents, title, specifications, expected_kind, capture=No
                 assert not target.exists(), f"{title}: rejected/cancelled data must not enter the library"
         if check_handshake:
             lifecycle = json.loads(lifecycle_path.read_text())
-            observed = [item["event"] for item in lifecycle]
-            assert "probeStatusReplied" in observed and "offerAccepted" in observed, (
-                f"{title}: missing status reply or accepted offer; observed {observed}"
-            )
-            assert observed.index("probeStatusReplied") < observed.index("offerAccepted"), (
-                f"{title}: offer preceded the status reply"
-            )
-            stored_ids = {item.get("fileID") for item in lifecycle
-                          if item["event"] == "stored" and item.get("sessionID") == offer["sessionID"]}
-            assert stored_ids == {file["id"] for file in manifest}, f"{title}: missing exact stored lifecycle events"
-            assert "probeLegacyCleanupFinished" not in observed, f"{title}: download waited for legacy cleanup"
+            assert any(item["event"] == "probeTasksReconciled" for item in lifecycle), "daemon enumeration was not observed"
+            assert any(item["event"] == "offerAccepted" for item in lifecycle), "offer was not accepted"
         if inactive_during:
             lifecycle = json.loads(lifecycle_path.read_text())
             observations = [(index, event["phase"]) for index, event in enumerate(lifecycle)
@@ -304,59 +355,32 @@ def run_case(device, documents, title, specifications, expected_kind, capture=No
                                      if event["event"] == "stored" and event.get("sessionID") == offer["sessionID"]}
             assert stored_after_inactive == {file["id"] for file in manifest}, f"{title}: not all files saved after entering inactive"
             assert not any(event["kind"] in ("paused", "resumed") for event in events), f"{title}: inactive interrupted the batch"
-        if check_display_activity or inactive_during:
-            expected_activity = ("lanDisplayActivityBegan", "lanDisplayActivityEnded") * (2 if pause and not cancel else 1)
-            observed_activity = ()
-            lifecycle = []
-            # The receiver can report the terminal receipt before the library
-            # gets the last display update.
-            deadline = time.monotonic() + 3
-            while time.monotonic() < deadline:
-                try:
-                    lifecycle = json.loads(lifecycle_path.read_text())
-                    observed_activity = tuple(item["event"] for item in lifecycle if item["event"] in expected_activity)
-                except (json.JSONDecodeError, OSError):
-                    pass
-                if len(observed_activity) >= len(expected_activity):
-                    break
-                time.sleep(0.05)
-            assert observed_activity == expected_activity, (
-                f"{title}: display activity sequence was {observed_activity}; expected {expected_activity}"
-            )
-            if inactive_during:
-                began, ended = (index for index, item in enumerate(lifecycle) if item["event"] in expected_activity)
-                last_store = max(index for index, item in enumerate(lifecycle)
-                                 if item["event"] == "stored" and item.get("sessionID") == offer["sessionID"])
-                assert began < observations[0][0] < last_store < ended, (
-                    f"{title}: display activity must span inactive and the last save; "
-                    f"begin={began}, inactive={observations[0][0]}, last save={last_store}, end={ended}"
-                )
-            print(f"Display activity verified: {len(observed_activity) // 2} begin/end pair(s)", flush=True)
         if background:
-            assert (documents / "lan-test-background.json").exists(), "background transition hook did not run"
+            lifecycle = json.loads(lifecycle_path.read_text())
+            entered = next(index for index, item in enumerate(lifecycle)
+                           if item.get("event") == "scenePhase" and item.get("phase") == "background")
+            saved_after_background = {item.get("fileID") for item in lifecycle[entered + 1:]
+                                      if item.get("event") == "stored" and item.get("sessionID") == offer["sessionID"]}
+            assert saved_after_background == {file["id"] for file, kind in zip(manifest, expected) if kind == "stored"}, (
+                "files did not complete after the real simulator background transition"
+            )
+            assert not any(item.get("kind") == "paused" and item.get("automaticPause") is True for item in events), (
+                "backgrounding automatically paused daemon-owned downloads"
+            )
         if require_range:
             assert server.range_requests, "system download did not request a Range continuation"
             print("Native continuation observed: " + ", ".join(server.range_requests), flush=True)
         if serial:
             with server.request_lock:
-                requests = list(server.requests)
-                peak, live_peak = server.peak_requests, server.peak_live_requests
-            assert [request["fileID"] for request in requests] == [file["id"] for file in manifest], "HTTP requests did not follow manifest order exactly once"
-            assert live_peak == 1, f"multiple unfinished downloads active at once: {live_peak}"
-            if not cancel_first:
-                assert peak == 1, f"multiple HTTP response bodies active at once: {peak}"
-            for index in range(1, len(manifest)):
-                previous = manifest[index - 1]
-                outcome = requests[index]["terminal"].get(previous["id"])
-                assert outcome and outcome["kind"] == expected[index - 1], "next request began before previous terminal outcome was durable"
-                if expected[index - 1] == "stored":
-                    assert requests[index]["saved"][previous["id"]], "next request began before previous music file was saved"
-            print(f"Serial requests verified: {len(requests)}, peak unfinished downloads {live_peak}", flush=True)
+                requested = {request["fileID"] for request in server.requests}
+            assert requested <= {file["id"] for file in manifest}, "HTTP requested a file outside the accepted manifest"
+            print(f"Batch outcomes verified: {len(manifest)}; daemon controls HTTP scheduling", flush=True)
         print(f"PASS: {title} ({len(manifest)} file(s))", flush=True)
     finally:
         server.shutdown()
         server.server_close()
         offer_path.unlink(missing_ok=True)
+        (documents / "lan-probe-command.json").unlink(missing_ok=True)
         if destination.exists():
             shutil.rmtree(destination)
 
@@ -371,132 +395,83 @@ def run_range_cases(device, documents, mp3):
 
 
 def run_serial_cases(device, documents, mp3, flac):
-    run_case(device, documents, "three files download and save strictly one at a time",
-             [(mp3, "slow"), (flac, "normal"), (mp3, "normal")], "stored", serial=True, check_display_activity=True)
-    run_case(device, documents, "failed first file advances to the remaining serial queue",
+    run_case(device, documents, "three pre-submitted files download and save with exact outcomes",
+             [(mp3, "slow"), (flac, "normal"), (mp3, "normal")], "stored", serial=True)
+    run_case(device, documents, "one failed file leaves other accepted files runnable",
              [(mp3, "http_error"), (flac, "normal"), (mp3, "normal")], ["failed", "stored", "stored"], serial=True)
-    run_case(device, documents, "cancelled current file advances without starting two unfinished downloads",
+    run_case(device, documents, "cancelling one accepted file leaves the other files runnable",
              [(flac, "trickle"), (mp3, "normal"), (mp3, "normal")], ["cancelled", "stored", "stored"],
              cancel_first=True, serial=True)
-    run_case(device, documents, "paused serial batch keeps waiting files unrequested until resume",
-             [(mp3, "trickle"), (flac, "normal"), (mp3, "normal")], "stored", pause=True, serial=True,
-             pause_after=2, resume_after=6, check_display_activity=True)
+    run_case(device, documents, "manually paused batch does not publish files until resume",
+             [(mp3, "trickle"), (flac, "trickle"), (mp3, "trickle")], "stored", pause=True, serial=True,
+             pause_after=2, resume_after=6)
 
 
 def run_inactive_cases(device, documents, mp3, flac):
-    run_case(device, documents, "frontmost inactive continues a partial download and starts the next song",
+    run_case(device, documents, "policy-only inactive transition preserves an accepted batch",
              [(mp3, "trickle"), (flac, "normal")], "stored", serial=True, inactive_during="download")
-    run_case(device, documents, "frontmost inactive completes an in-flight save",
+    run_case(device, documents, "policy-only inactive transition preserves an in-flight save",
              [(mp3, "normal")], "stored", serial=True, inactive_during="save")
 
 
-def run_foreground_case(device, documents, mp3, saving=False):
-    """Real simulator HTTP, lifecycle pause and an explicit fresh offer."""
-    folder = "LANProbe-" + str(uuid.uuid4())
-    identifier = str(uuid.uuid4())
-    body = mp3.read_bytes()
-    token = uuid.uuid4().hex + uuid.uuid4().hex
-    manifest = [{"id": identifier, "folder": folder, "fileName": "foreground.mp3", "byteCount": len(body),
-                 "sha256": hashlib.sha256(body).hexdigest()}]
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    server.daemon_threads = True
-    server.routes, server.token = {"/v1/files/" + identifier: (body, "normal" if saving else "trickle")}, token
-    server.range_requests, server.disconnected_paths = [], set()
-    server.request_started = threading.Event()
-    server.request_lock = threading.Lock()
-    server.active_requests, server.requests = {}, []
-    server.peak_requests = server.peak_live_requests = 0
-    server.log_path = documents / "lan-test-events.json"
-    server.outbox_path = documents.parent / "Library/Application Support/LANBackground-v2/receipts.json"
-    server.destination = documents / "Music" / folder
-    server.manifest = manifest
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    offer_path = documents / "lan-probe-offer.json"
-    next_path = documents / "lan-next-offer.json"
-    lifecycle_path = documents / "lan-lifecycle-events.json"
-    try:
-        subprocess.run(["xcrun", "simctl", "terminate", device, BUNDLE], capture_output=True, check=False, timeout=15)
-        server.log_path.unlink(missing_ok=True)
-        lifecycle_path.unlink(missing_ok=True)
-        first = {"protocolVersion": 1, "sessionID": str(uuid.uuid4()), "token": token,
-                 "baseURLs": [f"http://127.0.0.1:{server.server_port}"],
-                 "expiresAt": time.time() - 978_307_200 + 120, "files": manifest}
-        second = dict(first, sessionID=str(uuid.uuid4()))
-        offer_path.write_text(json.dumps(first))
-        next_path.write_text(json.dumps(second))
-        arguments = ["launch", device, BUNDLE, "-lan-offer-file", offer_path.name, "-lan-record-lifecycle",
-                     "-lan-background-after", "1.5" if saving else "0.5",
-                     "-lan-foreground-after", "5.0" if saving else "3.0",
-                     "-lan-next-offer-file", next_path.name,
-                     "-lan-replacement-after", "7.0" if saving else "5.0"]
-        if saving:
-            arguments += ["-lan-save-delay", "3.0"]
-        simctl(*arguments)
-        assert server.request_started.wait(timeout=15), "foreground download did not start"
-        deadline = time.monotonic() + 3
-        paused = []
-        while time.monotonic() < deadline:
-            try:
-                paused = [event for event in json.loads(server.log_path.read_text())
-                          if event["kind"] == "paused" and event.get("automaticPause") is True]
-            except (OSError, json.JSONDecodeError):
-                pass
-            if paused:
-                break
-            time.sleep(0.05)
-        assert paused, "background transition did not emit automatic pause"
-        lifecycle = json.loads(lifecycle_path.read_text())
-        activity = [item["event"] for item in lifecycle if item.get("sessionID") == first["sessionID"]
-                    and item["event"] in ("lanDisplayActivityBegan", "lanDisplayActivityEnded")]
-        assert activity == ["lanDisplayActivityBegan", "lanDisplayActivityEnded"], (
-            f"background pause did not release the display activity: {activity}"
-        )
-        time.sleep(0.7)
-        with server.request_lock:
-            assert len(server.requests) == 1 and not server.active_requests, "background receiver kept a native HTTP body running"
-        assert not server.destination.exists(), "background receiver saved music"
-        if saving:
-            snapshot = documents.parent / "Library/Application Support/LANBackground-v2/transfer.json"
-            item = json.loads(snapshot.read_text())["items"][identifier]
-            assert item["phase"] == "paused" and item.get("lifecyclePaused") is True and item.get("stagingName"), "background validation did not retain a complete paused cache"
-        # Wait until active-ready, but before the deliberately delayed new offer.
-        deadline = time.monotonic() + 5
-        ready = []
-        while time.monotonic() < deadline:
-            try:
-                ready = [event for event in json.loads(server.log_path.read_text())
-                         if event["kind"] == "resumed" and event.get("automaticPause") is True]
-            except (OSError, json.JSONDecodeError):
-                pass
-            if ready:
-                break
-            time.sleep(0.05)
-        assert ready, "returning active did not signal fresh-offer readiness"
-        with server.request_lock:
-            assert len(server.requests) == 1, "active receiver retried the old source before a new offer"
-        deadline = time.monotonic() + 30
-        stored = None
-        while time.monotonic() < deadline:
-            try:
-                stored = next((event for event in json.loads(server.log_path.read_text())
-                               if event["kind"] == "stored" and event["sessionID"] == second["sessionID"]), None)
-            except (OSError, json.JSONDecodeError):
-                pass
-            if stored:
-                break
-            time.sleep(0.1)
-        assert stored, "fresh foreground offer did not save"
-        target = server.destination / manifest[0]["fileName"]
-        assert target.is_file() and hashlib.sha256(target.read_bytes()).hexdigest() == manifest[0]["sha256"], "fresh foreground save content mismatch"
-        with server.request_lock:
-            assert len(server.requests) == 2 and server.peak_requests == 1, "foreground restart did not preserve one-at-a-time HTTP"
-        print("PASS: " + ("background cancels uncommitted validation, complete cache remains paused, fresh offer saves exact SHA"
-                          if saving else "background cancels HTTP, active signals readiness without old-URL retry, fresh foreground offer saves exact SHA"), flush=True)
-    finally:
-        server.shutdown(); server.server_close()
-        offer_path.unlink(missing_ok=True); next_path.unlink(missing_ok=True)
-        if server.destination.exists():
-            shutil.rmtree(server.destination)
+def wait_for_events(path, predicate, message, timeout=30):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            items = json.loads(path.read_text())
+            if predicate(items):
+                return items
+        except (OSError, json.JSONDecodeError):
+            pass
+        time.sleep(0.05)
+    raise AssertionError(message)
+
+
+def wait_for_lifecycle(path, predicate, message, timeout=30):
+    return wait_for_events(path, lambda items: any(predicate(item) for item in items), message, timeout)
+
+
+def wait_for_saved_file(path, file, timeout=45):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if path.stat().st_size == file["byteCount"] and hashlib.sha256(path.read_bytes()).hexdigest() == file["sha256"]:
+                return
+        except OSError:
+            pass
+        time.sleep(0.05)
+    raise AssertionError("completed daemon bytes were not validated and saved after delayed relaunch")
+
+
+def crash_process(device, launch_output):
+    pid = int(launch_output.rsplit(":", 1)[1].strip())
+    command = subprocess.check_output(["ps", "-p", str(pid), "-o", "command="], text=True)
+    assert "WatchMusicWatch" in command, "unexpected simulator process"
+    # SIGKILL simulates a crash, not the user's force-quit cancellation intent.
+    os.kill(pid, signal.SIGKILL)
+    time.sleep(0.15)
+
+
+def run_save_cases(device, documents, mp3):
+    run_case(device, documents, "in-flight validation saves after an actual simulator background transition",
+             [(mp3, "normal")], "stored", background=True, background_during_save=True)
+    run_case(device, documents, "cancel during validation blocks late atomic save",
+             [(mp3, "normal")], "cancelled", cancel_during_save=True)
+
+
+def run_background_cases(device, documents, mp3, flac):
+    run_case(device, documents, "accepted batch completes after switching to Settings (actual simulator background)",
+             [(mp3, "trickle"), (flac, "trickle")], "stored", background=True)
+    run_save_cases(device, documents, mp3)
+    run_case(device, documents, "new process re-associates daemon download without a fresh offer",
+             [(mp3, "trickle")], "stored", restart=True)
+    run_case(device, documents, "completed daemon download is delivered after delayed process relaunch",
+             [(mp3, "trickle")], "stored", delayed_restart=True)
+    run_case(device, documents, "manual pause survives process recreation and explicit resume saves",
+             [(mp3, "trickle")], "stored", pause=True, pause_after=1.5, resume_after=60, pause_restart=True)
+    run_case(device, documents, "cancel restored manually paused download prevents later save",
+             [(mp3, "trickle")], "cancelled", pause=True, cancel=True, pause_after=1.5,
+             resume_after=60, pause_restart=True)
 
 
 def main():
@@ -505,14 +480,16 @@ def main():
     parser.add_argument("--app", type=Path, help="Install this Debug Watch .app before running")
     parser.add_argument("--capture", type=Path, help="Save a screenshot during the first download")
     parser.add_argument("--success-only", action="store_true", help="Run only the successful-download scenario")
-    parser.add_argument("--background-only", action="store_true", help="Compatibility alias for the foreground-only lifecycle scenario")
+    parser.add_argument("--background-only", action="store_true", help="Verify actual simulator background and process re-association")
     parser.add_argument("--pause-only", action="store_true", help="Run native pause/resume and cancellation-while-paused scenarios")
     parser.add_argument("--range-only", action="store_true", help="Run complete, malformed and incomplete HTTP 206 response scenarios")
-    parser.add_argument("--disconnect-resume-only", action="store_true", help="Compatibility alias for interruption and fresh-offer retry")
-    parser.add_argument("--serial-only", action="store_true", help="Verify active serial order, terminal gating, failure/cancel advance and manual pause")
-    parser.add_argument("--foreground-only", action="store_true", help="Verify background pause, no stale-source retry and explicit foreground replacement")
+    parser.add_argument("--disconnect-resume-only", action="store_true", help="Verify daemon task re-association after process recreation")
+    parser.add_argument("--serial-only", action="store_true", help="Verify accepted batch outcomes, failure/cancel isolation and manual pause")
+    parser.add_argument("--foreground-only", action="store_true", help="Compatibility alias for the background download suite")
     parser.add_argument("--inactive-only", action="store_true", help="Verify accepted downloads and saves continue while frontmost inactive")
-    parser.add_argument("--handshake-only", action="store_true", help="Verify the status reply, offer and download finish while legacy cleanup is delayed")
+    parser.add_argument("--handshake-only", action="store_true", help="Verify daemon task enumeration and offer acceptance")
+    parser.add_argument("--save-only", action="store_true", help="Verify real background validation and cancellation before atomic save")
+    parser.add_argument("--completion-replay-only", action="store_true", help="Crash, finish HTTP without the app, then restore without refetching or duplicate save")
     args = parser.parse_args()
     if args.app:
         simctl("install", args.device, str(args.app.resolve()))
@@ -521,13 +498,19 @@ def main():
     documents.mkdir(exist_ok=True)
     mp3, flac = (ROOT / "Tests/Fixtures" / name for name in ["EmbeddedResources.mp3", "EmbeddedResources.flac"])
     try:
+        if args.completion_replay_only:
+            run_case(args.device, documents, "completed daemon download is delivered after delayed process relaunch",
+                     [(mp3, "trickle")], "stored", delayed_restart=True)
+            return
+        if args.save_only:
+            run_save_cases(args.device, documents, mp3)
+            return
         if args.handshake_only:
-            run_case(args.device, documents, "foreground handshake and download finish before legacy cleanup",
+            run_case(args.device, documents, "daemon task enumeration and offer acceptance",
                      [(mp3, "normal")], "stored", serial=True, check_handshake=True)
             return
         if args.foreground_only or args.background_only or args.disconnect_resume_only:
-            run_foreground_case(args.device, documents, mp3)
-            run_foreground_case(args.device, documents, mp3, saving=True)
+            run_background_cases(args.device, documents, mp3, flac)
             return
         if args.inactive_only:
             run_inactive_cases(args.device, documents, mp3, flac)
@@ -541,11 +524,11 @@ def main():
         if args.pause_only:
             run_case(args.device, documents, "partially received native task stops bytes then resumes",
                      [(mp3, "trickle")], "stored", pause=True, pause_after=2, resume_after=6, partial=True,
-                     check_display_activity=True)
+                     )
             run_case(args.device, documents, "native pause then resume preserves MP3 and FLAC",
                      [(mp3, "slow"), (flac, "slow")], "stored", pause=True)
             run_case(args.device, documents, "cancel paused batch prevents late resume and save",
-                     [(mp3, "slow")], "cancelled", pause=True, cancel=True, check_display_activity=True)
+                     [(mp3, "slow")], "cancelled", pause=True, cancel=True)
             return
         run_case(args.device, documents, "MP3 and FLAC download, integrity and save receipts",
                  [(mp3, "slow"), (flac, "normal")], "stored", args.capture)
@@ -556,11 +539,13 @@ def main():
         run_case(args.device, documents, "redirected final URL rejected even for matching bytes", [(mp3, "redirect")], "failed")
         run_case(args.device, documents, "oversized response rejected", [(mp3, "oversize")], "failed")
         run_case(args.device, documents, "cancel prevents later save", [(flac, "slow")], "cancelled", cancel=True,
-                 check_display_activity=True)
+                 )
         run_range_cases(args.device, documents, mp3)
-        print("PASS: real watch URLSession LAN transfer probe", flush=True)
+        run_background_cases(args.device, documents, mp3, flac)
+        print("PASS: simulator daemon-owned Watch URLSession probe; physical sleep still requires device acceptance", flush=True)
     finally:
-        subprocess.run(["xcrun", "simctl", "terminate", args.device, BUNDLE], capture_output=True, check=False, timeout=15)
+        if not args.completion_replay_only:
+            subprocess.run(["xcrun", "simctl", "terminate", args.device, BUNDLE], capture_output=True, check=False, timeout=15)
 
 
 if __name__ == "__main__":

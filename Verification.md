@@ -552,3 +552,17 @@ Apple 的 [setActive 约束](https://developer.apple.com/documentation/avfaudio/
 `Tests/run-watch-immersive-tests.sh` 共 1,865 项断言通过，覆盖六种尺寸、四个方向、17 / 20 / 34 / 46pt 标题高度、受列宽限制的封面、横屏上下等距与竖屏原布局。Debug 通用 iOS Simulator、Release 通用 iOS 真机架构完整构建通过，包含 Watch，禁用签名；无 Swift 源码警告，只有既有 AppIntents 元数据提取提示。`git diff --check` 通过。
 
 本轮使用隔离的 watchOS 26.5 40mm / 49mm 模拟器检查左右横屏、竖屏以及进入和退出的动画中间帧。封面和歌名完整，横屏上下留白均衡，竖屏画面与原布局一致，过渡无重影。截图与录屏位于 `Artifacts/Previews/ImmersivePlayback/LandscapeCentered`，其中带 `-logical` 的图片仅旋转原始截图供横向阅读，系统时钟仍按实际系统方向呈现：[49mm 横屏](Artifacts/Previews/ImmersivePlayback/LandscapeCentered/49mm/landscape-right-logical.png)、[40mm 横屏](Artifacts/Previews/ImmersivePlayback/LandscapeCentered/40mm/landscape-right-logical.png)、[动画](Artifacts/Previews/ImmersivePlayback/LandscapeCentered/49mm/animation.gif)。预览保持暂停，不播放音频；动画退出沿用 Debug 预览入口，不代表真实触屏或双指互点输入验收。完成后清理本轮两台隔离模拟器。
+
+
+## 手表系统后台下载（2026-11-09）
+
+分支：`fix/watch-background-downloads`，版本 `1.0.6 (8)`。实现与范围见 [局域网传输说明](LANTransferExperiment.md)，[机器可读结果](Artifacts/Verification/watch-background-downloads-1.0.6-8.json)。
+
+- 新下载改为固定标识的后台 URLSession，接受清单后整批预提交，手表 `inactive/background` 不再取消任务；重建进程先重新关联系统任务。校验与原子保存保持串行，后台执行机会过期时保留完整暂存文件。
+- 移除手表防息屏 activity、旧后台任务启动即取消和逐首网络等待保存的逻辑。手机实时消息失联不关闭已确认的 HTTP 源，重连单飞对账；首批仅查询库存和发送 offer。版本未变时复用当前进程预检 SHA，手机重启后重新验证。
+- 26 个 watchOS 26.5 模拟器 HTTP/生命周期集成场景通过，包括实际切到系统设置后保存、SIGKILL 后重新关联系统任务、原进程不存在时完成下载再恢复（HTTP 仅请求一次）、手动暂停跨进程、取消与原子保存竞态、HTTP/长度/摘要/端点校验。注入 `inactive` 的两例只验证应用策略，不视为硬件熄屏证据。
+- 状态 133、协议 89、回执 36、列表 42、源版本 23 项断言通过；手机前台队列 138、发送去重 100、控制 22、批量 35、HTTP 51、流式内存 10 项断言通过。1.5 GiB 逻辑流式批次的峰值 footprint 增量约 344 KB，不整体载入音频。
+- 已签名模拟器 Debug、真机目标 Debug、双端 Release 归档和深度签名校验通过；归档内两端版本均为 `1.0.6 (8)`，389 个双语键及两端资源检查通过。
+- Mac 到已连接 Apple Watch 的开发隧道超时；用户选择先完成 TestFlight 上传，真机安装与硬件熄屏测试延期。模拟器与构建通过不代表 TestFlight 真机熄屏已验收。
+- 手机仍须前台提供可达文件源，源最长一小时；系统可推迟后台调度。每批最多 100 首，新批次仍要求手表活跃可达。
+- TestFlight：上传成功，App Store Connect 已显示 `1.0.6 (8)` 正在处理；等待处理完成和现有内部群组分发。

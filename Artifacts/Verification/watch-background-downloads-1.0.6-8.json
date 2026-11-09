@@ -1,0 +1,52 @@
+{
+  "date": "2026-11-09",
+  "branch": "fix/watch-background-downloads",
+  "version": "1.0.6",
+  "build": "8",
+  "checks": {
+    "watchStateAssertions": 133,
+    "protocolAssertions": 89,
+    "receiptPolicyAssertions": 36,
+    "transferListAssertions": 42,
+    "sourceVersionAssertions": 23,
+    "phoneForegroundAssertions": 138,
+    "phoneSendAssertions": 100,
+    "phoneControlAssertions": 22,
+    "phoneBulkAssertions": 35,
+    "httpServerAssertions": 51,
+    "streamingMemoryAssertions": 10,
+    "watchIntegrationScenarios": 26,
+    "localizedKeys": 389,
+    "shippedBundlesChecked": 2
+  },
+  "integrationCoverage": [
+    "actual simulator background transition",
+    "process restart and daemon task re-association",
+    "completion delivered after original process dies without another HTTP request",
+    "manual pause across process restarts",
+    "cancel before atomic storage",
+    "background validation and save",
+    "HTTP failures, corrupt content, oversize, redirect endpoint rejection, validated 206"
+  ],
+  "builds": {
+    "signedWatchSimulatorDebug": "passed",
+    "signedDeviceDebug": "passed",
+    "releaseArchive": "passed",
+    "deepCodeSignatureVerification": "passed"
+  },
+  "physicalVerification": {
+    "status": "not completed",
+    "reason": "Development tunnel timed out; user requested completing TestFlight upload first and deferring hardware verification."
+  },
+  "testFlight": {
+    "status": "uploaded, processing",
+    "group": "music",
+    "buildID": "c6506da8-6cb3-4f62-9ef1-c471b803b71e"
+  },
+  "limits": [
+    "iPhone file server must remain in foreground and reachable on local Wi-Fi",
+    "source credentials expire after one hour",
+    "system schedules background transfers and event delivery",
+    "new batches require the Watch app active and reachable; currently at most 100 files per batch"
+  ]
+}

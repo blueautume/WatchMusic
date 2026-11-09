@@ -30,6 +30,7 @@ test_sources=(
   "$test_root/Shared/Localization.swift"
   "$test_source_root/Shared/AudioFileFormat.swift"
   "$test_source_root/Shared/LANTransferProtocol.swift"
+  "$test_source_root/Shared/TransferSourceVersion.swift"
   "$test_source_root/Shared/LANHTTPParsing.swift"
   "$test_source_root/PhoneApp/LANHTTPServer.swift"
   "$test_root/Tests/LANMemoryProbe.swift"

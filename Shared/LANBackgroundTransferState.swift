@@ -1,7 +1,7 @@
 import Foundation
 
-/// Persisted queue bookkeeping. Network work is foreground-only; complete
-/// download caches remain recoverable until their save is recorded.
+/// Durable intents and task identities for system-owned background downloads.
+/// Completed caches remain recoverable until validation and save are recorded.
 struct LANBackgroundTransferState: Codable {
     enum Phase: String, Codable {
         case queued, downloading, paused, validating, stored, failed, cancelled
@@ -38,10 +38,8 @@ struct LANBackgroundTransferState: Codable {
     var pendingFileIDs: Set<String> { Set(items.filter { $0.value.phase.isPending }.map(\.key)) }
     var isFinished: Bool { pendingFileIDs.isEmpty }
 
-    /// One file owns the download/save lane until it finishes or is paused.
-    /// Explicitly retaining its identity prevents a resumed earlier file from
-    /// interrupting the current one. On restoration, prioritize complete caches
-    /// and existing partial downloads before starting untouched queued files.
+    /// Choose a stable file to present, preferring local validation and active
+    /// progress. This is a display order, not a gate on system download tasks.
     func nextRunnableFileID(keeping currentFileID: String? = nil) -> String? {
         if let currentFileID, let phase = items[currentFileID]?.phase,
            phase == .downloading || phase == .validating { return currentFileID }
