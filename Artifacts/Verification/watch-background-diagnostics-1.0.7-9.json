@@ -3,12 +3,18 @@
   "branch": "fix/watch-background-downloads",
   "version": "1.0.7",
   "build": "9",
-  "purpose": "diagnostic instrumentation and defensive timeout/handshake handling; physical screen-off issue not confirmed fixed",
+  "purpose": "diagnostic instrumentation and defensive timeout/handshake handling; one user-reported physical screen-off transfer passed",
   "physicalVerification": {
     "priorBuildFeedback": "same file stalls when Watch sleeps and resumes on wake while iPhone remains foreground",
-    "watchInstalledVersion": "not independently confirmed; read-only device query timed out",
-    "currentBuildHardwareSleepTest": "pending",
-    "rootCause": "not established; prior UI depended on Watch callbacks and did not independently measure source bytes"
+    "watchInstalledVersion": "1.0.7 (9) per user response to the dual-version verification test; not independently queried",
+    "currentBuildHardwareSleepTest": "passed per user report on 2026-11-09",
+    "rootCause": "not established; no byte samples or system logs from this successful run identify which change caused the improvement",
+    "evidence": "User replied: 熄屏后能继续，最终传输完成",
+    "continuedAfterDisplaySleep": true,
+    "finalTransferCompleted": true,
+    "independentDeviceLogReview": false,
+    "sourceAndWatchByteSamples": "not provided",
+    "scope": "one reported physical-device TestFlight run; does not establish every network, prolonged sleep or subsequent-batch scenario"
   },
   "changes": [
     "independent source logical byte position; does not modify Watch receive progress or save receipts",
