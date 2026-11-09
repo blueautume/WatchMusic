@@ -63,7 +63,10 @@ private struct WatchPageLayout<Background: View>: ViewModifier {
         if title.isEmpty {
             if let action {
                 navigationButton(action: action)
-                    .offset(x: insets.backFrame.minX, y: insets.backFrame.minY)
+                    .padding(.leading, insets.backFrame.minX)
+                    .padding(.top, insets.backFrame.minY)
+                    .frame(width: metrics.logicalSize.width,
+                           height: max(insets.headerHeight, insets.backFrame.maxY), alignment: .topLeading)
             }
         } else {
             let portrait = metrics.orientation == .portrait
@@ -99,7 +102,7 @@ private struct WatchPageLayout<Background: View>: ViewModifier {
             Image(systemName: symbol).font(.system(size: 15, weight: .semibold))
                 .frame(width: 32, height: 32)
                 .background(AppPalette.surface, in: Circle())
-                .frame(width: 44, height: 44).contentShape(Circle())
+                .frame(width: 44, height: 44).contentShape(Rectangle())
         }
         .buttonStyle(.plain).foregroundStyle(AppPalette.textPrimary)
         .accessibilityLabel(symbol == "chevron.left" ? L10n.text("返回") : L10n.text("关闭"))

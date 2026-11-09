@@ -54,16 +54,18 @@ struct NowPlayingView: View {
             chooseSleep: { activeDialog = .sleep },
             chooseOutput: { player.requestAudioOutput() }
         )
+        .contentShape(Rectangle())
+        // Only player content consumes the first touch in immersive mode.
+        // The navigation header stays outside this priority recognizer.
+        .highPriorityGesture(TapGesture().onEnded { registerInteraction() },
+                             including: immersion.isImmersive ? .all : .subviews)
         .watchPage(title: "", action: closePlayback, symbol: "chevron.left", showsHeader: !immersion.isImmersive) {
             WatchPlaybackBackground(data: player.artworkData)
         }
         .contentShape(Rectangle())
-        // Consume the first physical tap before it can activate a control or
-        // Back. The visible cover retains the system primary-action shortcut.
-        .highPriorityGesture(TapGesture().onEnded { registerInteraction() },
-                             including: immersion.isImmersive ? .all : .subviews)
+        // Observe header/blank-area touches without competing with Back.
         .simultaneousGesture(TapGesture().onEnded { registerInteraction() },
-                             including: immersion.isImmersive ? .subviews : .all)
+                             including: .all)
         .overlay {
             WatchVolumeFeedbackOverlay(isActive: acceptsCrownInput)
         }
