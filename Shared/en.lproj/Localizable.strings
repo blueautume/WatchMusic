@@ -395,3 +395,13 @@
 "手表 App 版本：%@" = "Watch app version: %@";
 "尚未确认" = "Not confirmed";
 "连接并开始传输后核对手表版本，请确认两端均已更新。" = "Connect and start a transfer to check the Watch app version. Make sure both apps are up to date.";
+"本批任务" = "Batch tasks";
+"取消剩余任务" = "Cancel remaining";
+"取消本批剩余传输" = "Cancel remaining transfers in this batch";
+"已保存 %@" = "Saved %@";
+"本批接收进度" = "Batch receive progress";
+"剩余 %@ 首" = "%@ remaining";
+"失败 %@ · 已取消 %@" = "Failed %@ · Canceled %@";
+"接收结束" = "Reception ended";
+"已保存" = "Saved";
+"等待接收" = "Waiting";

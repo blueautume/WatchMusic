@@ -1,0 +1,65 @@
+{
+  "date": "2026-11-09",
+  "branch": "fix/watch-background-downloads",
+  "version": "1.0.8",
+  "build": "10",
+  "changes": [
+    "complete stable batch snapshot and scrollable per-file rows",
+    "byte-weighted batch receive progress separate from stored count",
+    "compact controls for landscape and bottom-clock layouts",
+    "reduced luminance summary without polling or runtime changes"
+  ],
+  "checks": {
+    "batchSnapshotAssertions": 31,
+    "backgroundStateAssertions": 133,
+    "existingSurfaceAssertions": 1224,
+    "actualSimulatorHTTPBackgroundScenarios": 7,
+    "signedSimulatorDebug": "passed",
+    "signedReleaseArchive": "passed",
+    "deepSignatureVerification": "passed",
+    "localizedKeys": 406,
+    "sourceLiterals": 556,
+    "shippedBundlesChecked": 2,
+    "phoneArchivedVersion": "1.0.8 (10)",
+    "watchArchivedVersion": "1.0.8 (10)",
+    "layoutPreviews": [
+      "Artifacts/Previews/TransferBatch-1.0.8/40mm-active.png",
+      "Artifacts/Previews/TransferBatch-1.0.8/40mm-dimmed-landscape.png",
+      "Artifacts/Previews/TransferBatch-1.0.8/40mm-dimmed.png",
+      "Artifacts/Previews/TransferBatch-1.0.8/40mm-english.png",
+      "Artifacts/Previews/TransferBatch-1.0.8/40mm-landscape-left.png",
+      "Artifacts/Previews/TransferBatch-1.0.8/40mm-landscape.png",
+      "Artifacts/Previews/TransferBatch-1.0.8/40mm-paused.png",
+      "Artifacts/Previews/TransferBatch-1.0.8/40mm-saving.png",
+      "Artifacts/Previews/TransferBatch-1.0.8/40mm-single.png",
+      "Artifacts/Previews/TransferBatch-1.0.8/40mm-tail.png",
+      "Artifacts/Previews/TransferBatch-1.0.8/40mm-upside-down.png",
+      "Artifacts/Previews/TransferBatch-1.0.8/49mm-active.png",
+      "Artifacts/Previews/TransferBatch-1.0.8/49mm-dimmed-landscape.png",
+      "Artifacts/Previews/TransferBatch-1.0.8/49mm-dimmed.png",
+      "Artifacts/Previews/TransferBatch-1.0.8/49mm-landscape-left.png",
+      "Artifacts/Previews/TransferBatch-1.0.8/49mm-landscape.png",
+      "Artifacts/Previews/TransferBatch-1.0.8/49mm-tail.png"
+    ]
+  },
+  "physicalVerification": {
+    "hardwareAlwaysOn": "not independently tested in this build",
+    "priorBuild": "1.0.7 (9) screen-off continuation and completion passed per user report",
+    "nightstandMode": "excluded by user"
+  },
+  "testFlight": {
+    "status": "upload succeeded; Apple accepted package and began processing",
+    "uploadEvidence": "Artifacts/Verification/testflight-1.0.8-10-upload.txt",
+    "existingGroup": "music",
+    "internalGroupState": "not verified; browser login expired",
+    "testNotes": "not saved; user deferred browser login and requested upload first",
+    "appStoreReviewSubmitted": false
+  },
+  "limits": [
+    "Always On display remains controlled by device capability and user settings",
+    "reduced-luminance screenshots use a Debug environment override, not physical display sleep",
+    "latest known byte snapshot does not guarantee fixed background refresh cadence",
+    "preview tail uses Debug initial scroll anchor, not a physical crown gesture test",
+    "new batches still need active reachable Watch; phone source must remain foreground"
+  ]
+}

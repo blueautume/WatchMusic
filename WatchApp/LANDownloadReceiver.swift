@@ -5,16 +5,6 @@ enum LANReceiverAvailability {
     case active, inactive, background
 }
 
-struct LANReceptionStatus {
-    let fileName: String
-    let completedBytes: Int64
-    let totalBytes: Int64
-    let fileIndex: Int
-    let fileCount: Int
-    let isSaving: Bool
-    var isPaused = false
-}
-
 /// Cancellation and the final rename have a single ordering. A cancellation
 /// cannot report success and then allow a worker to publish the file later.
 final class LANStoragePermission {
@@ -682,14 +672,7 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
     }
 
     private func publish() {
-        let status: LANReceptionStatus?
-        if let state, let file = state.nextRunnableFileID().flatMap({ state.file(for: $0) }) ?? state.offer.files.first(where: { state.items[$0.id]?.phase == .paused }), let item = state.items[file.id] {
-            let completed = state.items.values.filter { !$0.phase.isPending }.count
-            status = LANReceptionStatus(fileName: file.fileName, completedBytes: item.receivedBytes,
-                                        totalBytes: file.byteCount, fileIndex: completed + 1,
-                                        fileCount: state.offer.files.count, isSaving: item.phase == .validating,
-                                        isPaused: item.phase == .paused)
-        } else { status = nil }
+        let status = state.map(LANReceptionStatus.init(state:))
         let currentGeneration = generation
         DispatchQueue.main.async { [weak self] in
             guard let self, self.isCurrentPublication(currentGeneration) else { return }

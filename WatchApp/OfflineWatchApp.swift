@@ -67,10 +67,8 @@ struct OfflineWatchApp: App {
                 if FileManager.default.fileExists(atPath: fixture.path) { player.prepareLayoutPreview(fixture) }
             }
         } else if ProcessInfo.processInfo.arguments.contains("-preview-lan-transfer") {
-            LANTransferView(reception: LANReceptionStatus(fileName: "Midnight Melody · Evening Run Playlist.flac", completedBytes: 6_300_000,
-                                                        totalBytes: 10_000_000, fileIndex: 2, fileCount: 12,
-                                                        isSaving: ProcessInfo.processInfo.arguments.contains("-preview-lan-saving"),
-                                                        isPaused: ProcessInfo.processInfo.arguments.contains("-preview-lan-paused")), cancel: {})
+            LANTransferView(reception: transferPreview, cancel: {})
+                .environment(\.isLuminanceReduced, ProcessInfo.processInfo.arguments.contains("-preview-lan-dimmed"))
         } else if ProcessInfo.processInfo.arguments.contains("-preview-watch-info") {
             WatchLibraryInfoView()
         } else if ProcessInfo.processInfo.arguments.contains("-preview-watch-new-folder") {
@@ -80,6 +78,29 @@ struct OfflineWatchApp: App {
         } else if ProcessInfo.processInfo.arguments.contains("-preview-watch-rename-folder") {
             WatchNameEntry(title: L10n.text("重命名目录"), initial: "Evening Run Playlist", prompt: L10n.text("目录名称"), compactTitle: L10n.text("重命名")) { _, done in done(false) }
         } else { applicationView }
+    }
+    private var transferPreview: LANReceptionStatus {
+        let arguments = ProcessInfo.processInfo.arguments
+        let samples: [(String, Int64, Int64, LANBackgroundTransferState.Phase)] = [
+            ("Midnight Melody · Evening Run Playlist.flac", 63, 100, .downloading),
+            ("周末随想 · 一段很长的中文歌曲名称.mp3", 18, 24, .downloading),
+            ("A Quiet Morning.flac", 46, 46, .validating),
+            ("山间来信.mp3", 0, 95, .queued),
+            ("Blue Horizon.flac", 8, 28, .paused),
+            ("雨后的街道.mp3", 20, 20, .stored),
+            ("Last Light.flac", 4, 30, .failed)
+        ]
+        let selected = arguments.contains("-preview-lan-single") ? Array(samples.prefix(1)) : samples
+        let files = selected.enumerated().map { index, sample in
+            let saving = arguments.contains("-preview-lan-saving")
+            let paused = arguments.contains("-preview-lan-paused")
+            let phase = saving ? LANBackgroundTransferState.Phase.validating :
+                (paused && sample.3.isPending ? .paused : sample.3)
+            return LANReceptionFileStatus(id: "preview-transfer-\(index)", fileName: sample.0,
+                completedBytes: (saving ? sample.2 : sample.1) * 1_000_000,
+                totalBytes: sample.2 * 1_000_000, phase: phase)
+        }
+        return LANReceptionStatus(files: files)
     }
     #endif
 
