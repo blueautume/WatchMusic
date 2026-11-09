@@ -1,0 +1,54 @@
+{
+  "date": "2026-11-09",
+  "branch": "fix/watch-background-downloads",
+  "version": "1.0.7",
+  "build": "9",
+  "purpose": "diagnostic instrumentation and defensive timeout/handshake handling; physical screen-off issue not confirmed fixed",
+  "physicalVerification": {
+    "priorBuildFeedback": "same file stalls when Watch sleeps and resumes on wake while iPhone remains foreground",
+    "watchInstalledVersion": "not independently confirmed; read-only device query timed out",
+    "currentBuildHardwareSleepTest": "pending",
+    "rootCause": "not established; prior UI depended on Watch callbacks and did not independently measure source bytes"
+  },
+  "changes": [
+    "independent source logical byte position; does not modify Watch receive progress or save receipts",
+    "header timeout 20 seconds; transfer idle timeout 300 seconds; source lifetime still at most 3600 seconds",
+    "authenticated HTTP source progress confirms consumed offer when WC acknowledgement is delayed",
+    "Watch version/build metadata in successful inventory and offer replies; visible on both apps",
+    "one native task snapshot on Watch activation and URLSession task metrics at completion; no periodic polling"
+  ],
+  "checks": {
+    "httpServerAssertions": 65,
+    "phoneForegroundAssertions": 158,
+    "progressObservationAssertions": 9,
+    "queueEstimateAssertions": 20,
+    "streamingMemoryAssertions": 10,
+    "streamingLogicalBatchBytes": 1610612736,
+    "streamingPeakFootprintDeltaBytes": 409648,
+    "signedWatchSimulatorBackgroundSaveSmoke": "passed; SHA and byte count verified",
+    "signedSimulatorDebugBuild": "passed",
+    "signedReleaseArchive": "passed",
+    "deepCodeSignatureVerification": "passed",
+    "localizedKeys": 396,
+    "sourceLiterals": 543,
+    "shippedBundlesChecked": 2,
+    "phoneArchivedVersion": "1.0.7 (9)",
+    "watchArchivedVersion": "1.0.7 (9)",
+    "logPrivacyReview": "no URL, IP, token, song name or file path in new transfer events"
+  },
+  "testFlight": {
+    "status": "processed; testing in existing internal group",
+    "group": "music",
+    "buildID": "e20e8ecb-ca78-4c62-aed3-bf687a6c4d50",
+    "url": "https://appstoreconnect.apple.com/teams/15b64959-7fb3-4201-97f5-fdb00de27c61/apps/6828426951/testflight/ios/e20e8ecb-ca78-4c62-aed3-bf687a6c4d50",
+    "internalBuildState": "正在测试",
+    "testNotes": "saved",
+    "evidence": "Artifacts/Verification/testflight-1.0.7-9-notes.jpg"
+  },
+  "limits": [
+    "simulator background transition is not hardware sleep or radio validation",
+    "source bytes mean Range offset plus bytes handed to network stack, not Watch receipt or cumulative wire traffic",
+    "iPhone source must remain foreground and reachable; lifetime at most one hour",
+    "system background scheduling does not guarantee uninterrupted transfer; new batches still require active reachable Watch"
+  ]
+}

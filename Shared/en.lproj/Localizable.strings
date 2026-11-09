@@ -388,3 +388,10 @@
 "传输期间请保持 iPhone App 打开，手表可熄屏。" = "Keep the iPhone app open during transfer. The Watch screen can turn off.";
 "手表暂时无法确认操作，请连接后重试。" = "The Watch cannot confirm this action right now. Reconnect and try again.";
 "等待手表继续接收" = "Waiting for the Watch to continue receiving";
+"传输期间请保持 iPhone App 打开。" = "Keep the iPhone app open during transfer.";
+"手表已确认 %@" = "Watch confirmed %@";
+"手机已发出 %@" = "iPhone sent %@";
+"发出不代表已保存，完成以手表确认为准。" = "Sent bytes are not a saved-file confirmation. Wait for the Watch to confirm completion.";
+"手表 App 版本：%@" = "Watch app version: %@";
+"尚未确认" = "Not confirmed";
+"连接并开始传输后核对手表版本，请确认两端均已更新。" = "Connect and start a transfer to check the Watch app version. Make sure both apps are up to date.";

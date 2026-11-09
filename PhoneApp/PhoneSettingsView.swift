@@ -78,6 +78,13 @@ private struct PhoneWatchConnectionRow: View {
                     .font(.subheadline)
                     .foregroundStyle(AppPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
+                Text(L10n.format("手表 App 版本：%@", library.watchAppVersion ?? L10n.text("尚未确认")))
+                    .font(.caption).foregroundStyle(AppPalette.textSecondary)
+                if library.watchSupportsBackgroundDownloads != true {
+                    Text(L10n.text("连接并开始传输后核对手表版本，请确认两端均已更新。"))
+                        .font(.caption).foregroundStyle(AppPalette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(.vertical, 4)
         } icon: {

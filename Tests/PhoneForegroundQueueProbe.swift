@@ -71,7 +71,7 @@ struct PhoneForegroundQueueProbe {
         var models: [PhoneLibrary] = []
         var peers: [ForegroundQueuePeer] = []
         defer {
-            peers.forEach { $0.releaseInventory(); $0.releaseStatusUsingCurrentSession(); $0.releaseResume() }
+            peers.forEach { $0.releaseInventory(); $0.releaseStatusUsingCurrentSession(); $0.releaseResume(); $0.releaseOffer() }
             models.forEach { $0.sceneDidBecomeInactive(); $0.clearAllTasks() }
             folders.forEach { try? manager.removeItem(at: $0) }
             try? manager.removeItem(at: persistenceRoot)
@@ -480,6 +480,84 @@ struct PhoneForegroundQueueProbe {
                   "Replacement B finishes after the canceled preparation's stale status")
         statusRace.clearAllTasks()
 
+        // HTTP can prove acceptance before the offer ACK reaches the phone.
+        // Source-side bytes must remain distinct from Watch-confirmed bytes.
+        let delayedOfferPeer = ForegroundQueuePeer()
+        delayedOfferPeer.holdNextOffer = true
+        let delayedOffer = model(delayedOfferPeer)
+        _ = try send([a1, b1], on: delayedOffer)
+        try await wait("offer accepted by peer while its acknowledgment is held") {
+            delayedOfferPeer.offers.count == 1 && delayedOfferPeer.hasHeldOffer
+        }
+        let unacknowledged = delayedOfferPeer.offers[0]
+        let readFile = unacknowledged.files[0], unreadFile = unacknowledged.files[1]
+        try check(delayedOffer.isAwaitingLANAcceptance,
+                  "Before HTTP or a Watch reply, the source still awaits acceptance")
+        let readBytes = try await readSource(readFile, in: unacknowledged)
+        try await wait("real source bytes confirm the held handshake") {
+            !delayedOffer.isAwaitingLANAcceptance &&
+                delayedOffer.transferProgress.sourceBytes[readFile.id] == readFile.byteCount
+        }
+        try check(readBytes == Data(contentsOf: a1.url) && delayedOfferPeer.hasHeldOffer,
+                  "A real authenticated HTTP response confirms acceptance while the offer ACK remains delayed")
+        delayedOffer.setTransferQueueProbeReachable(false)
+        for _ in 0..<5 { delayedOffer.retryAutomaticTransfersForProbe() }
+        _ = try await readSource(unreadFile, in: unacknowledged)
+        try await wait("source accounting continues without WatchConnectivity") {
+            delayedOffer.transferProgress.sourceBytes[unreadFile.id] == unreadFile.byteCount
+        }
+        try check(delayedOffer.activeLANSessionID == unacknowledged.sessionID && delayedOffer.isLANActive &&
+                  !delayedOffer.isAwaitingLANAcceptance && delayedOfferPeer.automaticPauses.isEmpty &&
+                  delayedOfferPeer.offerAttempts == 1,
+                  "Losing messaging after authenticated HTTP acceptance preserves the original source without another offer")
+        try check(unacknowledged.files.allSatisfy {
+            (delayedOffer.transferMetrics[$0.id]?.completedBytes ?? 0) == 0 &&
+                (delayedOffer.progress[$0.id] ?? 0) == 0
+        } && delayedOffer.storedTransfers.isEmpty,
+                  "Source-side bytes neither advance Watch-confirmed progress nor imply a saved file")
+        delayedOffer.cancel(delayedOffer.transfers.first { $0.id == readFile.id }!)
+        _ = try await readSource(readFile, in: unacknowledged, expectedStatus: 404)
+        try check(delayedOffer.transferProgress.sourceBytes[readFile.id] == nil &&
+                  delayedOffer.transfers.first { $0.id == readFile.id }?.state == .cancelled,
+                  "Cancel revokes the file and removes source accounting instead of accepting later bytes")
+        _ = try await readSource(unreadFile, in: unacknowledged)
+        delayedOffer.clearAllTasks()
+        delayedOfferPeer.releaseOffer()
+        delayedOffer.setTransferQueueProbeReachable(true)
+        try await Task.sleep(nanoseconds: 80_000_000)
+        try check(delayedOffer.transfers.isEmpty && delayedOffer.transferProgress.sourceBytes.isEmpty &&
+                  !delayedOffer.isLANActive && delayedOffer.activeLANSessionID == nil &&
+                  delayedOfferPeer.offerAttempts == 1,
+                  "Clear and a late offer acknowledgment cannot restore source counters, records, or an HTTP source")
+        do {
+            _ = try await readSource(unreadFile, in: unacknowledged)
+            throw ProbeFailure.failed("A late offer ACK must not reopen the cleared HTTP listener")
+        } catch let error as ProbeFailure { throw error }
+        catch { try check(true, "The cleared source remains closed after its late offer acknowledgment") }
+
+        // Receiver metadata is carried by the message envelope, including the
+        // inventory response that arrives before the offer is acknowledged.
+        let versionPeer = ForegroundQueuePeer()
+        versionPeer.receiverMetadata = ["receiverVersion": "1.0.7", "receiverBuild": "9", "supportsBackgroundDownloads": true]
+        versionPeer.holdNextOffer = true
+        let versioned = model(versionPeer)
+        _ = try send([a1], on: versioned)
+        try await wait("versioned inventory response before held offer ACK") { versionPeer.hasHeldOffer }
+        try check(versioned.watchAppVersion == "1.0.7 (9)" && versioned.watchSupportsBackgroundDownloads == true,
+                  "Inventory envelope metadata identifies the actual Watch version and background download capability")
+        versionPeer.releaseOffer()
+        try await ready(1, on: versioned, peer: versionPeer)
+        try check(versioned.watchAppVersion == "1.0.7 (9)" && versioned.watchSupportsBackgroundDownloads == true,
+                  "The normal offer acknowledgment preserves receiver metadata")
+        versionPeer.finish(versionPeer.offers[0].files[0], in: versionPeer.offers[0], on: versioned)
+        versionPeer.receiverMetadata = [:]
+        _ = try send([b1], on: versioned)
+        try await ready(2, on: versioned, peer: versionPeer)
+        try check(versioned.isLANActive && versioned.watchAppVersion == nil && versioned.watchSupportsBackgroundDownloads == nil,
+                  "Legacy replies remain compatible and replace a stale known receiver version with unknown metadata")
+        versionPeer.finish(versionPeer.offers[1].files[0], in: versionPeer.offers[1], on: versioned)
+        versioned.clearAllTasks()
+
         // WatchConnectivity reachability can disappear while the accepted
         // HTTP source still serves the batch. Reconcile the remaining files.
         let networkPeer = ForegroundQueuePeer()
@@ -714,12 +792,16 @@ private final class ForegroundQueuePeer {
     var hasHeldStatus: Bool { heldStatus != nil }
     var holdNextResume = false
     var hasHeldResume: Bool { heldResume != nil }
+    var holdNextOffer = false
+    var hasHeldOffer: Bool { heldOffer != nil }
+    var receiverMetadata: [String: Any] = [:]
     private var current: LANTransferOffer?
     private var pending = Set<String>()
     private var phases: [String: LANTransferEvent.Kind] = [:]
     private var heldInventory: (LANInventoryRequest, CheckedContinuation<[String: Any], Error>)?
     private var heldStatus: CheckedContinuation<[String: Any], Error>?
     private var heldResume: ([LANTransferEvent], CheckedContinuation<[String: Any], Error>)?
+    private var heldOffer: CheckedContinuation<[String: Any], Error>?
 
     func request(_ message: [String: Any]) async throws -> [String: Any] {
         if let request = LANTransferWire.decode(LANInventoryRequest.self, from: message, type: LANInventoryWire.requestType) {
@@ -789,7 +871,11 @@ private final class ForegroundQueuePeer {
             }
             guard pending.isEmpty else { throw PeerFailure.activeOfferReplaced }
             offers.append(offer); current = offer; pending = Set(offer.files.map(\.id)); phases = [:]
-            return ["accepted": true]
+            if holdNextOffer {
+                holdNextOffer = false
+                return try await withCheckedThrowingContinuation { heldOffer = $0 }
+            }
+            return envelope(["accepted": true])
         }
         throw PeerFailure.unknownMessage
     }
@@ -836,12 +922,22 @@ private final class ForegroundQueuePeer {
         } catch { continuation.resume(throwing: error) }
     }
 
+    func releaseOffer() {
+        guard let continuation = heldOffer else { return }
+        heldOffer = nil
+        continuation.resume(returning: envelope(["accepted": true]))
+    }
+
+    private func envelope(_ payload: [String: Any]) -> [String: Any] {
+        payload.merging(receiverMetadata) { _, value in value }
+    }
+
     private func inventoryReply(_ request: LANInventoryRequest) throws -> [String: Any] {
         let matches = request.files.filter { file in
             guard let found = saved[LANInventoryWire.pathKey(folder: file.folder, fileName: file.fileName)] else { return false }
             return found.bytes == file.byteCount && found.hash == file.sha256
         }.map(\.id)
-        return try LANTransferWire.message(LANInventoryReply(requestID: request.requestID, matchedFileIDs: matches), type: LANInventoryWire.replyType)
+        return envelope(try LANTransferWire.message(LANInventoryReply(requestID: request.requestID, matchedFileIDs: matches), type: LANInventoryWire.replyType))
     }
 
     private enum PeerFailure: Error { case activeOfferReplaced, unknownMessage }

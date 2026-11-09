@@ -35,8 +35,12 @@
     "deepCodeSignatureVerification": "passed"
   },
   "physicalVerification": {
-    "status": "not completed",
-    "reason": "Development tunnel timed out; user requested completing TestFlight upload first and deferring hardware verification."
+    "status": "user reports failure",
+    "observedVersion": "TestFlight 1.0.6 (8); separate Watch bundle version not yet independently confirmed",
+    "phoneRemainedForeground": true,
+    "sameFileStallsWhenWatchSleeps": true,
+    "resumesWhenWatchWakes": true,
+    "rootCause": "not established; source-side bytes were not independently measured in this build"
   },
   "testFlight": {
     "status": "processed; testing in existing internal group",

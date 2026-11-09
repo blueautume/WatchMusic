@@ -1,6 +1,15 @@
 import Darwin
 import Foundation
 import Network
+import OSLog
+
+/// A source-side logical file position handed to the network stack. It is not
+/// a Watch receive/save acknowledgement; a resumed request includes its offset.
+struct LANSourceProgress: Sendable {
+    let fileID: String
+    let sentBytes: Int64
+    let totalBytes: Int64
+}
 
 /// An in-memory digest produced by source inspection, never restored from the
 /// phone's transfer history. The server rechecks the exact file version.
@@ -15,22 +24,30 @@ struct LANHTTPVerifiedSource: Sendable {
 @MainActor
 final class LANHTTPServer {
     var onStopped: ((String) -> Void)?
+    var onProgress: ((LANSourceProgress) -> Void)?
     private(set) var activeSessionID: String?
     private var core: LANHTTPServerCore?
     private var generation = UUID()
     private var preparation: LANPreparationCancellation?
     private let allowLoopbackForTesting: Bool
     private let lifetime: TimeInterval
+    private let headerTimeout: TimeInterval
+    private let transferIdleTimeout: TimeInterval
+    private var revokedFileIDs = Set<String>()
 
-    init(allowLoopbackForTesting: Bool = false, sessionLifetime: TimeInterval = 3_600) {
+    init(allowLoopbackForTesting: Bool = false, sessionLifetime: TimeInterval = 3_600,
+         headerTimeout: TimeInterval = 20, transferIdleTimeout: TimeInterval = 300) {
         self.allowLoopbackForTesting = allowLoopbackForTesting
         lifetime = min(3_600, max(1, sessionLifetime))
+        self.headerTimeout = min(lifetime, max(0.05, headerTimeout.isFinite ? headerTimeout : 20))
+        self.transferIdleTimeout = min(lifetime, max(0.05, transferIdleTimeout.isFinite ? transferIdleTimeout : 300))
     }
 
     func start(sources: [LANTransferSource], verifiedSources: [String: LANHTTPVerifiedSource] = [:]) async throws -> LANTransferOffer {
         guard preparation == nil, core == nil else { throw lanServerError("已有局域网传输，请先完成或停止。") }
         let requestID = UUID()
         generation = requestID
+        revokedFileIDs.removeAll()
         let cancellation = LANPreparationCancellation()
         preparation = cancellation
         let testing = allowLoopbackForTesting
@@ -47,8 +64,16 @@ final class LANHTTPServer {
                 let sessionID = UUID().uuidString
                 let token = (UUID().uuidString + UUID().uuidString).replacingOccurrences(of: "-", with: "").lowercased()
                 let expiration = Date().addingTimeInterval(lifetime)
-                let newCore = try LANHTTPServerCore(files: prepared, token: token, expiration: expiration, testing: testing)
+                let newCore = try LANHTTPServerCore(files: prepared, token: token, expiration: expiration, testing: testing,
+                                                    headerTimeout: self.headerTimeout, transferIdleTimeout: self.transferIdleTimeout)
                 core = newCore
+                newCore.onProgress = { [weak self] progress in
+                    Task { @MainActor [weak self] in
+                        guard let self, self.generation == requestID,
+                              !self.revokedFileIDs.contains(progress.fileID) else { return }
+                        self.onProgress?(progress)
+                    }
+                }
                 newCore.onStopped = { [weak self] reason in
                     Task { @MainActor [weak self] in
                         guard let self, self.generation == requestID else { return }
@@ -91,11 +116,15 @@ final class LANHTTPServer {
         preparation?.cancel()
         preparation = nil
         activeSessionID = nil
+        revokedFileIDs.removeAll()
         core?.stop()
         core = nil
     }
 
-    func cancel(fileID: String) { core?.cancel(fileID: fileID) }
+    func cancel(fileID: String) {
+        revokedFileIDs.insert(fileID)
+        core?.cancel(fileID: fileID)
+    }
 }
 
 private func lanServerError(_ text: String) -> NSError {
@@ -116,12 +145,16 @@ private struct LANPreparedFile {
 }
 
 private final class LANHTTPServerCore: @unchecked Sendable {
+    private static let logger = Logger(subsystem: "com.lihao.WatchMusic", category: "LANHTTP")
     var onStopped: ((String) -> Void)?
+    var onProgress: ((LANSourceProgress) -> Void)?
     private let queue = DispatchQueue(label: "WatchMusic.LANHTTPServer", qos: .utility)
     private let listener: NWListener
     private var files: [String: LANPreparedFile]
     private var token: String
     private let expiration: Date
+    private let headerTimeout: TimeInterval
+    private let transferIdleTimeout: TimeInterval
     private var clients: [UUID: LANHTTPClient] = [:]
     private var continuation: CheckedContinuation<UInt16, Error>?
     private var ready = false
@@ -129,10 +162,13 @@ private final class LANHTTPServerCore: @unchecked Sendable {
     private var startupTimeout: DispatchWorkItem?
     private var expirationTimer: DispatchWorkItem?
 
-    init(files: [LANPreparedFile], token: String, expiration: Date, testing: Bool) throws {
+    init(files: [LANPreparedFile], token: String, expiration: Date, testing: Bool,
+         headerTimeout: TimeInterval, transferIdleTimeout: TimeInterval) throws {
         self.files = Dictionary(uniqueKeysWithValues: files.map { ($0.metadata.id, $0) })
         self.token = token
         self.expiration = expiration
+        self.headerTimeout = headerTimeout
+        self.transferIdleTimeout = transferIdleTimeout
         let parameters = NWParameters.tcp
         parameters.includePeerToPeer = false
         if testing {
@@ -219,7 +255,7 @@ private final class LANHTTPServerCore: @unchecked Sendable {
     func cancel(fileID: String) {
         queue.async { [self] in
             files.removeValue(forKey: fileID)
-            Array(clients.values).filter { $0.fileID == fileID }.forEach { $0.close() }
+            Array(clients.values).filter { $0.fileID == fileID }.forEach { $0.close(reason: "file-cancelled") }
         }
     }
 
@@ -234,7 +270,7 @@ private final class LANHTTPServerCore: @unchecked Sendable {
             let pending = continuation
             continuation = nil
             pending?.resume(returning: port.rawValue)
-            let timer = DispatchWorkItem { [weak self] in self?.stopOnQueue(reason: "局域网传输已过期，请重新发送。") }
+            let timer = DispatchWorkItem { [weak self] in self?.stopOnQueue(reason: "局域网传输已过期，请重新发送。", clientReason: "source-expired") }
             expirationTimer = timer
             queue.asyncAfter(deadline: .now() + max(0, expiration.timeIntervalSinceNow), execute: timer)
         case .failed(let error): stopOnQueue(reason: "局域网服务已中断：\(error.localizedDescription)")
@@ -244,16 +280,22 @@ private final class LANHTTPServerCore: @unchecked Sendable {
     }
 
     private func accept(_ connection: NWConnection) {
-        guard !stopped, clients.count < 4, Date() < expiration else { connection.cancel(); return }
+        guard !stopped, clients.count < 4, Date() < expiration else {
+            Self.logger.notice("HTTP connection rejected: stopped \(self.stopped), clients \(self.clients.count), source expired \(Date() >= self.expiration)")
+            connection.cancel()
+            return
+        }
         let id = UUID()
         let client = LANHTTPClient(connection: connection, queue: queue, token: token, expiration: expiration,
+                                   headerTimeout: headerTimeout, transferIdleTimeout: transferIdleTimeout,
                                    lookup: { [weak self] id in self?.files[id] },
+                                   progress: { [weak self] event in self?.onProgress?(event) },
                                    closed: { [weak self] in self?.clients.removeValue(forKey: id) })
         clients[id] = client
         client.start()
     }
 
-    private func stopOnQueue(reason: String?) {
+    private func stopOnQueue(reason: String?, clientReason: String = "source-stopped") {
         guard !stopped else { return }
         stopped = true
         startupTimeout?.cancel()
@@ -261,7 +303,7 @@ private final class LANHTTPServerCore: @unchecked Sendable {
         startupTimeout = nil
         expirationTimer = nil
         listener.cancel()
-        Array(clients.values).forEach { $0.close() }
+        Array(clients.values).forEach { $0.close(reason: clientReason) }
         clients.removeAll()
         files.removeAll()
         token = ""
@@ -274,43 +316,56 @@ private final class LANHTTPServerCore: @unchecked Sendable {
 }
 
 private final class LANHTTPClient {
+    private static let logger = Logger(subsystem: "com.lihao.WatchMusic", category: "LANHTTP")
+    private let requestID = UUID().uuidString
     private let connection: NWConnection
     private let queue: DispatchQueue
     private var token: String
     private let expiration: Date
+    private let headerTimeout: TimeInterval
+    private let transferIdleTimeout: TimeInterval
     private let lookup: (String) -> LANPreparedFile?
+    private let progress: (LANSourceProgress) -> Void
     private let closed: () -> Void
     private var header = Data()
     private var timeout: DispatchWorkItem?
     private var handle: FileHandle?
     private var source: LANPreparedFile?
     private var remaining: Int64 = 0
+    private var sentBytes: Int64 = 0
+    private var lastProgressTime: TimeInterval = 0
     private var isClosed = false
     private(set) var fileID: String?
 
     init(connection: NWConnection, queue: DispatchQueue, token: String, expiration: Date,
-         lookup: @escaping (String) -> LANPreparedFile?, closed: @escaping () -> Void) {
+         headerTimeout: TimeInterval, transferIdleTimeout: TimeInterval,
+         lookup: @escaping (String) -> LANPreparedFile?, progress: @escaping (LANSourceProgress) -> Void,
+         closed: @escaping () -> Void) {
         self.connection = connection
         self.queue = queue
         self.token = token
         self.expiration = expiration
+        self.headerTimeout = headerTimeout
+        self.transferIdleTimeout = transferIdleTimeout
         self.lookup = lookup
+        self.progress = progress
         self.closed = closed
     }
 
     func start() {
         connection.stateUpdateHandler = { [weak self] state in
-            if case .failed = state { self?.close() }
-            if case .cancelled = state { self?.close() }
+            if case .failed = state { self?.close(reason: "connection-failed") }
+            if case .cancelled = state { self?.close(reason: "connection-cancelled") }
         }
         connection.start(queue: queue)
-        armTimeout()
+        armTimeout(headerTimeout, reason: "header-timeout")
         receiveHeader()
     }
 
-    func close() {
+    func close(reason: String) {
         guard !isClosed else { return }
         isClosed = true
+        Self.logger.notice("HTTP request \(self.requestID, privacy: .public) closed: \(reason, privacy: .public), file \(self.fileID ?? "unparsed", privacy: .public), source bytes \(self.sentBytes)")
         timeout?.cancel()
         timeout = nil
         try? handle?.close()
@@ -322,11 +377,13 @@ private final class LANHTTPClient {
         closed()
     }
 
-    private func armTimeout() {
+    private func armTimeout(_ interval: TimeInterval, reason: String) {
         timeout?.cancel()
-        let timer = DispatchWorkItem { [weak self] in self?.close() }
+        let lifetimeRemaining = max(0, expiration.timeIntervalSinceNow)
+        let closeReason = lifetimeRemaining <= interval ? "source-expired" : reason
+        let timer = DispatchWorkItem { [weak self] in self?.close(reason: closeReason) }
         timeout = timer
-        queue.asyncAfter(deadline: .now() + 20, execute: timer)
+        queue.asyncAfter(deadline: .now() + min(interval, lifetimeRemaining), execute: timer)
     }
 
     private func receiveHeader() {
@@ -337,7 +394,7 @@ private final class LANHTTPClient {
             if let end = self.header.range(of: Data("\r\n\r\n".utf8)) {
                 guard end.upperBound == self.header.endIndex else { self.respondError(400); return }
                 self.processHeader()
-            } else if error != nil || complete { self.close() }
+            } else if error != nil || complete { self.close(reason: "header-interrupted") }
             else { self.receiveHeader() }
         }
     }
@@ -360,6 +417,9 @@ private final class LANHTTPClient {
             source = file
             try input.seek(toOffset: UInt64(range.offset))
             remaining = range.length
+            sentBytes = range.offset
+            Self.logger.notice("HTTP request \(self.requestID, privacy: .public) started, file \(id, privacy: .public), offset \(range.offset), length \(range.length), total \(file.metadata.byteCount)")
+            armTimeout(transferIdleTimeout, reason: "transfer-idle-timeout")
             var response = "HTTP/1.1 \(range.isPartial ? "206 Partial Content" : "200 OK")\r\n"
             response += "Content-Length: \(range.length)\r\nContent-Type: \(file.metadata.fileName.lowercased().hasSuffix(".mp3") ? "audio/mpeg" : "audio/flac")\r\n"
             response += "Accept-Ranges: bytes\r\nETag: \"\(file.metadata.sha256)\"\r\nCache-Control: no-store\r\nConnection: close\r\n"
@@ -367,7 +427,7 @@ private final class LANHTTPClient {
             response += "\r\n"
             connection.send(content: Data(response.utf8), completion: .contentProcessed { [weak self] error in
                 guard let self, !self.isClosed else { return }
-                if error != nil { self.close() } else { self.sendNextChunk() }
+                if error != nil { self.close(reason: "response-header-send-failed") } else { self.sendNextChunk() }
             })
         } catch let error as LANHTTPFailure { respondError(error.status) }
         catch { respondError(500) }
@@ -375,23 +435,27 @@ private final class LANHTTPClient {
 
     private func sendNextChunk() {
         guard !isClosed else { return }
-        guard Date() < expiration else { close(); return }
+        guard Date() < expiration else { close(reason: "source-expired"); return }
         guard remaining > 0 else {
-            connection.send(content: nil, contentContext: .finalMessage, isComplete: true, completion: .contentProcessed { [weak self] _ in self?.close() })
+            connection.send(content: nil, contentContext: .finalMessage, isComplete: true, completion: .contentProcessed { [weak self] error in
+                self?.close(reason: error == nil ? "response-finished" : "response-final-send-failed")
+            })
             return
         }
         do {
             try autoreleasepool {
-                guard let source, try TransferSourceVersion.read(source.url) == source.version else { close(); return }
-                guard let handle, let data = try handle.read(upToCount: Int(min(65_536, remaining))), !data.isEmpty else { close(); return }
+                guard let source, try TransferSourceVersion.read(source.url) == source.version else { close(reason: "source-changed"); return }
+                guard let handle, let data = try handle.read(upToCount: Int(min(65_536, remaining))), !data.isEmpty else { close(reason: "source-short-read"); return }
                 let byteCount = data.count
                 remaining -= Int64(byteCount)
-                armTimeout()
                 // Network retains this single chunk until processed. Only its
                 // count is captured by the callback, not the file buffer.
                 connection.send(content: data, completion: .contentProcessed { [weak self] error in
                     guard let self, !self.isClosed else { return }
-                    if error != nil { self.close(); return }
+                    if error != nil { self.close(reason: "body-send-failed"); return }
+                    self.sentBytes += Int64(byteCount)
+                    self.emitProgress(completed: self.remaining == 0)
+                    self.armTimeout(self.transferIdleTimeout, reason: "transfer-idle-timeout")
                     #if DEBUG
                     if let text = ProcessInfo.processInfo.environment["LAN_PROBE_THROTTLE_BYTES_PER_SECOND"],
                        let bytesPerSecond = Double(text), bytesPerSecond.isFinite, bytesPerSecond >= 32_768 {
@@ -402,7 +466,16 @@ private final class LANHTTPClient {
                     self.sendNextChunk()
                 })
             }
-        } catch { close() }
+        } catch { close(reason: "source-read-failed") }
+    }
+
+    private func emitProgress(completed: Bool) {
+        guard let fileID, let source else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard completed || now - lastProgressTime >= 1 else { return }
+        lastProgressTime = now
+        Self.logger.notice("HTTP request \(self.requestID, privacy: .public), file \(fileID, privacy: .public), source bytes \(self.sentBytes)/\(source.metadata.byteCount)")
+        progress(LANSourceProgress(fileID: fileID, sentBytes: sentBytes, totalBytes: source.metadata.byteCount))
     }
 
     private func respondError(_ status: Int, extra: String = "") {
@@ -412,7 +485,7 @@ private final class LANHTTPClient {
         let allow = status == 405 ? "Allow: GET\r\n" : ""
         let response = "HTTP/1.1 \(status) \(titles[status] ?? "Error")\r\nContent-Length: 0\r\nCache-Control: no-store\r\nConnection: close\r\n\(allow)\(extra)\r\n"
         connection.send(content: Data(response.utf8), contentContext: .finalMessage, isComplete: true,
-                        completion: .contentProcessed { [weak self] _ in self?.close() })
+                        completion: .contentProcessed { [weak self] _ in self?.close(reason: "http-\(status)") })
     }
 
     private func constantTimeEquals(_ lhs: String, _ rhs: String) -> Bool {

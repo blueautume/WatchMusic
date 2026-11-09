@@ -14,6 +14,9 @@ struct MusicFolder: Identifiable, Hashable {
 /// Disk mutations are serial, and WC temporary files are saved before returning.
 final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
     static let shared = WatchLibrary()
+    static let receiverVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+    static let receiverBuild = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+    static var versionDescription: String { "\(receiverVersion) (\(receiverBuild))" }
     private static let transferLogger = Logger(subsystem: "com.lihao.WatchMusic.watchkitapp", category: "LANTransfer")
     @Published private(set) var folders: [MusicFolder] = []
     @Published private(set) var connectionStatus = "本地音乐可离线播放"
@@ -403,7 +406,7 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
             self.lanInventory.matching(request) { result in
                 switch result {
                 case .success(let reply):
-                    replyHandler((try? LANTransferWire.message(reply, type: LANInventoryWire.replyType)) ?? ["accepted": false])
+                    replyHandler(Self.receiverReply((try? LANTransferWire.message(reply, type: LANInventoryWire.replyType)) ?? ["accepted": false]))
                 case .failure(let error):
                     if error is CancellationError {
                         replyHandler(["accepted": false, "retryable": true, "message": "等待手表 App 打开后继续"])
@@ -413,13 +416,26 @@ final class WatchLibrary: NSObject, ObservableObject, WCSessionDelegate {
                 }
             }
         } else if let offer = LANTransferWire.decode(LANTransferOffer.self, from: message, type: LANTransferWire.offerType) {
-            do { try self.receiveLANOffer(offer, allowLoopbackForTesting: allowLoopbackForTesting); replyHandler(["accepted": true]) }
+            do {
+                try self.receiveLANOffer(offer, allowLoopbackForTesting: allowLoopbackForTesting)
+                replyHandler(Self.receiverReply(["accepted": true]))
+            }
             catch { replyHandler(["accepted": false, "message": error.localizedDescription]) }
         } else if let command = LANTransferWire.decode(LANTransferCommand.self, from: message, type: LANTransferWire.commandType) {
             self.lanReceiver.handle(command) { events in
                 replyHandler((try? LANTransferWire.message(LANTransferControlReply(events: events), type: LANTransferWire.controlReplyType)) ?? ["accepted": false])
             }
         } else { replyHandler(["accepted": false, "message": "无法识别局域网传输信息。 "]) }
+    }
+
+    /// Envelope metadata identifies the installed Watch binary without changing
+    /// Codable payloads understood by older companion apps.
+    private static func receiverReply(_ payload: [String: Any]) -> [String: Any] {
+        var reply = payload
+        reply["receiverVersion"] = receiverVersion
+        reply["receiverBuild"] = receiverBuild
+        reply["supportsBackgroundDownloads"] = true
+        return reply
     }
 
     func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {

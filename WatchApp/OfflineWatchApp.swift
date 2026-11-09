@@ -375,6 +375,7 @@ private struct WatchLibraryInfoView: View {
         NavigationStack {
             List {
                 Section(L10n.text("手表本地资料")) {
+                    Text(L10n.format("版本 %@", WatchLibrary.versionDescription)).font(.caption).watchCardRow()
                     Label(L10n.format("%@ 首歌曲", String(describing: library.trackCount)), systemImage: "music.note.list").watchCardRow()
                     storageRow(title: L10n.text("音乐占用"), value: watchBytes(library.totalBytes))
                     storageRow(title: L10n.text("设备可用"), value: watchBytes(library.availableBytes))

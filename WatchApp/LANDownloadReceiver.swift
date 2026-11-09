@@ -127,6 +127,37 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
             }
             // Display and scene changes never cancel system-owned downloads.
             self.advanceQueue()
+            if value == .active { self.logNativeTaskSnapshot() }
+        }
+    }
+
+    /// Observe once when the person returns to the app. This read-only query
+    /// never reconciles or controls tasks, and creates no monitoring timer.
+    private func logNativeTaskSnapshot() {
+        guard let session = networkSession else { return }
+        let requestedAt = Date().timeIntervalSince1970
+        session.getAllTasks { [weak self, weak session] nativeTasks in
+            guard let self, let session else { return }
+            self.stateQueue.async { [weak self, weak session] in
+                guard let self, let session, session === self.networkSession else { return }
+                let identifier = session.configuration.identifier ?? "none"
+                let observedAt = Date().timeIntervalSince1970
+                Self.logger.notice("Native task snapshot: session \(identifier, privacy: .public), count \(nativeTasks.count), requestedAt \(requestedAt), observedAt \(observedAt)")
+                for task in nativeTasks.sorted(by: { $0.taskIdentifier < $1.taskIdentifier }) {
+                    let state = Self.nativeTaskStateName(task.state)
+                    Self.logger.notice("Native task snapshot: task \(task.taskIdentifier), state \(state, privacy: .public), received \(task.countOfBytesReceived), expected \(task.countOfBytesExpectedToReceive)")
+                }
+            }
+        }
+    }
+
+    private static func nativeTaskStateName(_ state: URLSessionTask.State) -> String {
+        switch state {
+        case .running: "running"
+        case .suspended: "suspended"
+        case .canceling: "canceling"
+        case .completed: "completed"
+        @unknown default: "unknown"
         }
     }
 
@@ -834,6 +865,27 @@ final class LANDownloadReceiver: NSObject, URLSessionDownloadDelegate, URLSessio
                                    mayRetry: (error as NSError).code != NSURLErrorCancelled)
         } else { finish(fileID: file.id, kind: .failed, message: "下载没有返回可保存的歌曲文件。") }
         completeBackgroundEventsIfReady()
+    }
+
+    /// Metrics arrive at transaction completion, not continuously during sleep.
+    /// The proxy flag alone does not identify the Watch's companion transport.
+    func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
+        guard session === networkSession else { return }
+        let identifier = session.configuration.identifier ?? "none"
+        Self.logger.notice("Native task metrics: session \(identifier, privacy: .public), task \(task.taskIdentifier), transactions \(metrics.transactionMetrics.count), redirects \(metrics.redirectCount), startedAt \(metrics.taskInterval.start.timeIntervalSince1970), endedAt \(metrics.taskInterval.end.timeIntervalSince1970), received \(task.countOfBytesReceived), expected \(task.countOfBytesExpectedToReceive)")
+        for (index, transaction) in metrics.transactionMetrics.enumerated() {
+            let protocolName = transaction.networkProtocolName ?? "unknown"
+            // A missing timestamp is logged as -1; no URL, host, request,
+            // response description, token, or local/remote address is logged.
+            let fetchStartedAt = transaction.fetchStartDate?.timeIntervalSince1970 ?? -1
+            let connectionStartedAt = transaction.connectStartDate?.timeIntervalSince1970 ?? -1
+            let connectionEndedAt = transaction.connectEndDate?.timeIntervalSince1970 ?? -1
+            let requestStartedAt = transaction.requestStartDate?.timeIntervalSince1970 ?? -1
+            let requestEndedAt = transaction.requestEndDate?.timeIntervalSince1970 ?? -1
+            let responseStartedAt = transaction.responseStartDate?.timeIntervalSince1970 ?? -1
+            let responseEndedAt = transaction.responseEndDate?.timeIntervalSince1970 ?? -1
+            Self.logger.notice("Native transaction metrics: task \(task.taskIdentifier), transaction \(index), protocol \(protocolName, privacy: .public), proxy \(transaction.isProxyConnection), receivedBody \(transaction.countOfResponseBodyBytesReceived), decodedBody \(transaction.countOfResponseBodyBytesAfterDecoding), fetchAt \(fetchStartedAt), connectStartAt \(connectionStartedAt), connectEndAt \(connectionEndedAt), requestStartAt \(requestStartedAt), requestEndAt \(requestEndedAt), responseStartAt \(responseStartedAt), responseEndAt \(responseEndedAt)")
+        }
     }
 
     private func failOrTryAnotherAddress(fileID: String, error: Error, mayRetry: Bool) {

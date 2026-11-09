@@ -66,6 +66,8 @@ final class PhoneLibrary: NSObject, ObservableObject {
     }
     var transferRemainingEstimate: String? { transferProgress.remainingEstimate }
     @Published private(set) var connectionDescription = "正在连接 Apple Watch…"
+    @Published private(set) var watchAppVersion: String?
+    @Published private(set) var watchSupportsBackgroundDownloads: Bool?
     @Published private(set) var canSend = false
     @Published private(set) var isImporting = false
     @Published private(set) var importMessage = ""
@@ -142,6 +144,16 @@ final class PhoneLibrary: NSObject, ObservableObject {
     }()
 
     private func configureLANServerCallbacks(_ server: LANHTTPServer) {
+        server.onProgress = { [weak self] sample in
+            guard let self, !self.isShutDown, self.lanRecordIDs.contains(sample.fileID),
+                  let record = self.transfers.first(where: { $0.id == sample.fileID }), record.state.isPending,
+                  record.totalBytes == sample.totalBytes,
+                  self.activeLANSessionID == self.lanServer.activeSessionID else { return }
+            // An authenticated HTTP read also proves the offer was accepted,
+            // even when its WatchConnectivity acknowledgement is delayed.
+            if sample.sentBytes > 0 { self.confirmLANHandshake() }
+            self.transferProgress.recordSourceBytes(min(sample.sentBytes, sample.totalBytes), for: sample.fileID)
+        }
         server.onStopped = { [weak self] message in
             guard let self, !self.isShutDown else { return }
             self.parkLANQueue(message: message)
@@ -217,6 +229,9 @@ final class PhoneLibrary: NSObject, ObservableObject {
         nativeProgressObservations.removeAll()
         lastProgressAdvance.removeAll()
         progressSamplers.removeAll()
+        transferProgress.retainSourceBytes(for: [])
+        watchAppVersion = nil
+        watchSupportsBackgroundDownloads = nil
         transferProgress.update(values: [:], metrics: [:], remainingEstimate: nil)
         let pending = Array(pendingMessageReplies.values)
         pendingMessageReplies.removeAll()
@@ -1064,7 +1079,19 @@ final class PhoneLibrary: NSObject, ObservableObject {
             throw lanError("请更新手表 App 后再试。")
         }
         try LANInventoryWire.validate(reply, for: request)
+        recordWatchVersion(response)
         return reply
+    }
+
+    private func recordWatchVersion(_ response: [String: Any]) {
+        if let version = response["receiverVersion"] as? String,
+           let build = response["receiverBuild"] as? String,
+           (1...32).contains(version.count), (1...32).contains(build.count),
+           version.allSatisfy({ $0.isASCII && ($0.isNumber || $0 == ".") }),
+           build.allSatisfy({ $0.isASCII && ($0.isNumber || $0 == ".") }) {
+            watchAppVersion = "\(version) (\(build))"
+        } else { watchAppVersion = nil }
+        watchSupportsBackgroundDownloads = response["supportsBackgroundDownloads"] as? Bool
     }
 
     private func requestLANControl(_ command: LANTransferCommand) async throws -> LANTransferControlReply {
@@ -1232,6 +1259,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
     /// sources. A single cancellable deadline expires a stalled measurement.
     private func refreshProgress() {
         guard !isShutDown else { return }
+        transferProgress.retainSourceBytes(for: Set(transfers.filter { $0.state.isPending }.map(\.id)))
         let now = ProcessInfo.processInfo.systemUptime
         #if DEBUG && targetEnvironment(simulator)
         if isTransferListPreview && queueProbeRequest == nil {
@@ -1466,6 +1494,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
             active
         ]
         progress = [active.id: 0.35, waitingOld.id: 0, waitingNew.id: 0]
+        transferProgress.recordSourceBytes(11_000_000, for: active.id)
         transferMetrics = [active.id: TransferMetrics(completedBytes: 6_300_000, totalBytes: active.totalBytes,
                                                       bytesPerSecond: 1_100_000, estimatedTimeRemaining: 10.6,
                                                       isTransferring: true)]
@@ -1536,6 +1565,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
         }
         guard !ids.isEmpty else { return }
         let chosen = Set(ids)
+        transferProgress.resetSourceBytes(for: chosen)
         waitingLANIDs.removeAll { chosen.contains($0) }
         lanRecordIDs = chosen
         currentLANOrder = ids
@@ -1637,6 +1667,7 @@ final class PhoneLibrary: NSObject, ObservableObject {
                     throw NSError(domain: "LANConnection", code: 2,
                         userInfo: [NSLocalizedDescriptionKey: response["message"] as? String ?? "等待手表重新连接"])
                 }
+                self.recordWatchVersion(response)
                 self.confirmLANHandshake()
                 self.lanStatus = "局域网传输中"
                 self.refreshProgress()

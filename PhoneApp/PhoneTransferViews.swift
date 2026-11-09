@@ -29,7 +29,7 @@ struct TransfersView: View {
 
             if selectedTab == .inProgress && !records.isEmpty {
                 queueControl(count: records.count).padding(.horizontal, 20).padding(.bottom, 12)
-                Text(L10n.text("传输期间请保持 iPhone App 打开，手表可熄屏。"))
+                Text(L10n.text("传输期间请保持 iPhone App 打开。"))
                     .font(.caption).foregroundStyle(AppPalette.textSecondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 20).padding(.bottom, 12)
@@ -249,7 +249,7 @@ private struct TransferRow: View {
                     .accessibilityLabel(L10n.text("传输进度")).accessibilityValue("\(Int(fraction * 100))%")
                 HStack {
                     if let metrics, metrics.totalBytes > 0 {
-                        Text("\(transferBytes(metrics.completedBytes)) / \(transferBytes(metrics.totalBytes))")
+                        Text(L10n.format("手表已确认 %@", "\(transferBytes(metrics.completedBytes)) / \(transferBytes(metrics.totalBytes))"))
                     }
                     Spacer(minLength: 8)
                     Text("\(Int(fraction * 100))%")
@@ -267,6 +267,15 @@ private struct TransferRow: View {
                         }
                     }.font(.caption2.monospacedDigit()).foregroundStyle(AppPalette.textSecondary)
                 }
+            }
+            if record.method == .localNetwork, record.state.isPending,
+               let sourceBytes = progress.sourceBytes[record.id], record.totalBytes > 0 {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(L10n.format("手机已发出 %@", "\(transferBytes(sourceBytes)) / \(transferBytes(record.totalBytes))"))
+                        .monospacedDigit()
+                    Text(L10n.text("发出不代表已保存，完成以手表确认为准。"))
+                }.font(.caption2).foregroundStyle(AppPalette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(16).background(AppPalette.surface, in: RoundedRectangle(cornerRadius: 18))
