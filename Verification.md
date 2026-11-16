@@ -612,3 +612,25 @@ Apple 的 [setActive 约束](https://developer.apple.com/documentation/avfaudio/
 - 真实点按复现未完成：当前 CUA 无可操作的 Simulator 入口，DeviceHub 访问超时；修复前使用 `1.0.8` Debug 产品运行的隔离模拟器自动导航 probe 未取得 native Crown focus，未走到自动 dismiss，不能将此当作返回按钮或修复已通过的证据。也不能用纯几何或直接调用处理函数代替点击命中、沉浸首击不穿透和随后 Back 退出的真机验收。隔离设备已清理，没有修改真实手表数据。
 - 已向用户提供 Apple 官方的数码表冠退出及 App 强制退出步骤；尚待确认硬件按钮是否正常。未建议清空音乐、卸载或解除配对。
 - TestFlight 上传成功，Xcode 明确返回 `Upload succeeded` / `EXPORT SUCCEEDED`，Apple 已接收并开始处理；[上传凭证](Artifacts/Verification/testflight-1.0.9-11-upload.txt)、[机器可读记录](Artifacts/Verification/watch-playback-back-1.0.9-11.json)。遵照此前用户“暂时不方便，先完成上传”的选择，不等待网页登录恢复；测试组可下载状态和中文测试说明尚未网页核验/保存。
+
+## 播放页显式返回与真机验证（2026-11-10）
+
+用户反馈 `1.0.9 (11)` 播放页返回仍然失效，并要求直接连接自己的手表测试。已连接实际 Apple Watch Series 9、watchOS 27.2，确认旧安装版本为 `1.0.9 (11)`。Xcode 旧运行控制台可见导航转场未完成、导航栏模型重建、AttributeGraph cycle、同帧多次更新 ImmersionTaskID 等提示。这些日志支持继续检查导航和重复状态更新，不能单独确定 watchOS 内部根因。
+
+本轮 `1.0.10 (12)`：
+
+- 音乐库“继续聆听”和歌曲列表打开播放页时，均显式传入关闭各自 `showingPlayer` 绑定的操作；播放页不再依赖环境 `dismiss()` 推断返回目标。
+- 移除播放正文动态高优先级手势和整页并行手势。普通点按只在正文监听一次；沉浸时由覆盖完整页的独立透明层消费首击并恢复控件，返回按钮完全在正文监听之外。“下一首”不再重复重置沉浸计时。
+- 返回期间阻止重复关闭、重新安排沉浸任务及响应表冠/双指主操作。Debug 构建可显式传入 `-diagnose-playback-navigation`，仅向本机调试控制台输出页面出现、返回请求、页面消失等事件，不包含歌曲名或设备标识；Release 不输出这些事件。
+
+验证结果：
+
+- 手表沉浸状态/截止任务/布局 1,902 项、完整画布/时钟/导航几何 1,224 项、方向规则 145 项通过。针对实际点按另做以下真机验证，未将几何断言替代触屏测试。
+- 双端签名 Debug 与 Release 真机目标构建通过；两个 target、两种配置均为 `1.0.10 (12)`。Release 深度签名及本地化产物检查通过：406 个双语键、556 处文案、两个产品 bundle。
+- 已将 Debug 修复构建直接覆盖安装到同一手表应用，并通过原生设备工具确认实际版本为 `1.0.10 (12)`。没有卸载应用或清空音乐。
+- 用户在真实手表上点按，调试控制台连续记录 7 组 `appeared → back-requested → disappeared`。Device Hub 实时画面最终显示已返回音乐库，包含“继续聆听”和“全部歌曲 · 151”。用户明确回复“可以正常返回”，本次返回故障验收通过。
+- Device Hub 可查看真实屏幕，远程坐标点击通道返回 `noWindowsAvailable`；上述点按由用户在手表上完成，代理观察真机画面及进程日志。未把自动调用退出函数当成实际点按，也未宣称本轮已独立验证物理双指互点或所有充电方向。
+
+机器可读结果与仅含导航事件的证据见 [验证记录](Artifacts/Verification/watch-playback-navigation-1.0.10-12.json)。本轮完成修复、构建和真机安装验证。
+
+随后按用户“推送即可，不需要在 Connect 中确认”的要求完成签名 Release 归档与 TestFlight 上传。归档内手机与手表均为 `1.0.10 (12)`，深度签名与归档双语资源检查通过。Xcode 返回 `Upload succeeded` / `EXPORT SUCCEEDED`，Apple 已接收并开始处理；[上传凭证](Artifacts/Verification/testflight-1.0.10-12-upload.txt)。本次未打开 App Store Connect 网页核对测试组可下载状态或编辑测试说明。

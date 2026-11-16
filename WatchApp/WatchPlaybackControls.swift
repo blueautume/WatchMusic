@@ -5,13 +5,14 @@ import WatchKit
 /// Back and the system-clock clearance without a second native toolbar inset.
 struct NowPlayingView: View {
     @EnvironmentObject private var player: WatchPlayer
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.isLuminanceReduced) private var reducedLuminance
     @State private var activeDialog: PlaybackDialog?
     @State private var isOnScreen = false
+    @State private var isClosing = false
     @State private var immersion = WatchImmersivePlayback()
+    let onBack: () -> Void
     private struct ImmersionTaskID: Equatable {
         let request: WatchImmersivePlayback.IdleRequest?
         let canPresent: Bool
@@ -25,11 +26,11 @@ struct NowPlayingView: View {
     private var choosingOutput: Bool { player.isSelectingAudioOutput }
 
     private var acceptsCrownInput: Bool {
-        isOnScreen && scenePhase == .active && activeDialog == nil && !choosingOutput && player.currentURL != nil
+        isOnScreen && !isClosing && scenePhase == .active && activeDialog == nil && !choosingOutput && player.currentURL != nil
     }
 
     private var acceptsPrimaryGesture: Bool {
-        isOnScreen && scenePhase == .active && activeDialog == nil && !choosingOutput && player.currentURL != nil
+        isOnScreen && !isClosing && scenePhase == .active && activeDialog == nil && !choosingOutput && player.currentURL != nil
     }
 
     private var immersionAvailability: WatchImmersivePlayback.Availability {
@@ -44,7 +45,7 @@ struct NowPlayingView: View {
 
     var body: some View {
         let taskID = ImmersionTaskID(request: immersion.idleRequest,
-                                    canPresent: isOnScreen && immersionAvailability == .ready,
+                                    canPresent: isOnScreen && !isClosing && immersionAvailability == .ready,
                                     isInteractive: isInteractive)
         WatchPlaybackPageContent(
             acceptsPrimaryGesture: acceptsPrimaryGesture,
@@ -55,17 +56,23 @@ struct NowPlayingView: View {
             chooseOutput: { player.requestAudioOutput() }
         )
         .contentShape(Rectangle())
-        // Only player content consumes the first touch in immersive mode.
-        // The navigation header stays outside this priority recognizer.
-        .highPriorityGesture(TapGesture().onEnded { registerInteraction() },
-                             including: immersion.isImmersive ? .all : .subviews)
+        // Observe normal playback touches once, below the immersive touch layer.
+        // Back belongs to watchPage and never participates in this recognizer.
+        .simultaneousGesture(TapGesture().onEnded { registerInteraction() })
         .watchPage(title: "", action: closePlayback, symbol: "chevron.left", showsHeader: !immersion.isImmersive) {
             WatchPlaybackBackground(data: player.artworkData)
         }
-        .contentShape(Rectangle())
-        // Observe header/blank-area touches without competing with Back.
-        .simultaneousGesture(TapGesture().onEnded { registerInteraction() },
-                             including: .all)
+        .overlay {
+            if immersion.isImmersive {
+                // Cover the whole page, including the hidden header. This sibling
+                // consumes the first touch without also running the body observer
+                // or changing gesture priority around the navigation button.
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture { registerInteraction() }
+                    .accessibilityHidden(true)
+            }
+        }
         .overlay {
             WatchVolumeFeedbackOverlay(isActive: acceptsCrownInput)
         }
@@ -83,6 +90,8 @@ struct NowPlayingView: View {
         }
         .onAppear {
             WatchCrownDiagnostics.record("page-appeared")
+            traceNavigation("appeared")
+            isClosing = false
             isOnScreen = true
             #if DEBUG && targetEnvironment(simulator)
             if !previewApplied {
@@ -95,6 +104,7 @@ struct NowPlayingView: View {
         }
         .onDisappear {
             WatchCrownDiagnostics.record("page-disappeared")
+            traceNavigation("disappeared")
             isOnScreen = false
             activeDialog = nil
             // Wrist-down can detach the view while keeping it frontmost.
@@ -105,6 +115,11 @@ struct NowPlayingView: View {
                 immersion.updateAvailability(availability, at: WatchImmersivePlayback.now)
             }
         }
+        #if DEBUG
+        .onChange(of: immersion.isImmersive) { _, immersive in
+            traceNavigation(immersive ? "immersive-entered" : "controls-visible")
+        }
+        #endif
         .task(id: taskID) {
             guard taskID.canPresent, let request = taskID.request else { return }
             do {
@@ -156,19 +171,34 @@ struct NowPlayingView: View {
                 try await Task.sleep(for: .milliseconds(600))
                 guard isOnScreen else { return }
                 WatchCrownDiagnostics.record("cycle-page-dismiss")
-                dismiss()
+                closePlayback()
             } catch { return }
         }
         #endif
     }
 
     private func registerInteraction() {
+        guard !isClosing else { return }
+        traceNavigation(immersion.isImmersive ? "restore-controls-requested" : "body-touch")
         withAnimation(immersionAnimation) { immersion.interact(at: WatchImmersivePlayback.now) }
     }
 
     private func closePlayback() {
+        guard !isClosing else { return }
+        traceNavigation("back-requested")
+        isClosing = true
         immersion.suspend()
-        dismiss()
+        // The view that presented this page owns the navigation binding.
+        // Do not ask an environment dismiss action to infer that ownership.
+        onBack()
+    }
+
+    private func traceNavigation(_ event: String) {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-diagnose-playback-navigation") {
+            print("WatchPlaybackNavigation \(event)")
+        }
+        #endif
     }
 
     private var dialogPresented: Binding<Bool> {
@@ -409,7 +439,6 @@ private struct WatchPlaybackPageContent: View {
     }
 
     private func advanceTrack() {
-        if !isImmersive { showControls() }
         player.next()
         WKInterfaceDevice.current().play(.click)
     }

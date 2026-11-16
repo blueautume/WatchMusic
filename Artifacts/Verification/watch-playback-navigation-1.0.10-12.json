@@ -1,0 +1,68 @@
+{
+  "date": "2026-11-10",
+  "version": "1.0.10",
+  "build": "12",
+  "physicalDevice": {
+    "model": "Apple Watch Series 9",
+    "system": "watchOS 27.2",
+    "installedConfiguration": "Debug",
+    "installedVersionVerified": true
+  },
+  "checks": {
+    "signedDebugDeviceBuild": "passed",
+    "signedReleaseDeviceBuild": "passed",
+    "releaseDeepSignature": "passed",
+    "releaseLocalizationProductBundles": 2,
+    "bilingualKeys": 406,
+    "sourceLiterals": 556,
+    "immersiveAssertions": 1902,
+    "surfaceAssertions": 1224,
+    "orientationAssertions": 145,
+    "signedReleaseArchive": "passed",
+    "archivedPhoneVersion": "1.0.10 (12)",
+    "archivedWatchVersion": "1.0.10 (12)"
+  },
+  "physicalInteraction": {
+    "performedBy": "user on physical watch",
+    "observedBy": "agent through Device Hub live screen and devicectl process console",
+    "completedBackCycles": 7,
+    "events": [
+      "appeared",
+      "back-requested",
+      "disappeared",
+      "appeared",
+      "back-requested",
+      "disappeared",
+      "appeared",
+      "back-requested",
+      "disappeared",
+      "appeared",
+      "back-requested",
+      "disappeared",
+      "appeared",
+      "back-requested",
+      "disappeared",
+      "appeared",
+      "back-requested",
+      "disappeared",
+      "appeared",
+      "back-requested",
+      "disappeared"
+    ],
+    "finalScreen": "music library",
+    "userConfirmation": "可以正常返回",
+    "result": "passed"
+  },
+  "limitations": [
+    "Remote coordinate input returned noWindowsAvailable; no claim of agent-synthesized physical taps.",
+    "Physical double tap and every charging orientation were not independently validated in this run."
+  ],
+  "testFlight": {
+    "status": "upload succeeded; Apple accepted package and began processing",
+    "xcodebuildExitCode": 0,
+    "uploadEvidence": "Artifacts/Verification/testflight-1.0.10-12-upload.txt",
+    "connectVerification": "not performed, as requested by user",
+    "groupAvailability": "not checked",
+    "testNotes": "not edited"
+  }
+}

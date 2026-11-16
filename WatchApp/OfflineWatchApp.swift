@@ -138,7 +138,7 @@ struct FolderListView: View {
     @State private var newFolder = false
     @State private var libraryInfo = false
     @State private var previewTrackList = false
-    @State private var previewPlayer = false
+    @State private var showingPlayer = false
     #if DEBUG && targetEnvironment(simulator)
     @State private var previewNavigationApplied = false
     #endif
@@ -146,7 +146,7 @@ struct FolderListView: View {
         NavigationStack {
             List {
                 if player.currentURL != nil {
-                    NavigationLink(destination: NowPlayingView()) {
+                    Button { showingPlayer = true } label: {
                         HStack(spacing: 9) {
                             MusicArtwork(title: player.title, data: player.artworkData)
                                 .frame(width: 38, height: 38).clipShape(RoundedRectangle(cornerRadius: 10))
@@ -188,7 +188,9 @@ struct FolderListView: View {
             }
             .watchPage(title: L10n.text("随身音乐"), showsBattery: true)
             .navigationDestination(isPresented: $previewTrackList) { WatchTrackListView(folderName: nil) }
-            .navigationDestination(isPresented: $previewPlayer) { NowPlayingView() }
+            .navigationDestination(isPresented: $showingPlayer) {
+                NowPlayingView(onBack: { showingPlayer = false })
+            }
             .onAppear {
                 library.refresh()
             }
@@ -200,7 +202,7 @@ struct FolderListView: View {
                 if arguments.contains("-preview-route-delay") {
                     do { try await Task.sleep(for: .seconds(1)) } catch { return }
                 }
-                if arguments.contains("-preview-player") { previewPlayer = true }
+                if arguments.contains("-preview-player") { showingPlayer = true }
                 else if arguments.contains("-preview-track-list") { previewTrackList = true }
             }
             #endif
@@ -260,7 +262,9 @@ private struct WatchTrackListView: View {
             }
         }
         .watchPage(title: folderName ?? L10n.text("全部歌曲"), action: { dismiss() }, symbol: "chevron.left")
-        .navigationDestination(isPresented: $showingPlayer) { NowPlayingView() }
+        .navigationDestination(isPresented: $showingPlayer) {
+            NowPlayingView(onBack: { showingPlayer = false })
+        }
         .sheet(item: $managingTrack) { item in WatchAppSurface { WatchTrackActionsView(track: item.url).modifier(WatchOperationErrorAlert()) } }
         .sheet(isPresented: $managingFolder) {
             WatchAppSurface {
