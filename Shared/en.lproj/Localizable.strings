@@ -405,3 +405,7 @@
 "接收结束" = "Reception ended";
 "已保存" = "Saved";
 "等待接收" = "Waiting";
+"手机媒体控制" = "Phone Controls";
+"由系统选择播放来源" = "System audio source";
+"先在 iPhone 开始播放，再从音乐库打开“手机媒体控制”。系统会选择当前或最近的播放来源，也可能显示手表上的媒体。" = "Start playback on iPhone, then open Phone Controls from the library. The system selects the current or most recent audio source, which may also be on your watch.";
+"互点两下切歌：在手表“设置 → 手势 → 互点两下 → 播放”中选择“跳过”。需要支持该手势的手表，实际操作由系统和媒体来源决定。" = "To skip with Double Tap, choose Skip in Settings → Gestures → Double Tap → Playback on your watch. Requires a supported watch. Actions depend on the system and media source.";

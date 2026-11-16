@@ -30,6 +30,8 @@
 	<true/>
 	<key>WKSupportsAlwaysOnDisplay</key>
 	<true/>
+	<key>PUICAutoLaunchAudioOptOut</key>
+	<true/>
 	<key>NSMotionUsageDescription</key>
 	<string>充电时根据手表摆放方向自动旋转应用界面。</string>
 	<key>WKCompanionAppBundleIdentifier</key>

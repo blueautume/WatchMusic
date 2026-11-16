@@ -3,7 +3,7 @@ import WatchKit
 
 /// Playback and navigation share the full local canvas; the page header owns
 /// Back and the system-clock clearance without a second native toolbar inset.
-struct NowPlayingView: View {
+struct WatchLocalNowPlayingView: View {
     @EnvironmentObject private var player: WatchPlayer
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion

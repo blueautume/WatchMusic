@@ -7,6 +7,7 @@ struct OfflineWatchApp: App {
     @StateObject private var library = WatchLibrary.shared
     @StateObject private var player: WatchPlayer
     @StateObject private var display = WatchAppDisplay()
+    @State private var showingSystemNowPlaying = false
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
@@ -18,6 +19,11 @@ struct OfflineWatchApp: App {
             WatchAppSurface { rootView }
                 .environmentObject(library).environmentObject(player).environmentObject(display)
                 .tint(AppPalette.accent)
+                // Present outside the rotating canvas and custom navigation
+                // layout so watchOS owns the media page and its Close button.
+                .sheet(isPresented: $showingSystemNowPlaying) {
+                    WatchSystemNowPlayingView()
+                }
                 .onAppear {
                     player.setApplicationInBackground(scenePhase == .background)
                     player.setApplicationActive(scenePhase == .active)
@@ -41,6 +47,11 @@ struct OfflineWatchApp: App {
                 #if DEBUG
                 .task {
                     if scenePhase == .active { library.startLANPreviewIfRequested() }
+                    #if targetEnvironment(simulator)
+                    if ProcessInfo.processInfo.arguments.contains("-preview-system-now-playing") {
+                        showingSystemNowPlaying = true
+                    }
+                    #endif
                 }
                 #endif
         }
@@ -61,7 +72,7 @@ struct OfflineWatchApp: App {
     #if DEBUG
     @ViewBuilder private var debugRootView: some View {
         if ProcessInfo.processInfo.arguments.contains("-preview-player") {
-            FolderListView().task {
+            FolderListView(openSystemNowPlaying: openSystemNowPlaying).task {
                 let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
                 let fixture = documents.appendingPathComponent("Music/UI预览/测试旋律.flac")
                 if FileManager.default.fileExists(atPath: fixture.path) { player.prepareLayoutPreview(fixture) }
@@ -107,8 +118,10 @@ struct OfflineWatchApp: App {
     @ViewBuilder private var applicationView: some View {
         if let reception = library.lanReception {
             LANTransferView(reception: reception, cancel: library.cancelLANTransfer)
-        } else { FolderListView() }
+        } else { FolderListView(openSystemNowPlaying: openSystemNowPlaying) }
     }
+
+    private func openSystemNowPlaying() { showingSystemNowPlaying = true }
 }
 
 private extension ScenePhase {
@@ -139,12 +152,25 @@ struct FolderListView: View {
     @State private var libraryInfo = false
     @State private var previewTrackList = false
     @State private var showingPlayer = false
+    let openSystemNowPlaying: () -> Void
     #if DEBUG && targetEnvironment(simulator)
     @State private var previewNavigationApplied = false
     #endif
     var body: some View {
         NavigationStack {
             List {
+                Button(action: openSystemNowPlaying) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Image(systemName: "iphone")
+                            Text(L10n.text("手机媒体控制"))
+                                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                        }.font(.headline)
+                        Text(L10n.text("由系统选择播放来源")).font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                .accessibilityIdentifier("phone-media-control")
+                .watchCardRow()
                 if player.currentURL != nil {
                     Button { showingPlayer = true } label: {
                         HStack(spacing: 9) {
@@ -189,7 +215,7 @@ struct FolderListView: View {
             .watchPage(title: L10n.text("随身音乐"), showsBattery: true)
             .navigationDestination(isPresented: $previewTrackList) { WatchTrackListView(folderName: nil) }
             .navigationDestination(isPresented: $showingPlayer) {
-                NowPlayingView(onBack: { showingPlayer = false })
+                WatchLocalNowPlayingView(onBack: { showingPlayer = false })
             }
             .onAppear {
                 library.refresh()
@@ -263,7 +289,7 @@ private struct WatchTrackListView: View {
         }
         .watchPage(title: folderName ?? L10n.text("全部歌曲"), action: { dismiss() }, symbol: "chevron.left")
         .navigationDestination(isPresented: $showingPlayer) {
-            NowPlayingView(onBack: { showingPlayer = false })
+            WatchLocalNowPlayingView(onBack: { showingPlayer = false })
         }
         .sheet(item: $managingTrack) { item in WatchAppSurface { WatchTrackActionsView(track: item.url).modifier(WatchOperationErrorAlert()) } }
         .sheet(isPresented: $managingFolder) {
@@ -408,6 +434,10 @@ private struct WatchLibraryInfoView: View {
                 Section(L10n.text("连接")) {
                     Label(L10n.message(library.connectionStatus), systemImage: "iphone.and.arrow.forward").font(.caption).watchCardRow()
                     if let message = library.lastTransferMessage { Text(L10n.message(message)).font(.caption2).foregroundStyle(AppPalette.accent).watchCardRow() }
+                }
+                Section(L10n.text("手机媒体控制")) {
+                    Text(L10n.text("先在 iPhone 开始播放，再从音乐库打开“手机媒体控制”。系统会选择当前或最近的播放来源，也可能显示手表上的媒体。")).font(.caption2).watchCardRow()
+                    Text(L10n.text("互点两下切歌：在手表“设置 → 手势 → 互点两下 → 播放”中选择“跳过”。需要支持该手势的手表，实际操作由系统和媒体来源决定。")).font(.caption2).watchCardRow()
                 }
             }.watchPage(title: L10n.text("存储与连接"), compactTitle: L10n.text("存储"), action: { dismiss() })
         }
