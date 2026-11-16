@@ -634,3 +634,20 @@ Apple 的 [setActive 约束](https://developer.apple.com/documentation/avfaudio/
 机器可读结果与仅含导航事件的证据见 [验证记录](Artifacts/Verification/watch-playback-navigation-1.0.10-12.json)。本轮完成修复、构建和真机安装验证。
 
 随后按用户“推送即可，不需要在 Connect 中确认”的要求完成签名 Release 归档与 TestFlight 上传。归档内手机与手表均为 `1.0.10 (12)`，深度签名与归档双语资源检查通过。Xcode 返回 `Upload succeeded` / `EXPORT SUCCEEDED`，Apple 已接收并开始处理；[上传凭证](Artifacts/Verification/testflight-1.0.10-12-upload.txt)。本次未打开 App Store Connect 网页核对测试组可下载状态或编辑测试说明。
+
+## 手表内系统媒体控制（2026-11-16）
+
+用户要求先把当前修复分支合并到 `main` 并推送 GitHub，再新建开发分支实现手机媒体控制，完成后上传 TestFlight。明确不自动弹出；用户接受跨 App 页面使用系统手势行为，并保留现有本地播放页的双指下一首。
+
+- 先提交已有 `1.0.10 (12)` 的返回修复及验证记录，得到 `2b5dc95`；`main` 快进到该提交并与旧修复分支一起推送。随后在 `feature/iphone-media-control` 开发新功能。初次推送用了无写权限账号，改为本仓库单独使用已存在、认证为 `blueautume` 的 SSH 密钥后成功；未修改其他仓库配置。
+- 手表音乐库新增“手机媒体控制”，用户点按后以根级原生 sheet 展示 Apple `NowPlayingView`。系统页在旋转画布之外，保留原生关闭按钮，不添加自定义导航、音量层或手势按钮。播放来源由系统选择，可为手机或手表的当前／最近媒体；支持范围与可用控制依赖系统及来源，不保证所有发声内容可控。
+- 原自定义播放器改名为 `WatchLocalNowPlayingView`，避免遮蔽系统同名类型；本地播放页的普通模式和沉浸模式下一首手势代码未变。跨 App 手势不在应用内重新绑定，帮助说明系统“设置 → 手势 → 互点两下 → 播放 → 跳过”的选项及设备／媒体限制。
+- Watch Info.plist 增加 `PUICAutoLaunchAudioOptOut = true`。Release 没有自动呈现系统页的逻辑；仅 Debug 模拟器可用显式预览参数打开它。中英文说明、离线协议与支持页面及对应部署包同步更新，没有增加第三方媒体信息收集。
+
+验证与发布：
+
+- 双端 Debug 模拟器构建与签名 Release 归档通过。手机、手表归档版本均为 `1.0.11 (13)`；深度签名、本地化产物、离线文档与部署包一致性、自动启动退出键和 Release 不含系统页预览参数检查通过。
+- 播放队列 46,760 项、沉浸状态／布局 1,902 项、画布／导航 1,224 项、方向规则 145 项断言通过。410 个双语键、561 处源码文案检查通过；四种语言／回退运行各 42 项断言通过。
+- 在隔离的 40mm、watchOS 26.5 模拟器，通过 Device Hub 真实坐标点按音乐库入口，观察到系统播放页；点左上角原生 X 后返回音乐库。正常启动保持在音乐库。另检查 49mm 系统页及 40mm 中英文入口，英文标题可换行、无省略截断。[页面截图](Artifacts/Previews/PhoneMediaControl)
+- 本轮未在真实配对 iPhone 上独立验证跨 App 播放命令或物理双指互点；模拟器的无媒体页面、页面进出和既有本地逻辑断言不能替代这些真机验收。
+- TestFlight 上传成功，Xcode 明确返回 `Upload succeeded` / `EXPORT SUCCEEDED`，Apple 已接收并开始处理。[上传凭证](Artifacts/Verification/testflight-1.0.11-13-upload.txt)、[机器可读记录](Artifacts/Verification/watch-phone-media-1.0.11-13.json)。未打开 App Store Connect 网页核对测试组可下载状态或编辑测试说明，未提交 App Store 正式审核。签名归档保存在忽略跟踪的 `Artifacts/Builds/WatchMusic-1.0.11-13.xcarchive`。
